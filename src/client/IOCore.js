@@ -947,8 +947,8 @@ export class IOCore extends EventEmitter{
     
     if( this.stateName !== eventName ){
       // console.log(`state: ${this.stateName} => ${eventName}` )
-      this.emit('change', eventName)
       this.stateName = eventName
+      this.emit('change', eventName)
     } 
   }
  

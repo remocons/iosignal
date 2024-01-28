@@ -1,7 +1,7 @@
 
 const { IO } = require('iosignal')
 
-const io = new IO('wss://io.remocon.kr/ws')
+const io = new IO('ws://localhost:7777')
 
 io.on('ready', ()=>{
   console.log('ready cid:', io.cid)
