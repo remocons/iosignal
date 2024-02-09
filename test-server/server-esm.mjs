@@ -1,12 +1,12 @@
-import { Server, serverOption } from '../index.js'
+import { Server } from '../index.js'
 
-// serverOption.showMetric = 2;
-// serverOption.showMessage = 'message';
-// serverOption.port = '6666'
-// serverOption.congPort = '6667'
+const server = new Server( 
+  { port: 7777,     // WebSocket
+    congPort: 8888, // CongSocket
+    showMetric: 2,
+    showMessage: 'message'
+  } )
 
-const server = new Server( serverOption )
-console.log( 'serverOption:', serverOption )
 
 // text message handler (No binary message)
 // print text message

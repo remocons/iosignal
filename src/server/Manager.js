@@ -1,7 +1,8 @@
 import { MBP } from 'meta-buffer-pack'
 import { ServerRemote } from './ServerRemote.js'
 import { serverOption } from './serverOption.js'
-import { IOMsg, PAYLOAD_TYPE, CLIENT_STATE } from '../common/constants.js'
+import { IOMsg, CLIENT_STATE } from '../common/constants.js'
+import { getSignalPack } from '../common/payload.js';
 import { FileLogger } from './FileLogger.js'
 import { Metric } from './Metric.js'
 
@@ -142,8 +143,6 @@ export class Manager{
 
 
   serverSignal(obj) {
-    // obj.event  obj.data
-    console.log('server signal', obj)
     let sigPack = MBP.pack(
       MBP.MB('#MsgType', '8', IOMsg.SERVER_SIGNAL),
       MBP.MB('#signalObject', obj)
@@ -172,90 +171,10 @@ export class Manager{
   }
 
 
-  parsePayload(args) {
-    // console.log( 'parsePayload args', args )
-    let type, pack;
-    if (args.length == 0) {
-      type = PAYLOAD_TYPE.EMPTY
-      pack = null
-    } else if (args.length == 1) {
-      if (typeof args[0] === 'string' || typeof args[0] === 'number') {
-        type = PAYLOAD_TYPE.TEXT
-        pack = encoder.encode(args[0] + ".") // add null area.
-        pack[pack.byteLength - 1] = 0 // set null.
-
-      } else if (ArrayBuffer.isView(args[0]) || args[0] instanceof ArrayBuffer) {  //one buffer
-        type = PAYLOAD_TYPE.BINARY
-        pack = MBP.B8(args[0])
-      } else if (typeof args[0] === 'object') {
-        type = PAYLOAD_TYPE.OBJECT
-        pack = encoder.encode(JSON.stringify(args[0]))
-      } else {
-        //
-        console.log('unknown type payload arguments')
-      }
-    } else { // args 2 and more
-      let containsBuffer = false
-      args.forEach(item => {
-        if (ArrayBuffer.isView(item) || item instanceof ArrayBuffer) containsBuffer = true;
-        // console.log('payload item', item )
-      })
-
-      if (containsBuffer) {
-        type = PAYLOAD_TYPE.MBA;
-        // pack 
-      } else {
-        type = PAYLOAD_TYPE.MJSON;
-        // args is array
-        pack = encoder.encode(JSON.stringify(args))
-      }
-
-    }
-
-    return { type: type, buffer: pack }
-
-  }
-
-  get_signal_pack(tag, ...args) {
-    if (typeof tag !== 'string') throw TypeError('tag should be string.')
-    let tagEncoded = encoder.encode(tag)
-    let payload = this.parsePayload(args)
-
-    let sigPack;
-    if (payload.type == PAYLOAD_TYPE.EMPTY) {
-      sigPack = MBP.pack(
-        MBP.MB('#MsgType', '8', IOMsg.SIGNAL),
-        MBP.MB('#tagLen', '8', tagEncoded.byteLength),
-        MBP.MB('#tag', tagEncoded),
-        MBP.MB('#payloadType', '8', payload.type)
-      )
-    } else if (payload.type == PAYLOAD_TYPE.MBA) {
-      sigPack = MBP.pack(
-        MBP.MB('#MsgType', '8', IOMsg.SIGNAL),
-        MBP.MB('#tagLen', '8', tagEncoded.byteLength),
-        MBP.MB('#tag', tagEncoded),
-        MBP.MB('#payloadType', '8', payload.type),
-        MBP.MBA(...args)
-      )
-    } else {
-      sigPack = MBP.pack(
-        MBP.MB('#MsgType', '8', IOMsg.SIGNAL),
-        MBP.MB('#tagLen', '8', tagEncoded.byteLength),
-        MBP.MB('#tag', tagEncoded),
-        MBP.MB('#payloadType', '8', payload.type),
-        MBP.MB('#payload', payload.buffer)
-      )
-    }
-    return sigPack
-  }
-
-
-
-
   // signaling to the cid subscribers.
   // example.  sending cid close signal.
   deligateSignal(remote, tag, ...args) {
-    let sigPack = this.get_signal_pack(tag, ...args)
+    let sigPack = getSignalPack(tag, ...args)
     this.sender(tag, remote, sigPack)
   }
 

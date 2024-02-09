@@ -1,8 +1,11 @@
-import { Server, serverOption } from 'iosignal'
+import { Server } from 'iosignal'
 
-serverOption.showMetric = 2;
-serverOption.showMessage = 'message';
-const server = new Server( serverOption )
+const options = {
+  port: 7777,
+  showMetric: 2,
+  showMessage: 'message'
+}
 
-console.log( 'serverOption:', serverOption )
+const server = new Server( options )
+
 

@@ -8,7 +8,7 @@ io.on('ready', ()=>{
 });
 
 io.on('change', ( evt )=>{
-  console.log('change event:', evt  )
+  console.log('\nchange event:', evt  )
   console.log('io.state<Number>', io.state  )
   console.log('io.stateName<String>:', io.stateName )
 });

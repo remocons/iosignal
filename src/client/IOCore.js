@@ -1,24 +1,24 @@
-import { MBP ,Buffer} from 'meta-buffer-pack'
+import { MBP, Buffer } from 'meta-buffer-pack'
 import EventEmitter from "eventemitter3";
 import { Boho, BohoMsg, MetaSize } from "boho";
+import { IOMsg, PAYLOAD_TYPE, SIZE_LIMIT, ENC_MODE, STATES } from '../common/constants.js'
 import { quotaTable } from '../common/quotaTable.js'
-import { IOMsg , PAYLOAD_TYPE , SIZE_LIMIT , ENC_MODE ,STATES} from '../common/constants.js'
+import { getSignalPack } from '../common/payload.js';
 
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
 
-function byteToUrl( buffer){
+function byteToUrl(buffer) {
   //ipv4(4bytes) , port(2bytes)
-  if(buffer.byteLength != 6 ) return 
-  let address = buffer[0].toString() + "."+ buffer[1].toString()
-                + "."+ buffer[2].toString() + "."+ buffer[3].toString();
-  let port = (buffer[4] << 8) + buffer[5] 
-
-  return address +':'+ port.toString()
+  if (buffer.byteLength != 6) return
+  let address = buffer[0].toString() + "." + buffer[1].toString()
+    + "." + buffer[2].toString() + "." + buffer[3].toString();
+  let port = (buffer[4] << 8) + buffer[5]
+  return address + ':' + port.toString()
 }
 
-export class IOCore extends EventEmitter{
-  constructor( url) {
+export class IOCore extends EventEmitter {
+  constructor(url) {
     super();
     this.cid = ""   // get from the server  CID_RES
     this.ip = ""    // get from the server  IAM_RES message.
@@ -31,14 +31,14 @@ export class IOCore extends EventEmitter{
     this.rxCounter = 0;
     this.txBytes = 0;
     this.rxBytes = 0;
-    
+
     this.lastTxRxTime = Date.now();
-    this.connectionCheckerPeriod = SIZE_LIMIT.CONNECTION_CHECKER_PERIOD ; 
+    this.connectionCheckerPeriod = SIZE_LIMIT.CONNECTION_CHECKER_PERIOD;
     this.connectionCheckerIntervalID = null;
 
     this.boho = new Boho()
     this.TLS = false // true if protocol is wss(TLS)
-    this.encMode = ENC_MODE.AUTO; 
+    this.encMode = ENC_MODE.AUTO;
     this.useAuth = false;
 
     this.nick = "";
@@ -48,440 +48,410 @@ export class IOCore extends EventEmitter{
     this.mid = 0  // promise message id 
 
     this.level = 0; // also defaultQuotaLevel
-    this.quota = quotaTable[ this.level ];
+    this.quota = quotaTable[this.level];
     this.serverSet = {}
-
     this.linkMap = new Map()
 
-    this.on('open',this.onOpen.bind(this))
-    this.on('close',this.onClose.bind(this))
-    this.on('socket_data',this.onData.bind(this))
-    // this.on('auth_fail',this.onAuthFail.bind(this))
-    // this.on('server_signal', this.onServerSignal.bind(this))
+    this.on('open', this.onOpen.bind(this))
+    this.on('close', this.onClose.bind(this))
+    this.on('socket_data', this.onData.bind(this))
   }
 
 
-  // onAuthFail(event, reason){
-  // }
-
-  // onServerSignal(event, data ){
-  //   console.log('onServerSignal', event, data )
-  // }
-  
-  redirect(url2){
+  redirect(url2) {
     this.close()
     this.stateChange('redirecting')
-    this.createConnection( url2)
+    this.createConnection(url2)
   }
 
-  open(url ) {
-    if( !url && !this.url ) return;
+  open(url) {
+    if (!url && !this.url) return;
 
-    if( url ){
-        if( !this.url ){ // default host url
-          this.url = url
-        }else if( url !== this.url ){ // default host url change
-          this.url = url;
-          if( this.socket ){
-            this.close()
-            return
-          }
+    if (url) {
+      if (!this.url) { // default host url
+        this.url = url
+      } else if (url !== this.url) { // default host url change
+        this.url = url;
+        if (this.socket) {
+          this.close()
+          return
         }
+      }
     }
 
-    this.createConnection( this.url )
-    
-    if(!this.connectionCheckerIntervalID){
+    this.createConnection(this.url)
+
+    if (!this.connectionCheckerIntervalID) {
       this.connectionCheckerIntervalID = setInterval(this.keepAlive.bind(this), this.connectionCheckerPeriod);
-    } 
+    }
   }
 
-  onOpen( ){
-    if( this.url.includes("wss://" )){
+  onOpen() {
+    if (this.url.includes("wss://")) {
       this.TLS = true;
-    }else{
+    } else {
       this.TLS = false;
     }
-    this.stateChange('open' )
+    this.stateChange('open')
   }
 
-  onClose(){
+  onClose() {
     this.boho.isAuthorized = false;
     this.cid = ""
-    this.stateChange('closed' )
+    this.stateChange('closed')
   }
 
   // manual login
-  login( id, key){
-    if( !id && !key){
+  login(id, key) {
+    if (!id && !key) {
       console.log('no id and key.')
       return
-    } 
+    }
     console.log('manual login: ', id)
 
-    if( !key && id.includes('.') ){
+    if (!key && id.includes('.')) {
       this.boho.set_id_key(id)
-    }else if( id && key){
+    } else if (id && key) {
       this.boho.set_id8(id)
       this.boho.set_key(key)
-    }else{
+    } else {
       console.log('no id or key.')
       return
     }
     this.useAuth = true
     let auth_pack = this.boho.auth_req()
     // console.log('auth_req_pack', auth_pack )
-    this.send(auth_pack )
+    this.send(auth_pack)
   }
 
   // auto login
-  auth( id, key){
-    if( !id && !key){
+  auth(id, key) {
+    if (!id && !key) {
       console.log('no id and key.')
       return
-    } 
-    // console.log('set auto auth: ', id)
+    }
 
-    if( !key && id.includes('.') ){
+    if (!key && id.includes('.')) {
       this.boho.set_id_key(id)
-    }else if( id && key){
+    } else if (id && key) {
       this.boho.set_id8(id)
       this.boho.set_key(key)
-    }else{
+    } else {
       console.log('no id or key.')
       return
     }
     this.useAuth = true
   }
 
-  onData( buffer ){
+  onData(buffer) {
     // console.log('remote rcv socket_message', buffer )
     //check first byte (remote message type)
-   let msgType = buffer[0];
-   let decoded;
+    let msgType = buffer[0];
+    let decoded;
 
-    if( msgType === BohoMsg.ENC_488 ){
-      decoded = this.boho.decrypt_488( buffer )
-      if( decoded ){
-       //  console.log( decoded )
+    if (msgType === BohoMsg.ENC_488) {
+      decoded = this.boho.decrypt_488(buffer)
+      if (decoded) {
+        //  console.log( decoded )
         msgType = decoded[0]
-        buffer = decoded 
+        buffer = decoded
         // console.log('DECODED MsgType:', IOMsg[ msgType ] )
-       }else{
-         console.log('DEC_FAIL', buffer.byteLength)
-       }
-     }else if( msgType === BohoMsg.ENC_E2E ){
+      } else {
+        // console.log('DEC_FAIL', buffer.byteLength)
+      }
+    } else if (msgType === BohoMsg.ENC_E2E) {
       // console.log('rcv ENC_E2E' )
 
-      try{
-        decoded = this.boho.decrypt_488( buffer )
+      try {
+        decoded = this.boho.decrypt_488(buffer)
         //헤더를 읽고 헤더크기만큼만 해석한다.
-        if( decoded ){
+        if (decoded) {
           // console.log( 'ENC_E2E decoded ', decoded )
           msgType = decoded[0]
           // decoded has msg_header only. 
-          buffer.set( decoded ,MetaSize.ENC_488) // set decoded signal_e2e headaer.
-          buffer = buffer.subarray( MetaSize.ENC_488 ) // reset offset.
-  // console.log('DECODED MsgType:', IOMsg[ msgType ] )
-          }else{
-            console.log('488 DEC_FAIL', buffer)
-            return
-          }
+          buffer.set(decoded, MetaSize.ENC_488) // set decoded signal_e2e headaer.
+          buffer = buffer.subarray(MetaSize.ENC_488) // reset offset.
+          // console.log('DECODED MsgType:', IOMsg[ msgType ] )
+        } else {
+          // console.log('488 DEC_FAIL', buffer)
+          return
+        }
 
-      }catch(err){
-        console.log('E2E DEC_FAIL decryption error', err)
+      } catch (err) {
+        // console.log('E2E DEC_FAIL decryption error', err)
         return
       }
 
-     }
+    }
 
-    let type = IOMsg[ msgType ]
-    if( !type ) type = BohoMsg[ msgType ] 
+    let type = IOMsg[msgType]
+    if (!type) type = BohoMsg[msgType]
 
-// console.log( "MsgType: ", type , " LEN ", buffer.byteLength)
+    // console.log( "MsgType: ", type , " LEN ", buffer.byteLength)
 
-   switch( msgType){
-      case IOMsg.OVER_SIZE :
+    switch (msgType) {
+      case IOMsg.OVER_SIZE:
         console.log('## server sent: over_size event.')
-        this.emit('over_size','over_size')
-      break;
-      case IOMsg.PING :
-          this.pong();
-      break;
+        this.emit('over_size', 'over_size')
+        break;
+      case IOMsg.PING:
+        this.pong();
+        break;
 
-      case IOMsg.PONG :
-      break;
+      case IOMsg.PONG:
+        break;
 
       case IOMsg.IAM_RES:
-          try {
-            let str = decoder.decode( buffer.subarray(1) )
-            let jsonInfo = JSON.parse(str) 
-            if( jsonInfo.ip ){
-              this.ip = jsonInfo.ip;
-            }
-            console.log('<IAM_RES>', JSON.stringify(jsonInfo))
-            // console.log('<IAM_RES>', JSON.stringify(jsonInfo,null,2))
-          } catch (error) {
-            console.log('<IAM_RES> data error')
-          }
-      break;
-
-    case IOMsg.CID_RES :
-      let cidStr = decoder.decode( buffer.subarray(1) )
-      // console.log( '>> CID_RES: ' ,cidStr )
-      this.cid = cidStr;
-      this.stateChange('ready','cid_ready' ) 
-      // change state before subscribe.
-      this.subscribe_memory_channels()
-      break;
-
-    case IOMsg.QUOTA_LEVEL :
-      let quotaLevel = buffer[1]
-      this.level = quotaLevel;
-      this.quota = quotaTable[ quotaLevel ];
-      console.log('## QUOTA:', quotaLevel, JSON.stringify(this.quota) )
-      break;
-
-    case IOMsg.SERVER_CLEAR_AUTH :
-      this.useAuth = false;
-      this.boho.clearAuth();
-      this.stop();
-      break;
-
-    case IOMsg.SERVER_REDIRECT :
-      // console.log( buffer.toString('hex'))
-      let host_port;
-      let url;
-      let protocol;
-      let addressType;
-      if( buffer.byteLength == 7){ // ipv4 ,port
-        addressType = 'IPV4:PORT'
-        host_port = byteToUrl( buffer.subarray(1)) 
-        protocol = 'cong://'
-      }else{ // domain url
-        addressType= 'URL'
-        host_port = decoder.decode( buffer.subarray(1)) 
-        protocol = ''  // must included in url
-      }
-
-      url = protocol + host_port
-
-      console.log(`REDIRECT TO <${addressType}> : ${url}` )
-      this.redirect(url)
-      break;
-
-    case IOMsg.SERVER_READY :
-      // console.log('>> SERVER_READY')
-      this.stateChange('server_ready','server_ready' )
-      if(this.useAuth){
-        this.send( this.boho.auth_req() )
-        // CID_REQ will be called, after auth_ack.
-      }else{
-        // CID_REQ here, if not using auth.
-        this.send( Buffer.from([IOMsg.CID_REQ])  )
-      }
-      break;
-    
-    case IOMsg.SERVER_SIGNAL:
         try {
-          let str = decoder.decode( buffer.subarray(1) )
-          let ss = JSON.parse(str) 
-          console.log('SERVER_SIGNAL', JSON.stringify(ss))
-
-          if( ss.event && ss.data ){
-            this.serverSet = ss.data;
-            this.emit( ss.event , ss.data  )
+          let str = decoder.decode(buffer.subarray(1))
+          let jsonInfo = JSON.parse(str)
+          if (jsonInfo.ip) {
+            this.ip = jsonInfo.ip;
           }
-       
+          console.log('<IAM_RES>', JSON.stringify(jsonInfo))
+          // console.log('<IAM_RES>', JSON.stringify(jsonInfo,null,2))
         } catch (error) {
-          console.log('<SERVER_SIGNAL> parsing error')
+          // console.log('<IAM_RES> data error')
         }
-    break;
+        break;
 
-    case IOMsg.SET:
+      case IOMsg.CID_RES:
+        let cidStr = decoder.decode(buffer.subarray(1))
+        // console.log( '>> CID_RES: ' ,cidStr )
+        this.cid = cidStr;
+        // change state before subscribe.
+        this.stateChange('ready', 'cid_ready')
+        this.subscribe_memory_channels()
+        break;
+
+      case IOMsg.QUOTA_LEVEL:
+        let quotaLevel = buffer[1]
+        this.level = quotaLevel;
+        this.quota = quotaTable[quotaLevel];
+        console.log('## QUOTA:', quotaLevel, JSON.stringify(this.quota))
+        break;
+
+      case IOMsg.SERVER_CLEAR_AUTH:
+        this.useAuth = false;
+        this.boho.clearAuth();
+        this.stop();
+        break;
+
+      case IOMsg.SERVER_REDIRECT:
+        let host_port;
+        let url;
+        let protocol;
+        let addressType;
+        if (buffer.byteLength == 7) { // ipv4 ,port
+          addressType = 'IPV4:PORT'
+          host_port = byteToUrl(buffer.subarray(1))
+          protocol = 'cong://'
+        } else { // domain url
+          addressType = 'URL'
+          host_port = decoder.decode(buffer.subarray(1))
+          protocol = ''
+        }
+
+        url = protocol + host_port
+        this.redirect(url)
+        break;
+
+      case IOMsg.SERVER_READY:
+        this.stateChange('server_ready', 'server_ready')
+        if (this.useAuth) {
+          this.send(this.boho.auth_req())
+          // CID_REQ will be called, after auth_ack.
+        } else {
+          // CID_REQ here, if not using auth.
+          this.send(Buffer.from([IOMsg.CID_REQ]))
+        }
+        break;
+
+      case IOMsg.SERVER_SIGNAL:
+        try {
+          let str = decoder.decode(buffer.subarray(1))
+          let ss = JSON.parse(str)
+          // console.log('SERVER_SIGNAL', JSON.stringify(ss))
+
+          if (ss.event && ss.data) {
+            this.serverSet = ss.data;
+            this.emit(ss.event, ss.data)
+          }
+
+        } catch (error) {
+          // console.log('<SERVER_SIGNAL> parsing error')
+        }
+        break;
+
+      case IOMsg.SET:
         try {
           let setPack = MBP.unpack(buffer)
-          if(setPack ){
-            console.log('[SET] topic: ',setPack.topic )
-            this.emit( setPack.topic, ...setPack.args )
+          if (setPack) {
+            // console.log('[SET] topic: ', setPack.topic)
+            this.emit(setPack.topic, ...setPack.args)
           }
         } catch (error) {
-          console.log('<SET> parsing error')
+          // console.log('<SET> parsing error')
         }
-    break;
+        break;
 
-     case IOMsg.SIGNAL_E2E: 
-     case IOMsg.SIGNAL: 
-      try{
+      case IOMsg.SIGNAL_E2E:
+      case IOMsg.SIGNAL:
+        try {
           let tagLen = buffer.readUint8(1)
-          let tagBuf = buffer.subarray(2, 2 + tagLen )
+          let tagBuf = buffer.subarray(2, 2 + tagLen)
           let tag = decoder.decode(tagBuf)
 
-          let payloadType = buffer.readUint8( 2 + tagLen )
-          let payloadBuffer = buffer.subarray( 3 + tagLen )
-  
+          let payloadType = buffer.readUint8(2 + tagLen)
+          let payloadBuffer = buffer.subarray(3 + tagLen)
+
           /* three types of signal message.
             > unicast message to me:  tag includes @, no cid: '@*'
             > cid_sub message:  tag includes cid and @ both : 'cid@*'
             > ch_sub message:  else.
           */
-
-
-          switch( payloadType ){
+          switch (payloadType) {
 
             case PAYLOAD_TYPE.EMPTY:  // 0
-              if( tag.indexOf('@') === 0 )  this.emit( '@', null , tag)
-                else this.emit( tag, null , tag )
+              if (tag.indexOf('@') === 0) this.emit('@', null, tag)
+              else this.emit(tag, null, tag)
               break;
 
             case PAYLOAD_TYPE.TEXT: // 1
-            // !! Must remove null char before decode in JS.
-            // string payload contains null char for the c/cpp devices.
-              let payloadStringWithoutNull = payloadBuffer.subarray(0,payloadBuffer.byteLength - 1 )
-              let oneString = decoder.decode( payloadStringWithoutNull )
-              if( tag.indexOf('@') === 0 )  this.emit( '@', oneString , tag )
-              if( tag !== '@') this.emit( tag, oneString , tag )
+              // !! Must remove null char before decode in JS.
+              // string payload contains null char for the c/cpp devices.
+              let payloadStringWithoutNull = payloadBuffer.subarray(0, payloadBuffer.byteLength - 1)
+              let oneString = decoder.decode(payloadStringWithoutNull)
+              if (tag.indexOf('@') === 0) this.emit('@', oneString, tag)
+              if (tag !== '@') this.emit(tag, oneString, tag)
               break;
-              
+
             case PAYLOAD_TYPE.BINARY: // 2
-              if( tag.indexOf('@') === 0 ) this.emit( '@', payloadBuffer , tag  )
-              if( tag !== '@') this.emit( tag, payloadBuffer , tag )
+              if (tag.indexOf('@') === 0) this.emit('@', payloadBuffer, tag)
+              if (tag !== '@') this.emit(tag, payloadBuffer, tag)
               break;
 
             case PAYLOAD_TYPE.OBJECT:
-              let oneObjectBuffer = decoder.decode( payloadBuffer )
-              let oneJSONObject = JSON.parse( oneObjectBuffer )
-              if( tag.indexOf('@') === 0 ) this.emit( '@', oneJSONObject , tag  )
-              if( tag !== '@') this.emit( tag, oneJSONObject , tag  )
-                break;
-                
-            case PAYLOAD_TYPE.MJSON: 
-              let mjsonBuffer = decoder.decode( payloadBuffer )
-              // console.log('raw mjson tag', tag)
-              // console.log('raw mjson', mjsonBuffer)
-              let mjson = JSON.parse( mjsonBuffer )
-              // console.log('parsed mjson', mjson)
-              if( tag.indexOf('@') === 0 ) this.emit( '@', ...mjson , tag  )
-              if( tag !== '@') this.emit( tag, ...mjson , tag  )
+              let oneObjectBuffer = decoder.decode(payloadBuffer)
+              let oneJSONObject = JSON.parse(oneObjectBuffer)
+              if (tag.indexOf('@') === 0) this.emit('@', oneJSONObject, tag)
+              if (tag !== '@') this.emit(tag, oneJSONObject, tag)
               break;
 
-            case PAYLOAD_TYPE.MBA: 
-              let mbaObject = MBP.unpack( buffer )
-              if( tag.indexOf('@') === 0 ) this.emit( '@', ...mbaObject.args , tag  )
-              if( tag !== '@') this.emit( tag, ...mbaObject.args , tag  )
+            case PAYLOAD_TYPE.MJSON:
+              let mjsonBuffer = decoder.decode(payloadBuffer)
+              let mjson = JSON.parse(mjsonBuffer)
+              if (tag.indexOf('@') === 0) this.emit('@', ...mjson, tag)
+              if (tag !== '@') this.emit(tag, ...mjson, tag)
+              break;
+
+            case PAYLOAD_TYPE.MBA:
+              let mbaObject = MBP.unpack(buffer)
+              if (tag.indexOf('@') === 0) this.emit('@', ...mbaObject.args, tag)
+              if (tag !== '@') this.emit(tag, ...mbaObject.args, tag)
               break;
 
             default:
-              console.log('## Unkown payloadtype', payloadType)
-
+              // console.log('## Unkown payloadtype', payloadType)
           }
 
-
-        }catch(err){
-          console.log('## signal parse err',err)
+        } catch (err) {
+          // console.log('## signal parse err', err)
         }
         break;
 
-
-      
       case IOMsg.RESPONSE_MBP:
-        this.testPromise( buffer)
+        this.testPromise(buffer)
         break;
-
-
 
       case BohoMsg.AUTH_NONCE:
-        // console.log('auth_nonce', buffer )
-        let auth_hmac = this.boho.auth_hmac( buffer )
-        if(auth_hmac){
-          this.send( auth_hmac )
-        }else{
-          this.stateChange('auth_fail', 'Invalid local auth_hmac.' )
-          console.log('auth_fail', 'Invalid local auth_hmac.' )
+        let auth_hmac = this.boho.auth_hmac(buffer)
+        if (auth_hmac) {
+          this.send(auth_hmac)
+        } else {
+          this.stateChange('auth_fail', 'Invalid local auth_hmac.')
         }
         break;
-        case BohoMsg.AUTH_FAIL:
-          this.stateChange('auth_fail','server reject auth.' )
-          console.log('auth_fail', 'server reject auth.' )
-          break;
-          case BohoMsg.AUTH_ACK:
-            if(this.boho.check_auth_ack_hmac( buffer ) ){
-              // this.emit('authorized' );   
-              this.stateChange('auth_ready','server sent auth_ack' )
-              this.send( Buffer.from([IOMsg.CID_REQ ]) )
-            }else{
-              // this.emit('auth_fail','invalid server hmac')
-              this.stateChange('auth_fail','invalid server_hmac' )
-              console.log('auth_fail', 'Invalid server hmac.' )
+
+      case BohoMsg.AUTH_FAIL:
+        this.stateChange('auth_fail', 'server reject auth.')
+        break;
+
+      case BohoMsg.AUTH_ACK:
+        if (this.boho.check_auth_ack_hmac(buffer)) {
+          this.stateChange('auth_ready', 'server sent auth_ack')
+          this.send(Buffer.from([IOMsg.CID_REQ]))
+        } else {
+          this.stateChange('auth_fail', 'invalid server_hmac')
         }
         break;
-      
+
       default:
         try {
-            decoded = decoder.decode( buffer )
-            // console.log('text message:', decoded)
-            this.emit('text_message', decoded)
+          decoded = decoder.decode(buffer)
+          // console.log('text message:', decoded)
+          this.emit('text_message', decoded)
         } catch (error) {
-          
-        } 
+
+        }
 
         break;
 
     }
   }
 
-  iam( title ){
+  iam(title) {
     // console.log('iam', title)
-    if(title ){
-      this.send_enc_mode(  MBP.pack( 
-          MBP.MB('#MsgType','8', IOMsg.IAM ) , 
-          MBP.MB('#', title )
-        ))
-    }else{
-      this.send_enc_mode(  MBP.pack( 
-          MBP.MB('#MsgType','8', IOMsg.IAM )
-        ))
+    if (title) {
+      this.send_enc_mode(MBP.pack(
+        MBP.MB('#MsgType', '8', IOMsg.IAM),
+        MBP.MB('#', title)
+      ))
+    } else {
+      this.send_enc_mode(MBP.pack(
+        MBP.MB('#MsgType', '8', IOMsg.IAM)
+      ))
     }
   }
 
 
-  ping(){
-    this.send( Buffer.from( [ IOMsg.PING ]))
+  ping() {
+    this.send(Buffer.from([IOMsg.PING]))
   }
 
-  pong(){
-    this.send( Buffer.from( [ IOMsg.PONG ]))
+  pong() {
+    this.send(Buffer.from([IOMsg.PONG]))
   }
 
 
   // application level ping tool.  
   // simple message sending and reply.
-  echo( args ){
-    if(args ){
-      console.log( 'echo args:', args )
-      this.send_enc_mode(  MBP.pack( 
-        MBP.MB('#MsgType','8', IOMsg.ECHO ) , 
-        MBP.MB('#msg', args )
+  echo(args) {
+    if (args) {
+      console.log('echo args:', args)
+      this.send_enc_mode(MBP.pack(
+        MBP.MB('#MsgType', '8', IOMsg.ECHO),
+        MBP.MB('#msg', args)
       ))
-    }else{
+    } else {
       // # do not encrypt blank echo #
-      this.send( Buffer.from([ IOMsg.ECHO ]))
+      this.send(Buffer.from([IOMsg.ECHO]))
     }
   }
 
 
-  bin(...data){
-    this.send( MBP.U8pack( ...data) )
+  bin(...data) {
+    this.send(MBP.U8pack(...data))
   }
 
-  send( data ){
-    if( data.byteLength > this.quota.signalSize ){
+  send(data) {
+    if (data.byteLength > this.quota.signalSize) {
       this.emit('over_size')
-      console.log('## QUOTA LIMIT OVER!! \nsignal message.byteLength: ', data.byteLength )
-      console.log('## your maximum signalSize(bytes) is:', this.quota.signalSize )
+      console.log('## QUOTA LIMIT OVER!! \nsignal message.byteLength: ', data.byteLength)
+      console.log('## your maximum signalSize(bytes) is:', this.quota.signalSize)
       return
     }
-    this.socket_send( data );
+    this.socket_send(data);
   }
 
   /*
@@ -500,385 +470,307 @@ export class IOCore extends EventEmitter{
      NO. do not ecnrypt message.
 
   */
-  getEncryptionMode(){
-    if( this.encMode === ENC_MODE.YES || 
-      this.encMode === ENC_MODE.AUTO && 
+  getEncryptionMode() {
+    if (this.encMode === ENC_MODE.YES ||
+      this.encMode === ENC_MODE.AUTO &&
       !this.TLS && this.boho.isAuthorized
-      ){
-        return true;
-      }else{
-        return false
-      }
+    ) {
+      return true;
+    } else {
+      return false
+    }
   }
 
-  send_enc_mode( data ,useEncryption  ){
-    
+  send_enc_mode(data, useEncryption) {
+
     // use default policy.
-    if( useEncryption === undefined){
+    if (useEncryption === undefined) {
       useEncryption = this.getEncryptionMode()
     }
-      
-    if( data[0] == IOMsg.SIGNAL_E2E && useEncryption){
+
+    if (data[0] == IOMsg.SIGNAL_E2E && useEncryption) {
       // input data:  signal_header + e2ePayload
       // encrypt signal_header area only. payload is encrypted with e2e key already.
       let tagLen = data[1]
-      let encHeader = this.boho.encrypt_488( data.subarray(0, 3 + tagLen))
+      let encHeader = this.boho.encrypt_488(data.subarray(0, 3 + tagLen))
       encHeader[0] = BohoMsg.ENC_E2E
-      this.send( Buffer.concat([encHeader, data.subarray(3+tagLen) ]))
+      this.send(Buffer.concat([encHeader, data.subarray(3 + tagLen)]))
       // console.log('<< send_enc_mode [ ENC_E2E ]')
-      
-    }else if( useEncryption ){
+
+    } else if (useEncryption) {
       // console.log('<< send_enc_mode [ ENC_488 ]')
-      let encPack = this.boho.encrypt_488( data ) 
-      this.send( encPack )
-    }else{
+      let encPack = this.boho.encrypt_488(data)
+      this.send(encPack)
+    } else {
       // console.log('<< send_enc_mode  [ PLAIN ]' )
-      this.send( data )
+      this.send(data)
     }
 
   }
 
-  
-  setMsgPromise(mid ){
-    return new Promise( (resolve, reject)=>{
-      this.promiseMap.set( mid, [resolve, reject ] )
+
+  setMsgPromise(mid) {
+    return new Promise((resolve, reject) => {
+      this.promiseMap.set(mid, [resolve, reject])
       // console.log('set promise.  mid, size', mid, this.promiseMap.size)
-      setTimeout( e=>{ 
-        if(this.promiseMap.has(mid )){
+      setTimeout(e => {
+        if (this.promiseMap.has(mid)) {
           reject('timeout');
-          this.promiseMap.delete( mid )
+          this.promiseMap.delete(mid)
           // console.log('promise timeout. mid, size:', mid, this.promiseMap.size)
         }
       }, this.promiseTimeOut);
     })
   }
 
-  testPromise( buffer ){
+  testPromise(buffer) {
     // console.log('mbp buffer : ', buffer , buffer.byteLength)
     // let mbp = ( buffer.byteLength > 4  ) ?  buffer.subarray(4) : ""
 
     let res = MBP.unpack(buffer)
-    if( !res ) return
+    if (!res) return
     // console.log( res )
 
     // console.log(`RESPONSE_MBP  MID: ${mid} status: ${status} ,mbp: ${ buffer.subarray(4)} `)
 
-    if( this.promiseMap.has(res.mid)){
+    if (this.promiseMap.has(res.mid)) {
       // console.log('res promise msg', mid)
-      let [ resolve, reject ] = this.promiseMap.get( res.mid )
-      this.promiseMap.delete( res.mid )
+      let [resolve, reject] = this.promiseMap.get(res.mid)
+      this.promiseMap.delete(res.mid)
 
-      if(res.status < 128){
+      if (res.status < 128) {
         res.ok = true;
         // console.log( 'unpack meta:', meta)
-        resolve( res  )
-      } else{
-        res.ok = false ;
-        reject ( res )
-      } 
+        resolve(res)
+      } else {
+        res.ok = false;
+        reject(res)
+      }
 
-      
-    }else{
+
+    } else {
       console.log('no promise id')
     }
   }
 
 
-  publish( ...args ){
-      this.signal( ...args )
+  publish(...args) {
+    this.signal(...args)
   }
 
 
-  parsePayload( args ){
-    // console.log( 'parsePayload args', args )
-    let type, pack;
-    if( args.length == 0){
-      type = PAYLOAD_TYPE.EMPTY 
-      pack = null
-    }else if( args.length == 1){
-      if( typeof args[0] === 'string' || typeof args[0] === 'number'){
-       type = PAYLOAD_TYPE.TEXT
-       pack = encoder.encode( args[0] + ".") // add null area.
-       pack[pack.byteLength - 1 ] = 0 // set null.
+  signal(tag, ...args) {
+    if (typeof tag !== 'string') throw TypeError('tag should be string.')
 
-      }else if( ArrayBuffer.isView( args[0]) || args[0] instanceof ArrayBuffer ){  //one buffer
-        type = PAYLOAD_TYPE.BINARY
-        pack = MBP.B8( args[0 ] )
-      }else if(typeof args[0] === 'object'){ 
-        type = PAYLOAD_TYPE.OBJECT
-        pack = encoder.encode( JSON.stringify( args[0]) )
-      }else{
-        //
-        console.log('unknown type payload arguments')
-      }
-    }else{ // args 2 and more
-      let containsBuffer = false
-      args.forEach( item =>{
-        if( ArrayBuffer.isView( item ) || item instanceof ArrayBuffer ) containsBuffer = true;
-        // console.log('payload item', item )
-      })
-
-      if( containsBuffer ){
-        type = PAYLOAD_TYPE.MBA;
-        // pack 
-      }else{
-        type = PAYLOAD_TYPE.MJSON;
-          // args is array
-        pack = encoder.encode( JSON.stringify( args ) )
-      }
-      
-    }
-    
-    return { type: type, buffer: pack }
-
-  }  
-
-  get_signal_pack( tag, ...args ){
-    if( typeof tag !== 'string') throw TypeError('tag should be string.')
-    let tagEncoded = encoder.encode( tag)
-    let payload = this.parsePayload( args )
-
-    let sigPack;
-    if( payload.type == PAYLOAD_TYPE.EMPTY ){
-      sigPack = MBP.pack( 
-        MBP.MB('#MsgType','8', IOMsg.SIGNAL) , 
-        MBP.MB('#tagLen','8', tagEncoded.byteLength),
-        MBP.MB('#tag', tagEncoded),
-        MBP.MB('#payloadType', '8', payload.type )
-        )
-    }else if( payload.type == PAYLOAD_TYPE.MBA ){
-      sigPack = MBP.pack( 
-        MBP.MB('#MsgType','8', IOMsg.SIGNAL) , 
-        MBP.MB('#tagLen','8', tagEncoded.byteLength),
-        MBP.MB('#tag', tagEncoded),
-        MBP.MB('#payloadType', '8', payload.type ),
-        MBP.MBA(...args)
-        )
-    }else {
-      sigPack = MBP.pack( 
-        MBP.MB('#MsgType','8', IOMsg.SIGNAL) , 
-        MBP.MB('#tagLen','8', tagEncoded.byteLength),
-        MBP.MB('#tag', tagEncoded),
-        MBP.MB('#payloadType', '8', payload.type ),
-        MBP.MB('#payload', payload.buffer )
-        )
-    }
-    return sigPack
+    let signalPack = getSignalPack(tag, ...args)
+    this.send_enc_mode(signalPack)
   }
 
-
-  signal( tag , ...args ){
-    if( typeof tag !== 'string') throw TypeError('tag should be string.')
-
-    let signalPack = this.get_signal_pack(tag, ...args )
-    this.send_enc_mode( signalPack )
+  decrypt_e2e(data, key) {
+    return this.boho.decrypt_e2e(data, key)
   }
 
-  decrypt_e2e( data, key ){
-   return this.boho.decrypt_e2e( data, key )
-  }
+  signal_e2e(tag, data, key) {
 
-  signal_e2e( tag , data, key){
-
-    if( typeof tag !== 'string') throw TypeError('tag should be string.')
-    let tagEncoded = encoder.encode( tag)
-    let dataPack = MBP.B8( data  )
+    if (typeof tag !== 'string') throw TypeError('tag should be string.')
+    let tagEncoded = encoder.encode(tag)
+    let dataPack = MBP.B8(data)
 
     //encrypt payload area with key
-    let sercretPack = this.boho.encrypt_e2e( dataPack, key )
+    let sercretPack = this.boho.encrypt_e2e(dataPack, key)
 
     //change signal MsgType header into SIGNAL_E2E
-    let signalPack = MBP.pack( 
-      MBP.MB('#MsgType','8', IOMsg.SIGNAL_E2E) , 
-      MBP.MB('#tagLen','8', tagEncoded.byteLength),
+    let signalPack = MBP.pack(
+      MBP.MB('#MsgType', '8', IOMsg.SIGNAL_E2E),
+      MBP.MB('#tagLen', '8', tagEncoded.byteLength),
       MBP.MB('#tag', tagEncoded),
-      MBP.MB('#payloadType', '8', PAYLOAD_TYPE.BINARY ),
-      MBP.MB('#payload', sercretPack )
-      )
+      MBP.MB('#payloadType', '8', PAYLOAD_TYPE.BINARY),
+      MBP.MB('#payload', sercretPack)
+    )
 
-    this.send_enc_mode( signalPack )
+    this.send_enc_mode(signalPack)
   }
-    
-    
-  
-  set( storeName, ...args ){
-    if( !storeName || args.length == 0 ){
+
+
+
+  set(storeName, ...args) {
+    if (!storeName || args.length == 0) {
       return Promise.reject(new Error('set need storeName and value)'))
-    } 
-    return this.req('store', 'set', storeName, ...args )
+    }
+    return this.req('store', 'set', storeName, ...args)
   }
-  
-  async get( storeName ){
-    if( !storeName ){
+
+  async get(storeName) {
+    if (!storeName) {
       return Promise.reject(new Error('store get need storeName)'))
-    } 
-    let pack = await this.req('store', 'get', storeName )
+    }
+    let pack = await this.req('store', 'get', storeName)
     let { $ } = MBP.unpack(pack.body)
     return $
   }
-  
-  
-  req( target, topic, ...args ){
+
+
+  req(target, topic, ...args) {
     // console.log('common_req args', args)
-    if( !target || !topic) 
+    if (!target || !topic)
       return Promise.reject(new Error('request need target and topic)'))
     let sigPack;
-    if(args.length > 0){
-        sigPack = MBP.pack( 
-        MBP.MB('#MsgType','8', IOMsg.REQUEST) ,
-        MBP.MB('mid','16',++this.mid), 
-        MBP.MB('target', target ), 
-        MBP.MB('topic', topic ), 
-        MBP.MBA(  ...args )
-        )
-    }else{
-        sigPack = MBP.pack( 
-        MBP.MB('#MsgType','8', IOMsg.REQUEST) ,
-        MBP.MB('mid','16',++this.mid), 
-        MBP.MB('target', target ), 
-        MBP.MB('topic', topic )
-        )
+    if (args.length > 0) {
+      sigPack = MBP.pack(
+        MBP.MB('#MsgType', '8', IOMsg.REQUEST),
+        MBP.MB('mid', '16', ++this.mid),
+        MBP.MB('target', target),
+        MBP.MB('topic', topic),
+        MBP.MBA(...args)
+      )
+    } else {
+      sigPack = MBP.pack(
+        MBP.MB('#MsgType', '8', IOMsg.REQUEST),
+        MBP.MB('mid', '16', ++this.mid),
+        MBP.MB('target', target),
+        MBP.MB('topic', topic)
+      )
     }
     // console.log('<< adminPack', this.mid, sigPack)
-    this.send_enc_mode(  sigPack  )
-    return this.setMsgPromise( this.mid )
+    this.send_enc_mode(sigPack)
+    return this.setMsgPromise(this.mid)
   }
 
 
-  subscribe(tag ){
-    if( typeof tag !== 'string') throw TypeError('tag should be string.')
-    if( this.state !== STATES.READY ) return 
+  subscribe(tag) {
+    if (typeof tag !== 'string') throw TypeError('tag should be string.')
+    if (this.state !== STATES.READY) return
 
     let tagList = tag.split(',')
-    tagList.forEach( tag=>{
+    tagList.forEach(tag => {
       this.channels.add(tag)
     })
 
-    let tagEncoded = encoder.encode( tag) 
-    if( tagEncoded.byteLength > SIZE_LIMIT.TAG_LEN1 ) throw TypeError('please use tag string bytelength below:' + SIZE_LIMIT.TAG_LEN1 )
+    let tagEncoded = encoder.encode(tag)
+    if (tagEncoded.byteLength > SIZE_LIMIT.TAG_LEN1) throw TypeError('please use tag string bytelength below:' + SIZE_LIMIT.TAG_LEN1)
 
-    this.send_enc_mode( 
-      Buffer.concat( [
-        MBP.NB('8',IOMsg.SUBSCRIBE),  
-        MBP.NB('8', tagEncoded.byteLength), 
-        tagEncoded ]) )
+    this.send_enc_mode(
+      Buffer.concat([
+        MBP.NB('8', IOMsg.SUBSCRIBE),
+        MBP.NB('8', tagEncoded.byteLength),
+        tagEncoded]))
   }
 
-  subscribe_promise(tag){
-    if( typeof tag !== 'string') throw TypeError('tag should be string.')
-    if( this.state !== STATES.READY ){
+  subscribe_promise(tag) {
+    if (typeof tag !== 'string') throw TypeError('tag should be string.')
+    if (this.state !== STATES.READY) {
       // console.log('not ready state:', this.state )
       return Promise.reject('subscribe_promise:: connection is not ready')
     }
 
-    let tagEncoded = encoder.encode( tag) 
-    if( tagEncoded.byteLength > SIZE_LIMIT.TAG_LEN2 ) throw TypeError('please use tag string bytelength: ' + SIZE_LIMIT.TAG_LEN2)
+    let tagEncoded = encoder.encode(tag)
+    if (tagEncoded.byteLength > SIZE_LIMIT.TAG_LEN2) throw TypeError('please use tag string bytelength: ' + SIZE_LIMIT.TAG_LEN2)
 
-    this.send_enc_mode( 
-      Buffer.concat( [
-        MBP.NB('8',IOMsg.SUBSCRIBE_REQ),  
-        MBP.NB('16', ++this.mid), 
-        MBP.NB('16', tagEncoded.byteLength), 
-        tagEncoded ]) )
-    return this.setMsgPromise( this.mid )
+    this.send_enc_mode(
+      Buffer.concat([
+        MBP.NB('8', IOMsg.SUBSCRIBE_REQ),
+        MBP.NB('16', ++this.mid),
+        MBP.NB('16', tagEncoded.byteLength),
+        tagEncoded]))
+    return this.setMsgPromise(this.mid)
   }
 
-  subscribe_memory_channels( ){ //local cache . auto_resubscribe
-    if(this.channels.size == 0) return
-    let chList = Array.from( this.channels).join(',')
+  subscribe_memory_channels() { //local cache . auto_resubscribe
+    if (this.channels.size == 0) return
+    let chList = Array.from(this.channels).join(',')
     // console.log('<< subscibe memory channels by cid', chList , this.cid )
 
-    this.subscribe_promise( chList)
-    .then( (res )=>{ 
-      // console.log('>> SUBSCRIBE_REQ result', res ) // return code == map.size
-    }).catch( (e)=>{
-      console.log('>> SUBSCRIBE FAIL:', e)
-    }) 
+    this.subscribe_promise(chList)
+      .then((res) => {
+        // console.log('>> SUBSCRIBE_REQ result', res ) // return code == map.size
+      }).catch((e) => {
+        console.log('>> SUBSCRIBE FAIL:', e)
+      })
 
   }
 
-  unsubscribe(tag = ""){
+  unsubscribe(tag = "") {
     // console.log('unsub', tag)
-    if( typeof tag !== 'string') throw TypeError('tag should be string.')
-    
-    if(tag == ""){
+    if (typeof tag !== 'string') throw TypeError('tag should be string.')
+
+    if (tag == "") {
       // console.log('unsub all')
       this.channels.clear();
-    }else{
+    } else {
       let tagList = tag.split(',')
-      tagList.forEach( tag=>{
+      tagList.forEach(tag => {
         this.channels.delete(tag)
       })
     }
 
-    let tagEncoded = encoder.encode( tag) 
-    if( tagEncoded.byteLength > SIZE_LIMIT.TAG_LEN1 ) throw TypeError('please use tag string bytelength below:' + SIZE_LIMIT.TAG_LEN1 )
+    let tagEncoded = encoder.encode(tag)
+    if (tagEncoded.byteLength > SIZE_LIMIT.TAG_LEN1) throw TypeError('please use tag string bytelength below:' + SIZE_LIMIT.TAG_LEN1)
 
-    this.send_enc_mode( Buffer.concat( [
-      MBP.NB('8',IOMsg.UNSUBSCRIBE),  
-      MBP.NB('8', tagEncoded.byteLength), 
-      tagEncoded ]) )
+    this.send_enc_mode(Buffer.concat([
+      MBP.NB('8', IOMsg.UNSUBSCRIBE),
+      MBP.NB('8', tagEncoded.byteLength),
+      tagEncoded]))
   }
 
 
-  listen(tag , handler){
-    if( typeof tag !== 'string') throw TypeError('tag should be string.')
-    if( tag.length > 255 || tag.length == 0 ) throw TypeError('tag string length range: 1~255')
-    if( typeof handler !== 'function') throw TypeError('handler is not a function.')
-    
-    if( tag.indexOf('@') !== 0){
-      this.channels.add(tag) 
+  listen(tag, handler) {
+    if (typeof tag !== 'string') throw TypeError('tag should be string.')
+    if (tag.length > 255 || tag.length == 0) throw TypeError('tag string length range: 1~255')
+    if (typeof handler !== 'function') throw TypeError('handler is not a function.')
+
+    if (tag.indexOf('@') !== 0) {
+      this.channels.add(tag)
     }
     // console.log('channels:', this.channels )
-    this.on( tag , handler)
+    this.on(tag, handler)
     // do not subscribe now.
     // will subscribe when receive CID_RES signal from server.
-  
+
   }
 
 
 
-  link( to , tag , handler){
-    if( typeof to !== 'string') throw TypeError('to(local link target) is not a string.')
-    if( typeof tag !== 'string') throw TypeError('tag is not a string.')
-    if( tag.length > 255 || tag.length == 0 ) throw TypeError('tag string length range: 1~255')
-    if( typeof handler !== 'function') throw TypeError('handler is not a function.')
-    
-    if( tag.indexOf('@') !== 0){
-      this.channels.add(tag) 
+  link(to, tag, handler) {
+    if (typeof to !== 'string') throw TypeError('to(local link target) is not a string.')
+    if (typeof tag !== 'string') throw TypeError('tag is not a string.')
+    if (tag.length > 255 || tag.length == 0) throw TypeError('tag string length range: 1~255')
+    if (typeof handler !== 'function') throw TypeError('handler is not a function.')
+
+    if (tag.indexOf('@') !== 0) {
+      this.channels.add(tag)
     }
-    
+
     let linkSet;
-    if( this.linkMap.has(to) ){
+    if (this.linkMap.has(to)) {
       linkSet = this.linkMap.get(to)
-    }else {
+    } else {
       linkSet = new Set()
     }
-    
-    linkSet.add(tag )
-    this.linkMap.set( to, linkSet)
-    this.on( tag , handler)
-    this.subscribe( tag )
-    // console.log('link [to] linkMap:', to, this.linkMap )
-  
-  }
-  
 
-  unlink( to, tag){
-    if( typeof to !== 'string') throw TypeError('to(local link target) is not a string.')
-    if( typeof tag !== 'string') throw TypeError('tag is not a string.')
-    if( tag.length > 255 || tag.length == 0 ) throw TypeError('tag string length range: 1~255')
-    
-    if( !this.linkMap.has( to ) ) return;
+    linkSet.add(tag)
+    this.linkMap.set(to, linkSet)
+    this.on(tag, handler)
+    this.subscribe(tag)
+    // console.log('link [to] linkMap:', to, this.linkMap )
+
+  }
+
+
+  unlink(to, tag) {
+    if (typeof to !== 'string') throw TypeError('to(local link target) is not a string.')
+    if (typeof tag !== 'string') throw TypeError('tag is not a string.')
+    if (tag.length > 255 || tag.length == 0) throw TypeError('tag string length range: 1~255')
+
+    if (!this.linkMap.has(to)) return;
 
     let linkSet = this.linkMap.get(to)
     let tags = Array.from(linkSet)
-    for(let i=0; i< tags.length; i++){
-      if( tags[i] == tag ){
-        this.unsubscribe( tag )
+    for (let i = 0; i < tags.length; i++) {
+      if (tags[i] == tag) {
+        this.unsubscribe(tag)
         this.removeAllListeners(tag)
         linkSet.delete(tag)
-        this.linkMap.set( to , linkSet)
+        this.linkMap.set(to, linkSet)
         break;
       }
     }
@@ -886,72 +778,72 @@ export class IOCore extends EventEmitter{
     // console.log('unlink linkMap result:', this.linkMap )
   }
 
-  unlinkAll( to){
-    if( typeof to !== 'string') throw TypeError('to(local link target) is not a string.')
-    if( !this.linkMap.has( to ) ) return;
+  unlinkAll(to) {
+    if (typeof to !== 'string') throw TypeError('to(local link target) is not a string.')
+    if (!this.linkMap.has(to)) return;
 
     let linkSet = this.linkMap.get(to)
-    let tags =  Array.from(linkSet)
-    for(let i=0; i< tags.length; i++){
-        this.unsubscribe( tags[i] )
-        this.removeAllListeners(tags[i])
-        linkSet.delete(tags[i])
+    let tags = Array.from(linkSet)
+    for (let i = 0; i < tags.length; i++) {
+      this.unsubscribe(tags[i])
+      this.removeAllListeners(tags[i])
+      linkSet.delete(tags[i])
     }
-    this.linkMap.delete( to )
+    this.linkMap.delete(to)
 
     // console.log('unlinkAll linkMap result:', this.linkMap )
   }
 
 
 
-  getMetric(){
-    return { 
-      tx: this.txCounter, 
-      rx: this.rxCounter, 
-      txb: this.txBytes, 
+  getMetric() {
+    return {
+      tx: this.txCounter,
+      rx: this.rxCounter,
+      txb: this.txBytes,
       rxb: this.rxBytes,
-      last: ( Date.now() - this.lastTxRxTime) / 1000
+      last: (Date.now() - this.lastTxRxTime) / 1000
     }
 
   }
 
-  getState(){
+  getState() {
     return this.state
   }
 
-  getStateName(){ 
+  getStateName() {
     //state <number>
     //value of constant STATES.NAME < number >
     //type of constant STATES.NAME name < string uppercase >
     //stateName,eventName <string lowercase>
-    return ( STATES[ this.state ]).toLowerCase()
+    return (STATES[this.state]).toLowerCase()
   }
 
-  getSecurity(){
+  getSecurity() {
     return {
       useAuth: this.useAuth,
-      isTLS: this.TLS, 
+      isTLS: this.TLS,
       isAuthorized: this.boho.isAuthorized,
       encMode: this.encMode,
       usingEncryption: this.getEncryptionMode()
     }
   }
 
-  stateChange(state, emitEventAndMessage ){
+  stateChange(state, emitEventAndMessage) {
     // STATES constant name : string upperCase
     // eventName, .stateName : string lowerCase
     // .state : number
     let eventName = state.toLowerCase()
-    this.state = STATES[ state.toUpperCase() ] // state: number
-    if(emitEventAndMessage) this.emit(eventName, emitEventAndMessage)
-    
-    if( this.stateName !== eventName ){
+    this.state = STATES[state.toUpperCase()] // state: number
+    if (emitEventAndMessage) this.emit(eventName, emitEventAndMessage)
+
+    if (this.stateName !== eventName) {
       // console.log(`state: ${this.stateName} => ${eventName}` )
       this.stateName = eventName
       this.emit('change', eventName)
-    } 
+    }
   }
- 
+
 }
 
 

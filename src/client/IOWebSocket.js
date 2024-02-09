@@ -13,7 +13,6 @@ export class IO extends IOCore{
 
   browserVisiblePing(){
     if (document.visibilityState === 'visible') {
-      console.log('[Remote connection check] visibilityState is visible.')
       this.ping()
     }
   }

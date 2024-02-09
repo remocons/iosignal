@@ -9,22 +9,8 @@ export class Server extends EventEmitter {
 
   constructor(options, authManager , remoteManager) {
     super();
-    // console.log('Server input options', options )
-    this.manager = new Manager(this, authManager, remoteManager)
     this.apiNames = new Set()
 
-    if(options.port != 0){
-      this.startWSServer(options)
-    }
-    if (options.congPort) {
-      this.startCongServer(options)
-    }
-
-
-  }
-
-
-  startWSServer(options) {
     if (options.timeout) {
       let pingT = parseInt(options.timeout)
       if (pingT && pingT >= 1000) serverOption.timeout = pingT
@@ -35,13 +21,44 @@ export class Server extends EventEmitter {
       if (monitorT && monitorT >= 1000) serverOption.monitorPeriod = monitorT
     }
 
-    if (options.port) {
-      let port = parseInt(options.port)
-      if (port) serverOption.port = port
+    if (options.fileLogger) {
+      serverOption.fileLogger.connection.use = true;
+      serverOption.fileLogger.auth.use = true;
+      serverOption.fileLogger.attack.use = true;
     }
 
-    console.log('WebSocketServer listen:', options.port)
-    this.wss = new WebSocketServer(options)
+    if (options.showMessage) {
+      serverOption.showMessage = options.showMessage
+    }
+
+    if (options.showMetric) {
+      serverOption.showMetric = options.showMetric
+    }
+
+    if (options.timeout) {
+      serverOption.timeout = options.timeout
+    }
+
+    if (options.port) {
+      serverOption.port = parseInt(options.port)
+    }
+    
+    if (options.congPort) {
+      serverOption.congPort = parseInt(options.congPort)
+    }
+    
+    this.manager = new Manager(this, authManager, remoteManager)
+    if (serverOption.port) this.startWSServer(serverOption.port)
+    if( serverOption.congPort) this.startCongServer(serverOption.congPort)
+    
+    // console.log('serverOption:', serverOption)
+  }
+
+
+  startWSServer(port) {
+
+    console.log('opening WebSocket Server:', port)
+    this.wss = new WebSocketServer({ port })
     // this.wss.setMaxListeners(0)
 
     this.wss.on('error', (err) => {
@@ -63,8 +80,8 @@ export class Server extends EventEmitter {
 
   }
 
-  startCongServer(options) {
-    console.log('congServer listen:', options.congPort)
+  startCongServer( congPort ) {
+    console.log('opening CongSocket Server:', congPort)
 
     this.congServer = net.createServer((socket) => {
       this.manager.addRemote(socket)
@@ -74,7 +91,7 @@ export class Server extends EventEmitter {
         if(err.code == 'EADDRINUSE'){
           process.exit()
         }
-      }).listen(serverOption.congPort, () => {
+      }).listen( congPort, () => {
         // console.log('congsocket server bound' );
       });
   }

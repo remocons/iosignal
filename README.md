@@ -1,6 +1,10 @@
 # IOSignal
 
-This library provides a server and client for doing signaling(messaging) with peers that supports [`iosignal`](https://github.com/remocons/iosignal).
+[En] iosignal supports real-time communication between web browsers, node.js, and arduino. It also provides secure authentication and encrypted communication.
+The signaling protocol is built-in, so the server can be used without programming.
+
+[Kr] iosignal 은 웹브라우저, node.js ,  arduino 간의 실시간 통신을 지원합니다.  또한 보안 인증과 암호통신 기능도 제공됩니다.
+시그널링 프로토콜이 내장되어 있어서 서버는 프로그래밍 없이 사용 가능합니다.
 
 ## Install
 
@@ -8,25 +12,92 @@ This library provides a server and client for doing signaling(messaging) with pe
 $ npm i iosignal
 ```
 
-## Usage
+## IOSignal Server
 
-NodeJS Server
-```
-// ESM  filename.mjs  
-import { Server, ServerOption } from "iosignal"
+CommonJS and ESM support both
 
-// CJS  filename.cjs
-// let { Server, serverOption } = require('iosignal')
-
-serverOption.showMetric = 2;
-serverOption.port = 7777  // websocket port for browser and nodejs app.
-serverOption.congPort = 8888  // additional TCP port for Arduino
-const server = new Server( serverOption )
-console.log( 'serverOption:', serverOption )
+### ESM style
 
 ```
+import { Server } from "iosignal"
+const server = new Server( { port: 7777 } )
+```
 
-NodeJS Client example
+### CJS style
+
+```
+let { Server } = require('iosignal')
+const server = new Server( { port: 7777 } )
+```
+
+### server options
+
+
+```js
+let { Server } = require('iosignal')
+
+const server = new Server(
+  {
+    port: 7777,     
+    congPort: 8888, 
+    showMetric: 2,  
+    showMessage: 'message' // show raw signal buffer
+  })
+
+```
+
+- port: <Number> IOSignal over WebSocket
+- congPort: <Number> IOsignal over CongSocket
+- showMetric: 1|2|3 show clients cid(state) info
+- showMessage: "none"|"message" show signal buffer message
+- timeout <milliseconds> ping period & timeout (min. 1000)
+
+### IOSiognal API
+
+IOSignal API examples
+- src/api_reply.js  // 'echo', 'date', 'unixtime'
+- src/api_sudo.js   // server admin monitoring command
+- src/RedisAPI.js   // redis command and response service
+
+
+To register an API service with the server, use the api() method
+
+`api('api_name', module )`
+
+```js
+import { Server ,api_reply  } from 'iosignal'
+const server = new Server( { port: 7777 }  )
+server.api('reply', api_reply) // attach api module
+```
+
+Example of a client calling the reply API
+
+```js
+import { IO } from "iosignal"
+const io = new IO('ws://localhost:7777')
+
+io.on('ready', async ()=>{
+  let res_echo = await io.req('reply', 'echo', 'hello' )
+  let res_date = await io.req('reply', 'date' )
+  let res_unixtime = await io.req('reply', 'unixtime' )
+
+  if( res_echo.ok ) console.log( res_echo.body  )
+  if( res_date.ok ) console.log( res_date.body  )
+  if( res_unixtime.ok ) console.log( res_unixtime.body  )
+
+});
+
+// result
+[ 'hello' ]
+Fri, 09 Feb 2024 14:24:37 GMT
+1707488677
+
+```
+
+
+## IOSignal Client
+
+### NodeJS Client
 ```
 // ESM
 import { IO } from "iosignal"
@@ -34,7 +105,7 @@ import { IO } from "iosignal"
 // CJS
 // const { IO } = require('iosignal')
 
-const io = new IO('wss://io.remocon.kr/ws')
+const io = new IO('wss://io.iosignal.net/ws')
 
 io.on('ready', ()=>{
   console.log('ready cid:', io.cid)
@@ -49,17 +120,17 @@ io.on('error',err=>{
     console.log('err', err)
 })
 
-
 ```
 
-IIFE: WebBrowser client
-```
+### Browser Client : IIFE
+
+```html
 <html>
-...
+
 <script src="../dist/iosignal.min.js"></script>
-...
+
   <script>
-    console.log('IO', IO)  // default global variable name is capital IO
+    console.log('IO', IO)  // default global variable name is IO
 
     var io1 = new IO('ws://localhost:7777')
     var io2 = new IO('ws://localhost:7777')
@@ -106,17 +177,15 @@ IIFE: WebBrowser client
 </html>
 ```
 
-ESM: WebBrowser client
-```
+### Browser client : ESM
+```html
 <html>
-  ...
+
   <script type="module">
-    import { IO, Boho, MBP, Buffer, sha256  } from "../dist/iosignal.esm.js"
+    import { IO, Boho, MBP, Buffer  } from "../dist/iosignal.esm.js"
 
-    console.log('sha256.hash("hi")',  sha256.hash('hi'))    
-
-    const = io = new IO('wss://io.remocon.kr/ws')
-    io.listen('target#topic', (...args)={
+    const = io = new IO('wss://io.iosignal.net/ws')
+    io.listen('channel#topic', (...args)={
       console.log( args )
     })
 
@@ -125,9 +194,10 @@ ESM: WebBrowser client
     })
 
   </script>
-  ...
+
 </html>
 ```
+
 ## Features
 
 ### Built-in Message Trasport Protocol
@@ -151,10 +221,10 @@ ESM: WebBrowser client
 ![IOSignal](./img/iosignal_stack.png)
 
 ## iosignal repositories.
-- Javascript: `iosignal` [ [github](https://github.com/remocons/iosignal) | [npm](https://www.npmjs.com/package/iosignal) ]
+- JavaScript: `iosignal` [ [github](https://github.com/remocons/iosignal) | [npm](https://www.npmjs.com/package/iosignal) ]
   - Node.js server ( WebSocket, CongSocket)
   - Node.js client ( WebSocket, CongSocket)
-  - Web Browser client( WebSocket)
+  - Web Browser Client( WebSocket)
   
 - Arduino client: 
   - Arduino Library Manager: `IOSignal`

@@ -2,8 +2,8 @@
 
 export let serverOption = {
   clientTracking: false,
-  port: 7777,
-  congPort: null,
+  port: 0,
+  congPort: 0,
   timeout: 50000,
   showMessage: 'none',
   showMetric: 0,

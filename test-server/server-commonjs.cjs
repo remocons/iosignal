@@ -1,8 +1,9 @@
-let { Server, serverOption } = require('iosignal')
+let { Server } = require('iosignal')
 
-  serverOption.showMetric = 2;
-  // serverOption.port = 7777  // default. websocket port 7777 will be open.
-  serverOption.congPort = 8888  // additional tcp cong port open.  for Arduino like devices.
-  const server = new Server( serverOption )
-  console.log( 'serverOption:', serverOption )
-
+const server = new Server(
+  {
+    port: 7777,     // WebSocket
+    congPort: 8888, // CongSocket
+    showMetric: 2,  // show clients cid(state) info
+    showMessage: 'message' // show raw signal buffer
+  })
