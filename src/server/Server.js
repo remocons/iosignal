@@ -21,11 +21,6 @@ export class Server extends EventEmitter {
       if (monitorT && monitorT >= 1000) serverOption.monitorPeriod = monitorT
     }
 
-    if (options.fileLogger) {
-      serverOption.fileLogger.connection.use = true;
-      serverOption.fileLogger.auth.use = true;
-      serverOption.fileLogger.attack.use = true;
-    }
 
     if (options.showMessage) {
       serverOption.showMessage = options.showMessage
