@@ -59,7 +59,7 @@ export class Metric{
       rxBytes: this.manager.rxBytes,
     }]
 
-    if ( prn ) cconsole.table(metric, [ 'lastSSID', 'remotes', 'channels','txBytes','rxBytes' ]);
+    if ( prn ) console.table(metric, [ 'lastSSID', 'remotes', 'channels','txBytes','rxBytes' ]);
 
     return metric[0]
   }
