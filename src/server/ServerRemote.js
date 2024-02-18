@@ -25,7 +25,7 @@ export class ServerRemote extends ServerRemoteCore {
 
     if( util.isPrivateIP(this.ip)){
       // connection from local or private network has default private channel.
-      this.HOME_CHANNEL = 'PRIVATE:' //this.manager.getPrivateChannel(this)
+      this.HOME_CHANNEL = 'PRIVATE:'
       this.privateNode = true 
     }else{
       // client have default channel name as global IP address.
@@ -62,14 +62,12 @@ export class ServerRemote extends ServerRemoteCore {
       
       socket.on('error', e=>{ console.log('TCP Socket error',e )})
       socket.on('close', e=>{ 
-        // console.log('cong socket close event')
         this.manager.removeRemote(this);
         })
       
     }
-
-
   }
+
   onWrongCongPacketMessage( message){
     /*
       * three category CongSocket connection.
@@ -104,12 +102,10 @@ export class ServerRemote extends ServerRemoteCore {
     }
   }
 
-  // 
-  permissionChecker(){
-    
+
+  permissionChecker(){    
     // type1.
     // accept some traffic before authorize.
-    
     const limitBytes = 100
     
     let txBytes =  this.socket.bytesWritten || this.socket._socket?.bytesWritten
@@ -117,9 +113,7 @@ export class ServerRemote extends ServerRemoteCore {
 
     if( txBytes == undefined) txBytes = 0
     if( rxBytes == undefined) rxBytes = 0
-
     // console.log( txBytes, rxBytes )
-
 
   }
  
@@ -136,7 +130,7 @@ export class ServerRemote extends ServerRemoteCore {
     return req.headers["x-forwarded-proto"];   //https or undefined
   }
 
-  // 정리요함
+
   // nginx https reversproxy , http redirect , direct tcp 
   getRemoteIP(req) { //req or ip string
     let ip;
@@ -154,10 +148,8 @@ export class ServerRemote extends ServerRemoteCore {
       ip = "0.0.0.0";
     }
     // console.log('getRemoteIP', ip )
-    
     return ip;
   }
-
 
   ping(){
     if(this.socketType === 'websocket'){
