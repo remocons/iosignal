@@ -50,6 +50,13 @@ export let quotaTable = {
   
   // you can add your custom quota level.
 
+  // Remote service node
+  // High Quota, No root permission.
+  200: { 
+    signalSize: 1048576 * 20,
+    publishCounter: 10000,
+    trafficRate: 1048576 * 100
+  },
   // super admin or root user.
   // to monitor, metric, sudo command, db acess
   255: { 

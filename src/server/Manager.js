@@ -141,7 +141,7 @@ export class Manager{
   }
 
 
-
+// unix wall like
   serverSignal(obj) {
     let sigPack = MBP.pack(
       MBP.MB('#MsgType', '8', IOMsg.SERVER_SIGNAL),
@@ -188,6 +188,21 @@ export class Manager{
     }
   }
 
+  serverSignalTo( tag, ...args ){
+    let cid = tag.split('@')[0]
+    let topic = tag.split('@')[1]
+    let sigPack = getSignalPack( '@'+topic, ...args )
+    // console.log('tag split', cid )
+    if (cid && this.cid2remote.has(cid)) {
+      let targetRemote = this.cid2remote.get(cid)
+      console.log('target', targetRemote.state ,targetRemote.cid )
+      targetRemote.send_enc_mode(sigPack)
+      return
+    }else{
+      return "no cid"
+    }
+  }
+
   sender(tag, remote, message) {
     if(serverOption.memberOnly && !remote.boho.isAuthorized){
       // console.log("## MemberOnly, reject unAuthorized remote." )
@@ -200,7 +215,7 @@ export class Manager{
 
     let cidIndex = tag.indexOf('@');
     if (cidIndex === 0) {
-      // ** CID_PUB is not uni-cast but multic-cast.
+      // ** CID_PUB multi-cast
       // [cid_pub]  @topic ,  @$retainTopic
       // modify signalpack with cid_appneded tag.
       tag = remote.cid + tag;
@@ -214,6 +229,7 @@ export class Manager{
       if (this.cid2remote.has(targetCId)) {
         //rm cid from tag.
         let ommitCIdTag = '@' + tag.split('@')[1]
+        // console.log('uni-cast tag change from', tag, 'to' , ommitCIdTag )
         message = this.getNewSignalTagMessage(message, ommitCIdTag)
         // console.log(`origin tag: ${tag} omitTag: ${this.getSignalTag(message)}`)
         this.cid2remote.get(targetCId).send_enc_mode(message)

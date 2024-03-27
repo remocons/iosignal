@@ -346,7 +346,7 @@ export class IOCore extends EventEmitter {
               break;
 
             case PAYLOAD_TYPE.MBA:
-              let mbaObject = MBP.unpack(buffer)
+              let mbaObject = MBP.unpack(payloadBuffer)
               if (tag.indexOf('@') === 0) this.emit('@', ...mbaObject.args, tag)
               if (tag !== '@') this.emit(tag, ...mbaObject.args, tag)
               break;

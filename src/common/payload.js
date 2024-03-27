@@ -17,12 +17,13 @@ export function getSignalPack( tag, ...args ){
       MBP.MB('#payloadType', '8', payload.type )
       )
   }else if( payload.type == PAYLOAD_TYPE.MBA ){
+    let mbaBuffer = MBP.pack( MBP.MBA(...args))
     sigPack = MBP.pack( 
       MBP.MB('#MsgType','8', IOMsg.SIGNAL) , 
       MBP.MB('#tagLen','8', tagEncoded.byteLength),
       MBP.MB('#tag', tagEncoded),
       MBP.MB('#payloadType', '8', payload.type ),
-      MBP.MBA(...args)
+      MBP.MB('#mbaBuffer', mbaBuffer )
       )
   }else { 
     sigPack = MBP.pack( 
@@ -74,4 +75,9 @@ export function parsePayload( args){
   }
   
   return { type: type, buffer: pack }
+}
+
+export function getPayloadFromSignalPack( signalPack ){
+  let tagLen = signalPack.readUint8(1)
+  return signalPack.subarray(3 + tagLen)
 }

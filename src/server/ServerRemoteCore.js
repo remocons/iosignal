@@ -73,19 +73,19 @@ export class ServerRemoteCore {
 
 
   showMessageLog(message, isBinary) {
-    let from = this.boho.isAuthorized ? ` id: ${this.did}(${this.cid})` : ""
+    let from = this.boho.isAuthorized ? `did: ${this.did} ${this.cid}@` : `${this.cid}@`
     if (isBinary) {
       let msgTypeName = IOMsg[message[0]]
       if (!msgTypeName) msgTypeName = BohoMsg[message[0]]
-      msgTypeName = '#' + this.ssid + '(' + this.cid + ') [ ' + msgTypeName + ' ]';
+        msgTypeName =' [' + msgTypeName + ']';
       if (message.byteLength > 40) {
-        console.log(msgTypeName + from + ' LEN:', message.length);
+        console.log(from + msgTypeName + ' LEN:', message.length);
       } else {
-        console.log(msgTypeName + from, message);
+        console.log(from + msgTypeName , message);
       }
 
     } else {
-      console.log(from + '[TEXT MSG] %s', message);
+      console.log(from + ' [TEXT] %s', message);
     }
   }
 
