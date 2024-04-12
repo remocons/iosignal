@@ -29,7 +29,7 @@ export let serverOption = {
     trafficRate: false,
     disconnect: false
   },
-  defaultQuotaIndex: 0,
+  defaultQuotaIndex: 3,
   adminLevel: 255,
 
   debug:{

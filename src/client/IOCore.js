@@ -47,7 +47,7 @@ export class IOCore extends EventEmitter {
     this.promiseTimeOut = SIZE_LIMIT.PROMISE_TIMEOUT
     this.mid = 0  // promise message id 
 
-    this.level = 0; // also defaultQuotaLevel
+    this.level = 3; // also defaultQuotaLevel
     this.quota = quotaTable[this.level];
     this.serverSet = {}
     this.linkMap = new Map()
