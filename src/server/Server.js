@@ -7,7 +7,7 @@ import { STATUS } from '../api/api_constant.js'
 
 export class Server extends EventEmitter {
 
-  constructor(options, authManager , remoteManager) {
+  constructor(options, authManager ) {
     super();
     this.apiNames = new Set()
 
@@ -42,7 +42,7 @@ export class Server extends EventEmitter {
       serverOption.congPort = parseInt(options.congPort)
     }
     
-    this.manager = new Manager(this, authManager, remoteManager)
+    this.manager = new Manager(this, authManager)
     if (serverOption.port) this.startWSServer(serverOption.port)
     if( serverOption.congPort) this.startCongServer(serverOption.congPort)
     
