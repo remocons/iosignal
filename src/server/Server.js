@@ -10,6 +10,7 @@ export class Server extends EventEmitter {
   constructor(options, authManager ) {
     super();
     this.apiNames = new Set()
+    this.wss = {};
 
     if (options.timeout) {
       let pingT = parseInt(options.timeout)
@@ -37,23 +38,40 @@ export class Server extends EventEmitter {
     if (options.port) {
       serverOption.port = parseInt(options.port)
     }
+
+    if (options.httpServer) {
+      serverOption.httpServer = options.httpServer
+    }
     
     if (options.congPort) {
       serverOption.congPort = parseInt(options.congPort)
     }
     
     this.manager = new Manager(this, authManager)
-    if (serverOption.port) this.startWSServer(serverOption.port)
+
+    if (serverOption.port || serverOption.httpServer ) this.startWSServer(serverOption)
     if( serverOption.congPort) this.startCongServer(serverOption.congPort)
     
     // console.log('serverOption:', serverOption)
   }
 
 
-  startWSServer(port) {
+  startWSServer(serverOption) {
 
-    console.log('opening WebSocket Server:', port)
-    this.wss = new WebSocketServer({ port })
+    if(serverOption.port ){
+      console.log('opening WebSocket Server port:', serverOption.port)
+      this.wss = new WebSocketServer({ port: serverOption.port })
+    }else if( serverOption.httpServer ){
+      console.log('opening WebSocket Server external httpServer:' )
+      this.wss = new WebSocketServer({ server: serverOption.httpServer })
+    }else{
+      throw new TypeError(
+        'One and only one of the "port", "httpServer"' +
+          'must be specified'
+      );
+    }
+
+
     // this.wss.setMaxListeners(0)
 
     this.wss.on('error', (err) => {

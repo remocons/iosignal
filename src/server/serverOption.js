@@ -2,7 +2,8 @@
 
 export let serverOption = {
   clientTracking: false,
-  port: 0,
+  port: 0, //wsPort
+  httpServer: null,
   congPort: 0,
   timeout: 50000,
   showMessage: 'none',

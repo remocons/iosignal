@@ -1,6 +1,6 @@
 {
   "name": "iosignal",
-  "version": "1.4.2",
+  "version": "1.5.0",
   "description": "iosignal",
   "type": "module",
   "main": "./dist/iosignal.cjs",
@@ -35,10 +35,9 @@
   "license": "MIT",
   "dependencies": {
     "boho": "^0.8.2",
-    "commander": "^9.5.0",
     "eventemitter3": "^5.0.1",
     "meta-buffer-pack": "^1.4.0",
-    "ws": "^8.16.0"
+    "ws": "^8.17.1"
   },
   "optionalDependencies": {
     "bufferutil": "^4.0.8",
