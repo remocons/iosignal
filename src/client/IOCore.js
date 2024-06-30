@@ -352,7 +352,7 @@ export class IOCore extends EventEmitter {
               break;
 
             default:
-              // console.log('## Unkown payloadtype', payloadType)
+            // console.log('## Unkown payloadtype', payloadType)
           }
 
         } catch (err) {
