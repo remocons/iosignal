@@ -33,6 +33,7 @@
     console.log('sha256.hash("hi")',  IO.Boho.sha256.hash('hi'))
 
     var ESM_IO ;
+    // IO.binaryType = "blob"
     var io1 = new IO('ws://localhost:7777')
     var io2 = new IO('ws://localhost:7777')
     var io3 = new IO('ws://localhost:7777')
@@ -79,7 +80,7 @@
       addMessage('ws.error')
     }
   </script>
-  <script type="module">
+  <!-- <script type="module">
     import { IO, Boho, MBP, Buffer, sha256  } from "../dist/iosignal.esm.js"
     ESM_IO = IO 
     console.log('ESM:')
@@ -88,6 +89,6 @@
     console.log('MBP', MBP )
     console.log('Buffer', Buffer)
     console.log('sha256.hash("hi")',  sha256.hash('hi'))
-  </script>
+  </script> -->
 </body>
 </html>

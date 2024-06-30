@@ -73,7 +73,7 @@ export class IO extends IOCore {
   }
 
   onWebSocketMessage(event) {
-    // event.data is arrayBuffer
+    // event.data is arrayBuffer  or text_message
     this.rxCounter++;
     this.lastTxRxTime = Date.now();
     let buffer = Buffer.from(event.data)
@@ -82,11 +82,16 @@ export class IO extends IOCore {
   }
 
   async onWebSocketMessageBlob(event) {
-    // event.data is Blob
+    // event.data is Blob or text_message
     this.rxCounter++;
     this.lastTxRxTime = Date.now();
-    let ab = await event.data.arrayBuffer()
-    let buffer = Buffer.from(ab)
+    let buffer;
+    if( event.data instanceof Blob){
+      let ab = await event.data.arrayBuffer()
+      buffer = Buffer.from(ab)
+    }else{
+      buffer = Buffer.from(event.data)
+    }
     this.rxBytes += buffer.byteLength
     this.emit('socket_data', buffer);
   }
