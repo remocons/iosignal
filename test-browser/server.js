@@ -6,6 +6,6 @@ const options = {
   showMessage: 'message'
 }
 
-const server = new Server( options )
+const server = new Server(options)
 
 

@@ -7,6 +7,6 @@ const options = {
 }
 
 // const server = new Server( options, new Auth_File('../authInfo.json') )  // JSON version.  cannot add comments.
-const server = new Server( options, new Auth_File('../auth_file.mjs') )      // JS version. it support comments. 
+const server = new Server(options, new Auth_File('../auth_file.mjs'))      // JS version. it support comments. 
 
 

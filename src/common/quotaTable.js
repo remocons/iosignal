@@ -24,42 +24,42 @@ export let quotaTable = {
 
   // WebSocket (browser and node app)
   3: { // authorized basic.
-    signalSize: 1048576,  
+    signalSize: 1048576,
     publishCounter: 10,
     trafficRate: 1048576 * 20
   },
 
   // WebSocket (browser and node app)
   10: { //  anonymouse
-    signalSize: 1500,  
+    signalSize: 1500,
     publishCounter: 5,
     trafficRate: 1048576 * 20
   },
 
   11: { // authorized basic.
-    signalSize: 65535,  
+    signalSize: 65535,
     publishCounter: 10,
     trafficRate: 1048576 * 20
   },
-  
+
   12: { // authorized power.
-    signalSize: 1048576,  
+    signalSize: 1048576,
     publishCounter: 100,
     trafficRate: 1048576 * 20
   },
-  
-  // you can add your custom quota level.
+
+  // you can add your custom quota levels.
 
   // Remote service node
   // High Quota, No root permission.
-  200: { 
+  200: {
     signalSize: 1048576 * 20,
     publishCounter: 10000,
     trafficRate: 1048576 * 100
   },
   // super admin or root user.
-  // to monitor, metric, sudo command, db acess
-  255: { 
+  // to monitor, metric, sudo command, db access.
+  255: {
     signalSize: 1048576 * 20,
     publishCounter: 10000,
     trafficRate: 1048576 * 100

@@ -21,19 +21,19 @@ import { BohoAuth } from './BohoAuth.js';
 import { sha256 } from 'boho'
 
 export class Auth_Env extends BohoAuth {
-  constructor( authInfo) {
+  constructor(authInfo) {
     super()
     let id_keys;
-    if( authInfo ){
+    if (authInfo) {
       id_keys = authInfo.split(',')
-    }else if ( process.env.BOHO_AUTH) {
+    } else if (process.env.BOHO_AUTH) {
       authInfo = process.env.BOHO_AUTH
       id_keys = process.env.BOHO_AUTH.split(',')
-    }else{
+    } else {
       console.log("Auth_Env: None of process.env.BOHO_AUTH or authInfo")
       process.exit()
     }
-    
+
     this.AUTH = new Map();
 
     if (id_keys.length >= 1) {
@@ -44,9 +44,7 @@ export class Auth_Env extends BohoAuth {
         let level = v.split('.')[2]
         level = parseInt(level)
 
-        // console.log('typeof level', level, typeof level)
-
-        if (did && key && typeof level =='number') {
+        if (did && key && typeof level == 'number') {
           let cid = did;
           this.addAuth(did, key, cid, level)
         } else {
@@ -66,7 +64,7 @@ export class Auth_Env extends BohoAuth {
     return this.AUTH.get(id)
   }
   async getAuthIdList() {
-    return Array.from( this.AUTH.keys() )
+    return Array.from(this.AUTH.keys())
   }
 
   addAuth(id, keyStr, cid, level = 0) {

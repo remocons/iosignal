@@ -1,6 +1,6 @@
 {
   "name": "iosignal",
-  "version": "1.6.1",
+  "version": "1.7.0",
   "description": "iosignal",
   "type": "module",
   "main": "./dist/iosignal.cjs",
@@ -49,7 +49,7 @@
   },
   "homepage": "https://iosignal.net",
   "keywords": [
-    "io",
+    "websocket",
     "pubsub",
     "arduino",
     "iot",

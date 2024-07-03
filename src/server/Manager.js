@@ -1,5 +1,5 @@
 import { MBP } from 'meta-buffer-pack'
-import { ServerRemote } from './ServerRemote.js'
+import { Remote } from './Remote.js'
 import { serverOption } from './serverOption.js'
 import { IOMsg, CLIENT_STATE } from '../common/constants.js'
 import { getSignalPack } from '../common/payload.js';
@@ -9,35 +9,33 @@ import { Metric } from './Metric.js'
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
 
-export class Manager{
+export class Manager {
 
-  constructor( server, authManager  ) {
+  constructor(server, authManager) {
     this.server = server;
     this.txBytes = 0;
     this.rxBytes = 0;
 
     this.authManager = authManager;
-    // TIP. authManager module is option.
-    // if exist: used by ServerRemoteCore for the auth. process.
 
     this.connectionLogger;
     if (serverOption.fileLogger.connection.use) {
-      this.connectionLogger = new FileLogger( serverOption.fileLogger.connection.path)
-      console.log('Manager: begin file logger [connection]')
+      this.connectionLogger = new FileLogger(serverOption.fileLogger.connection.path)
+      // console.log('Manager: begin file logger [connection]')
     }
 
     this.attackLogger;
-    if( serverOption.fileLogger.attack.use ){
-      this.attackLogger = new FileLogger( serverOption.fileLogger.attack.path )
-      console.log('Manager: begin file logger.[attack]')
+    if (serverOption.fileLogger.attack.use) {
+      this.attackLogger = new FileLogger(serverOption.fileLogger.attack.path)
+      // console.log('Manager: begin file logger.[attack]')
     }
 
-    this.remotes = new Set(); // total ServerRemotes
-    this.channel_map = new Map()  //  key: channelName  value: < ServerRemote : Set >
+    this.remotes = new Set();         // total remotes
+    this.cid2remote = new Map();      // key: cid -> value: remote
+    this.retain_messages = new Map()  // key: tag, data: signalMessage
+    this.channel_map = new Map()      // key: channelName -> value: < remote : Set >
     this.CHANNEL_PREFIX = 'CH:'
     this.CID_PREFIX = 'CID:'
-    this.cid2remote = new Map(); //  map:[ key:cid -> value:remote ]
-    this.retain_messages = new Map() // key: tag, data: signalMessage
     this.metric = new Metric(this)
     this.lastSSID = 0;
 
@@ -56,14 +54,14 @@ export class Manager{
         } else {
           remo.ping()
         }
-        // console.log('<< PING')
+
       });
     }, serverOption.timeout);
 
     if (serverOption.showMetric) {
       this.monitIntervalID = setInterval((e) => {
-          this.monitor()
-        }, serverOption.monitorPeriod);
+        this.monitor()
+      }, serverOption.monitorPeriod);
     }
 
 
@@ -72,7 +70,7 @@ export class Manager{
 
   addRemote(socket, req) {
     socket.isAlive = true;
-    let remote = new ServerRemote(socket, req, this)
+    let remote = new Remote(socket, req, this)
     this.remotes.add(remote)
     remote.send(Buffer.from([IOMsg.SERVER_READY]))
     remote.setState(CLIENT_STATE.SENT_SERVER_READY)
@@ -84,7 +82,7 @@ export class Manager{
 
 
   removeRemote(remote) {
-    // console.log('#### manager.removeRemote()', remote.cid, remote.uid)
+
     let remoteInfo = `- IP:${remote.ip} #${remote.ssid} cid:${remote.cid} ${remote?.socket.socketType === 'websocket' ? "WS" : "CS"} `
     if (this.connectionLogger) this.connectionLogger.log(remoteInfo)
     this.deligateSignal(remote, '@state', 'close')
@@ -97,16 +95,16 @@ export class Manager{
         // console.log(`-- channel [ ${ch} ] removes subscriber id: ${remote.cid} `)
         remotes.delete(remote)
         if (remotes.size == 0) this.channel_map.delete(ch)
-      }else{
+      } else {
         // console.log('no such a ch: ', ch )
       }
     }
 
     // retain message policy
-    // type 1. keep if authUser, delete if anonymouse.
-    if( remote.boho.isAuthorized ){
+    // type 1. ( isAuthorizedUser) ? keep : delete.
+    if (remote.boho.isAuthorized) {
       //keep retain signal.
-    }else{
+    } else {
       // anonymouse: remove the cid publish channel
       for (let ch of remote.retain_signal.keys()) {
         // console.log('cid retain_signal.keys:', ch )
@@ -114,17 +112,17 @@ export class Manager{
         if (this.channel_map.has(ch)) {
           this.channel_map.delete(ch)
           // console.log(`-- deleted cid pub ch [ ${ch} ]. cid publisher id: ${remote.cid} `)
-        }else{
+        } else {
           // console.log('no such a retain_signal tag: ', ch )
         }
       }
     }
- 
 
-    if( remote.uid && this.server.apiNames.has('account')){
-      let req = { topic:'detachUserRemote'}
+
+    if (remote.uid && this.server.apiNames.has('account')) {
+      let req = { topic: 'detachUserRemote' }
       req.args = ['caller:manager.removeRemote']
-      this.server.emit('account', remote, req )
+      this.server.emit('account', remote, req)
     }
 
     this.remotes.delete(remote)
@@ -134,7 +132,7 @@ export class Manager{
   }
 
 
-// unix wall like
+  // it's like unix wall command.
   serverSignal(obj) {
     let sigPack = MBP.pack(
       MBP.MB('#MsgType', '8', IOMsg.SERVER_SIGNAL),
@@ -171,40 +169,38 @@ export class Manager{
     this.sender(tag, remote, sigPack)
   }
 
-  adminSignal( cid, message){
+  adminSignal(cid, message) {
     if (this.cid2remote.has(cid)) {
       this.cid2remote.get(cid).send_enc_mode(message)
-      // return ['ok', 1]
       return
-    }else{
+    } else {
       return "no cid"
     }
   }
 
-  serverSignalTo( tag, ...args ){
+  serverSignalTo(tag, ...args) {
     let cid = tag.split('@')[0]
     let topic = tag.split('@')[1]
-    let sigPack = getSignalPack( '@'+topic, ...args )
-    // console.log('tag split', cid )
+    let sigPack = getSignalPack('@' + topic, ...args)
     if (cid && this.cid2remote.has(cid)) {
       let targetRemote = this.cid2remote.get(cid)
-      console.log('target', targetRemote.state ,targetRemote.cid )
+      console.log('target', targetRemote.state, targetRemote.cid)
       targetRemote.send_enc_mode(sigPack)
       return
-    }else{
+    } else {
       return "no cid"
     }
   }
 
   sender(tag, remote, message) {
-    if(serverOption.memberOnly && !remote.boho.isAuthorized){
+    if (serverOption.memberOnly && !remote.boho.isAuthorized) {
       // console.log("## MemberOnly, reject unAuthorized remote." )
       remote.send(Buffer.from([IOMsg.SERVER_CLEAR_AUTH]))
       remote.close()
       return ['err', 'not autrized']
     }
 
-    if( tag.indexOf('$') == 0 ) return ['err', 'prefix $ is reserved for userSet tag.']
+    if (tag.indexOf('$') == 0) return ['err', 'prefix $ is reserved for userSet tag.']
 
     let cidIndex = tag.indexOf('@');
     if (cidIndex === 0) {
@@ -214,10 +210,8 @@ export class Manager{
       tag = remote.cid + tag;
       message = this.getNewSignalTagMessage(message, tag)
 
-      // console.log('cid_pub new tag:', tag, this.getSignalTag(message ))
     } else if (cidIndex > 0) {
       // uni-cast.  
-      // console.log('unicast to:', tag)
       let targetCId = tag.split('@')[0];
       if (this.cid2remote.has(targetCId)) {
         //rm cid from tag.
@@ -229,8 +223,6 @@ export class Manager{
         return ['ok', 1]
       }
       return ['err', 'Invalid cid']
-      // pub message from cid. 
-      // you already subscribe the cid.  
     } else {
       // console.log('ch_pub tag:', tag)
       //else channel publish message
@@ -247,7 +239,7 @@ export class Manager{
     // (blank)#topic  ->  home_channel#topic. 
     if (tag.indexOf('#') === 0) {
       tag = remote.HOME_CHANNEL + tag;
-    } else if( tag.includes('@')){
+    } else if (tag.includes('@')) {
       tag = this.CID_PREFIX + tag;
     } else {
       tag = this.CHANNEL_PREFIX + tag;
@@ -265,11 +257,9 @@ export class Manager{
         // cid retain signal stored inside remote.
         let retainTag = tag.split('@')[1]
         remote.retain_signal.set(retainTag, message)
-        // console.log('## cid retain tag, size: ', retainTag, remote.retain_signal.size)
       } else {
         // channel retain signal stored inside manager.
         this.retain_messages.set(tag, message)
-        // console.log('## channel retain tag, size: ', tag, this.retain_messages.size)
       }
 
     } else {
@@ -315,11 +305,10 @@ export class Manager{
 
 
   subscribe(chArr, remote) {
-    // console.log('ChannelManager:: subscribe: ',chArr)
     chArr.forEach(tag => {
       if (tag.indexOf('#') === 0) {
         tag = remote.HOME_CHANNEL + tag
-      } else if( tag.includes('@')){
+      } else if (tag.includes('@')) {
         tag = this.CID_PREFIX + tag;
       } else {
         tag = this.CHANNEL_PREFIX + tag
@@ -331,11 +320,9 @@ export class Manager{
       } else {
         this.channel_map.set(tag, new Set([remote]))
       }
-      // console.log('Manager::map:', this.channel_map.keys() )
 
       // 2.add to remote channels.
       remote.channels.add(tag)
-      // console.log('remote.channels set.', remote.channels  )
 
       // 3. send retain message if available.
       if (tag.includes('$')
@@ -356,8 +343,7 @@ export class Manager{
         } else if (this.retain_messages.has(tag)) {
           retainMessage = this.retain_messages.get(tag)
         }
-        // console.log('send retainMessage buffer',retainMessage)
-        if(retainMessage) remote.send_enc_mode(retainMessage)
+        if (retainMessage) remote.send_enc_mode(retainMessage)
 
       }
 
@@ -384,7 +370,7 @@ export class Manager{
         // substitution home_channel
         if (ch.indexOf('#') === 0) {
           ch = remote.HOME_CHANNEL + ch;
-        } else if( ch.includes('@')){
+        } else if (ch.includes('@')) {
           ch = this.CID_PREFIX + ch;
         } else {
           ch = this.CHANNEL_PREFIX + ch;
@@ -418,13 +404,11 @@ export class Manager{
       this.metric.channels(serverOption.showChannel);
     }
     let mode = parseInt(serverOption.showMetric)
-    console.log('monitor metric type:', mode)
     switch (mode) {
       case 1:
         this.metric.oneline(true);
         break;
       case 2:
-        // this.metric.getCIdList(true);
         this.metric.getRemotes(true);
         break;
       case 3:

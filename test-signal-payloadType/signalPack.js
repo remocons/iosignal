@@ -23,7 +23,7 @@ console.log(PAYLOAD_TYPE[parsePayload(type5).type], type5)  // MBA
 
 
 let signalTag = 'channel'
-let signalPack = getSignalPack( signalTag, ...type5)
+let signalPack = getSignalPack(signalTag, ...type5)
 console.log('signalPack', signalPack)
 
 let payloadBuffer = getPayloadFromSignalPack(signalPack)

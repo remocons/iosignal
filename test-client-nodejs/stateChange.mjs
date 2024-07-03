@@ -3,17 +3,17 @@ import { IO } from "iosignal"
 
 const io = new IO('ws://localhost:7777')
 
-io.on('ready', ()=>{
+io.on('ready', () => {
   console.log('ready cid:', io.cid)
 });
 
-io.on('change', ( evt )=>{
-  console.log('\nchange event:', evt  )
-  console.log('io.state<Number>', io.state  )
-  console.log('io.stateName<String>:', io.stateName )
+io.on('change', (evt) => {
+  console.log('\nchange event:', evt)
+  console.log('io.state<Number>', io.state)
+  console.log('io.stateName<String>:', io.stateName)
 });
 
 
-io.on('error',err=>{
-    console.log('err', err)
+io.on('error', err => {
+  console.log('err', err)
 })

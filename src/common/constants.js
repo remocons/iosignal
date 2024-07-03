@@ -1,5 +1,5 @@
 
-// IOclient state
+// Client STATES: name and number
 export const STATES = {
   OPENING: 0,
   OPEN: 1,
@@ -45,24 +45,17 @@ export const SIZE_LIMIT = {
 }
 
 export let PAYLOAD_TYPE = {
-  EMPTY: 0, 
+  EMPTY: 0,
   TEXT: 1,
-  BINARY: 2, 
-  OBJECT: 3, // one stringify able object. no buffer.
-  MJSON: 4, // multiple stringify able obejct.  JSON string. with top levle array , no buffer
-  MBA: 5  // "meta_buffer_arguments" arbitary types.  buffer included.
+  BINARY: 2,
+  OBJECT: 3, // one stringifiable object. it's string.
+  MJSON: 4, // multiple stringifiable obejct. it's top-level array JSON string.
+  MBA: 5  // "meta_buffer_arguments" arbitary types.  it's meta-buffer-pack.
 }
 for (let c in PAYLOAD_TYPE) { PAYLOAD_TYPE[PAYLOAD_TYPE[c]] = c }
-// console.log( PAYLOAD_TYPE )
 
-// MJSON: multiple arguments 
-// accepet only string, number, root depth js primittive object, 
-// unpack and will send to receiver handler with multiple params.
 
-// MBA: buffer pack of multiple arguments.  check "meta-buffer-pack" module. 
-// MBA: when armuents includes raw Buffer( TypedArray )
-
-// IO message pack one byte header. 
+// IO message's one-byte headers.
 export let IOMsg = {
 
   /* 
@@ -71,7 +64,7 @@ export let IOMsg = {
   * 32~126: ascii charactor
   * 127: DEL
   */
-  
+
   // ADMIN_REQ: 0xA0,
 
   // DO NOT USE: 0xB0~ 0xBF
@@ -89,38 +82,38 @@ export let IOMsg = {
 
   // C. IO status contorl.
   SERVER_READY: 0xC0,
-  CID_REQ: 0xC1, 
-  CID_RES: 0xC2,  
+  CID_REQ: 0xC1,
+  CID_RES: 0xC2,
   QUOTA_LEVEL: 0xC3,
-  SERVER_CLEAR_AUTH: 0xC4, 
+  SERVER_CLEAR_AUTH: 0xC4,
   SERVER_REDIRECT: 0xC5,
 
   // ..
   LOOP: 0xCB,
   ECHO: 0xCC,
-  PING: 0xCD,  
+  PING: 0xCD,
   PONG: 0xCE,
   CLOSE: 0xCF,
   // ~CF
 
 
   // D. IO data signaling
-  SIGNAL: 0xD0,  
-  SIGNAL_REQ: 0xD1, 
-  SIGNAL_E2E: 0xD2, 
+  SIGNAL: 0xD0,
+  SIGNAL_REQ: 0xD1,
+  SIGNAL_E2E: 0xD2,
   SUBSCRIBE: 0xD3,
-  SUBSCRIBE_REQ: 0xD4, 
-  UNSUBSCRIBE: 0xD5, 
-  SERVER_SIGNAL: 0xD6, 
+  SUBSCRIBE_REQ: 0xD4,
+  UNSUBSCRIBE: 0xD5,
+  SERVER_SIGNAL: 0xD6,
 
   // ..
   IAM: 0xD9,
   IAM_RES: 0xDA,
-  
+
   //.. 
   SET: 0xDB,   //
-  RESPONSE_CODE: 0xDC,   
-  RESPONSE_MBP: 0xDD,   
+  RESPONSE_CODE: 0xDC,
+  RESPONSE_MBP: 0xDD,
 
   REQUEST: 0xDE, //client public
   RESPONSE: 0xDF,
@@ -139,16 +132,12 @@ export let IOMsg = {
 }
 
 for (let c in IOMsg) { IOMsg[IOMsg[c]] = c }
-
 // console.log( IOMsg );
-
 
 export const API_TYPE = {
   'REQUEST_RESPONSE': 'requet_response',
   'ONE_WAY': 'one_way'
 }
-
-
 
 // api response status code
 export const STATUS = {

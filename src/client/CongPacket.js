@@ -27,8 +27,8 @@ export function pack(payload) {
 
   } else if (payload.byteLength < 2 ** 24) {  // 3bytes len
     let len4Buffer = Buffer.alloc(4)
-    len4Buffer.writeUint32LE( payload.byteLength ) 
-    let cropLen3 = len4Buffer.subarray(0,3)
+    len4Buffer.writeUint32LE(payload.byteLength)
+    let cropLen3 = len4Buffer.subarray(0, 3)
     return MBP.pack(
       MBP.MB('#type', '8', CongType.TYPE_LEN3),
       MBP.MB('#payloadLen3', cropLen3),
@@ -45,12 +45,9 @@ export function pack(payload) {
 
 }
 
-// let totalCong = 0;
-
 export class CongRx extends Transform {
   constructor(options) {
     super(options)
-    // console.log('new congRx. totalCong:', ++totalCong )
     this.buffer = Buffer.alloc(0)
     this.frames = []
     this.rxi = 0;
@@ -63,7 +60,6 @@ export class CongRx extends Transform {
     this.addData(chunk)
     if (this.frames.length > 0) {
       this.frames.forEach(frame => {
-        // console.log('emit frame:', frame)
         this.push(frame)
       })
       this.frames = []
@@ -73,12 +69,11 @@ export class CongRx extends Transform {
 
 
   addData(chunk) {
-    // console.log('congpack chunk:', chunk )
     let c = chunk.byteLength;
     let i = 0;
-    while( c-- ){
+    while (c--) {
       this.rxi++
-      if( chunk[ i++ ] == 0 ){
+      if (chunk[i++] == 0) {
         this.rxi_zero++
       }
     }
@@ -88,7 +83,6 @@ export class CongRx extends Transform {
     } else {
       this.buffer = chunk
     }
-    // console.log('buffer before parse', this.buffer )
     this.parse()
   }
 
@@ -97,32 +91,29 @@ export class CongRx extends Transform {
     let head = this.buffer[0]
     let headerLen;
     let payloadSize;
-    // find header
-    // console.log('>> parser head, buffer:', head , this.buffer )
 
     if (head == CongType.TYPE_LEN1) {
-       headerLen = 2;
+      headerLen = 2;
       if (this.buffer.byteLength < headerLen) return;
-       payloadSize = this.buffer.readUint8(1)
+      payloadSize = this.buffer.readUint8(1)
 
     } else if (head == CongType.TYPE_LEN2) {
-       headerLen = 3;
+      headerLen = 3;
       if (this.buffer.byteLength < headerLen) return;
-       payloadSize = this.buffer.readUint16LE(1)
+      payloadSize = this.buffer.readUint16LE(1)
 
     } else if (head == CongType.TYPE_LEN3) {
-       headerLen = 4;
+      headerLen = 4;
       if (this.buffer.byteLength < headerLen) return;
-       payloadSize = this.buffer.readUint16LE(1) + this.buffer.readUint8(3) * 65536
+      payloadSize = this.buffer.readUint16LE(1) + this.buffer.readUint8(3) * 65536
 
     } else if (head == CongType.TYPE_LEN4) {
-       headerLen = 5;
+      headerLen = 5;
       if (this.buffer.byteLength < headerLen) return;
-       payloadSize = this.buffer.readUint32LE(1)
+      payloadSize = this.buffer.readUint32LE(1)
 
     } else {
-      // console.log('CongPacket: UNKNOWN_HEAD drop', this.buffer)
-      this.emit('wrong',this.buffer)
+      this.emit('wrong', this.buffer)
       this.buffer = Buffer.alloc(0)
     }
 
@@ -135,8 +126,8 @@ export class CongRx extends Transform {
       this.frames.push(this.buffer.subarray(headerLen, headerLen + payloadSize))
       this.buffer = this.buffer.subarray(headerLen + payloadSize)
       this.parse()
-    } else { 
-      //not ready
+    } else {
+      // not ready
       // console.log('+')
       return
     }

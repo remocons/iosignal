@@ -40,7 +40,7 @@ export class IO extends IOCore {
 
 
   keepAlive() {
-    if (!this.socket || this.socket?.readyState === 3) { //closed
+    if (!this.socket || this.socket?.readyState === 3) {
       this.open();
     }
   }
@@ -86,10 +86,10 @@ export class IO extends IOCore {
     this.rxCounter++;
     this.lastTxRxTime = Date.now();
     let buffer;
-    if( event.data instanceof Blob){
+    if (event.data instanceof Blob) {
       let ab = await event.data.arrayBuffer()
       buffer = Buffer.from(ab)
-    }else{
+    } else {
       buffer = Buffer.from(event.data)
     }
     this.rxBytes += buffer.byteLength
@@ -97,8 +97,7 @@ export class IO extends IOCore {
   }
 
   socket_send(data) {
-    if (this.socket?.readyState === 1) { //open
-      // console.log('websocket send', data)
+    if (this.socket?.readyState === 1) {
       this.socket.send(data)
       this.txCounter++;
       this.txBytes += data.byteLength

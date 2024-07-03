@@ -10,21 +10,21 @@ export let serverOption = {
   showMetric: 0,
   showChannel: 0,
   monitorPeriod: 5000,
-  fileLogger:{
-    connection: { 
-      use: false, 
+  fileLogger: {
+    connection: {
+      use: false,
       path: 'connection.log'
     },
     auth: {
-      use: false, 
+      use: false,
       path: 'auth.log'
     },
-    attack:{
+    attack: {
       use: false,
-      path:'attack.log'
+      path: 'attack.log'
     }
   },
-  useQuota:{
+  useQuota: {
     signalSize: false,
     publishCounter: false,
     trafficRate: false,
@@ -33,19 +33,19 @@ export let serverOption = {
   defaultQuotaIndex: 3,
   adminLevel: 255,
 
-  debug:{
+  debug: {
     slow: false,
     delay: 500,
     showAuthInfo: false
   },
 
-  retain:{
+  retain: {
     isAvailable: true,
     limitSize: 100000,
     limitCounter: 1000
   },
 
-  auth:{
+  auth: {
     delay_auth_fail: 1000,
   },
 

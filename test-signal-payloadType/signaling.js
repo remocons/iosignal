@@ -1,10 +1,10 @@
-import { IO, Server} from 'iosignal'
+import { IO, Server } from 'iosignal'
 
 let url = 'ws://localhost:5555'
 let server = new Server({
-   port: 5555 
+  port: 5555
   //  ,showMessage: 'message'
-  })
+})
 let done = false;
 
 let tx = new IO(url)
@@ -48,7 +48,7 @@ function sendSignals() {
 const arg1 = ['a1']
 const arg2 = ['a2', 222]
 const arg3 = [{ name: 'a3' }, 333]
-const arg4 = [{a:1}, Buffer.from('KKKKK')]
+const arg4 = [{ a: 1 }, Buffer.from('KKKKK')]
 const arg5 = [new Uint8Array(20)]
 
 

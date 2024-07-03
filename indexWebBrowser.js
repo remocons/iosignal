@@ -1,5 +1,5 @@
 import { IO } from './src/client/IOWebSocket.js'
-import { Boho, RAND, MBP, BohoMsg, Meta, MetaSize , sha256, Buffer } from 'boho'
+import { Boho, RAND, MBP, BohoMsg, Meta, MetaSize, sha256, Buffer } from 'boho'
 
 Boho.RAND = RAND;
 Boho.BohoMsg = BohoMsg;

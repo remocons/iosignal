@@ -120,7 +120,6 @@ export class IOCore extends EventEmitter {
     }
     this.useAuth = true
     let auth_pack = this.boho.auth_req()
-    // console.log('auth_req_pack', auth_pack )
     this.send(auth_pack)
   }
 
@@ -144,27 +143,21 @@ export class IOCore extends EventEmitter {
   }
 
   onData(buffer) {
-    // console.log('remote rcv socket_message', buffer )
-    //check first byte (remote message type)
     let msgType = buffer[0];
     let decoded;
 
     if (msgType === BohoMsg.ENC_488) {
       decoded = this.boho.decrypt_488(buffer)
       if (decoded) {
-        //  console.log( decoded )
         msgType = decoded[0]
         buffer = decoded
-        // console.log('DECODED MsgType:', IOMsg[ msgType ] )
       } else {
         // console.log('DEC_FAIL', buffer.byteLength)
       }
     } else if (msgType === BohoMsg.ENC_E2E) {
-      // console.log('rcv ENC_E2E' )
 
       try {
         decoded = this.boho.decrypt_488(buffer)
-        //헤더를 읽고 헤더크기만큼만 해석한다.
         if (decoded) {
           // console.log( 'ENC_E2E decoded ', decoded )
           msgType = decoded[0]
@@ -217,9 +210,9 @@ export class IOCore extends EventEmitter {
 
       case IOMsg.CID_RES:
         let cidStr = decoder.decode(buffer.subarray(1))
-        // console.log( '>> CID_RES: ' ,cidStr )
         this.cid = cidStr;
-        // change state before subscribe.
+
+        // **IMPORTANT** change state before subscribe.
         this.stateChange('ready', 'cid_ready')
         this.subscribe_memory_channels()
         break;
@@ -271,7 +264,6 @@ export class IOCore extends EventEmitter {
         try {
           let str = decoder.decode(buffer.subarray(1))
           let ss = JSON.parse(str)
-          // console.log('SERVER_SIGNAL', JSON.stringify(ss))
 
           if (ss.event && ss.data) {
             this.serverSet = ss.data;
@@ -287,7 +279,6 @@ export class IOCore extends EventEmitter {
         try {
           let setPack = MBP.unpack(buffer)
           if (setPack) {
-            // console.log('[SET] topic: ', setPack.topic)
             this.emit(setPack.topic, ...setPack.args)
           }
         } catch (error) {
@@ -312,12 +303,12 @@ export class IOCore extends EventEmitter {
           */
           switch (payloadType) {
 
-            case PAYLOAD_TYPE.EMPTY:  // 0
+            case PAYLOAD_TYPE.EMPTY:
               if (tag.indexOf('@') === 0) this.emit('@', null, tag)
               else this.emit(tag, null, tag)
               break;
 
-            case PAYLOAD_TYPE.TEXT: // 1
+            case PAYLOAD_TYPE.TEXT:
               // !! Must remove null char before decode in JS.
               // string payload contains null char for the c/cpp devices.
               let payloadStringWithoutNull = payloadBuffer.subarray(0, payloadBuffer.byteLength - 1)
@@ -326,7 +317,7 @@ export class IOCore extends EventEmitter {
               if (tag !== '@') this.emit(tag, oneString, tag)
               break;
 
-            case PAYLOAD_TYPE.BINARY: // 2
+            case PAYLOAD_TYPE.BINARY:
               if (tag.indexOf('@') === 0) this.emit('@', payloadBuffer, tag)
               if (tag !== '@') this.emit(tag, payloadBuffer, tag)
               break;
@@ -512,35 +503,26 @@ export class IOCore extends EventEmitter {
   setMsgPromise(mid) {
     return new Promise((resolve, reject) => {
       this.promiseMap.set(mid, [resolve, reject])
-      // console.log('set promise.  mid, size', mid, this.promiseMap.size)
       setTimeout(e => {
         if (this.promiseMap.has(mid)) {
           reject('timeout');
           this.promiseMap.delete(mid)
-          // console.log('promise timeout. mid, size:', mid, this.promiseMap.size)
         }
       }, this.promiseTimeOut);
     })
   }
 
   testPromise(buffer) {
-    // console.log('mbp buffer : ', buffer , buffer.byteLength)
-    // let mbp = ( buffer.byteLength > 4  ) ?  buffer.subarray(4) : ""
 
     let res = MBP.unpack(buffer)
     if (!res) return
-    // console.log( res )
-
-    // console.log(`RESPONSE_MBP  MID: ${mid} status: ${status} ,mbp: ${ buffer.subarray(4)} `)
 
     if (this.promiseMap.has(res.mid)) {
-      // console.log('res promise msg', mid)
       let [resolve, reject] = this.promiseMap.get(res.mid)
       this.promiseMap.delete(res.mid)
 
       if (res.status < 128) {
         res.ok = true;
-        // console.log( 'unpack meta:', meta)
         resolve(res)
       } else {
         res.ok = false;
@@ -611,7 +593,6 @@ export class IOCore extends EventEmitter {
 
 
   req(target, topic, ...args) {
-    // console.log('common_req args', args)
     if (!target || !topic)
       return Promise.reject(new Error('request need target and topic)'))
     let sigPack;
@@ -631,7 +612,6 @@ export class IOCore extends EventEmitter {
         MBP.MB('topic', topic)
       )
     }
-    // console.log('<< adminPack', this.mid, sigPack)
     this.send_enc_mode(sigPack)
     return this.setMsgPromise(this.mid)
   }
@@ -659,7 +639,6 @@ export class IOCore extends EventEmitter {
   subscribe_promise(tag) {
     if (typeof tag !== 'string') throw TypeError('tag should be string.')
     if (this.state !== STATES.READY) {
-      // console.log('not ready state:', this.state )
       return Promise.reject('subscribe_promise:: connection is not ready')
     }
 
@@ -678,7 +657,6 @@ export class IOCore extends EventEmitter {
   subscribe_memory_channels() { //local cache . auto_resubscribe
     if (this.channels.size == 0) return
     let chList = Array.from(this.channels).join(',')
-    // console.log('<< subscibe memory channels by cid', chList , this.cid )
 
     this.subscribe_promise(chList)
       .then((res) => {
@@ -690,11 +668,9 @@ export class IOCore extends EventEmitter {
   }
 
   unsubscribe(tag = "") {
-    // console.log('unsub', tag)
     if (typeof tag !== 'string') throw TypeError('tag should be string.')
 
-    if (tag == "") {
-      // console.log('unsub all')
+    if (tag == "") { // blank tag means unsubscribe all
       this.channels.clear();
     } else {
       let tagList = tag.split(',')
@@ -721,7 +697,6 @@ export class IOCore extends EventEmitter {
     if (tag.indexOf('@') !== 0) {
       this.channels.add(tag)
     }
-    // console.log('channels:', this.channels )
     this.on(tag, handler)
     // do not subscribe now.
     // will subscribe when receive CID_RES signal from server.
@@ -751,7 +726,6 @@ export class IOCore extends EventEmitter {
     this.linkMap.set(to, linkSet)
     this.on(tag, handler)
     this.subscribe(tag)
-    // console.log('link [to] linkMap:', to, this.linkMap )
 
   }
 
@@ -775,7 +749,6 @@ export class IOCore extends EventEmitter {
       }
     }
 
-    // console.log('unlink linkMap result:', this.linkMap )
   }
 
   unlinkAll(to) {
@@ -791,7 +764,6 @@ export class IOCore extends EventEmitter {
     }
     this.linkMap.delete(to)
 
-    // console.log('unlinkAll linkMap result:', this.linkMap )
   }
 
 
@@ -838,7 +810,6 @@ export class IOCore extends EventEmitter {
     if (emitEventAndMessage) this.emit(eventName, emitEventAndMessage)
 
     if (this.stateName !== eventName) {
-      // console.log(`state: ${this.stateName} => ${eventName}` )
       this.stateName = eventName
       this.emit('change', eventName)
     }
