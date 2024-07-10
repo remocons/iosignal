@@ -29,12 +29,13 @@
     "node": ">=15.0.0"
   },
   "author": {
-    "name": "Lee Dongeun",
-    "email": "sixgen@gmail.com"
+    "name": "Taeo Lee",
+    "email": "taeo.mocha@gmail.com"
   },
   "license": "MIT",
   "dependencies": {
     "boho": "^0.8.2",
+    "commander": "^12.1.0",
     "eventemitter3": "^5.0.1",
     "meta-buffer-pack": "^1.4.0",
     "ws": "^8.17.1"
