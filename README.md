@@ -134,7 +134,7 @@ io.on('error',err=>{
 ```html
 <html>
 
-<script src="../dist/iosignal.min.js"></script>
+<script src="../dist/iosignal-iife.js"></script>
 
   <script>
     console.log('IO', IO)  // default global variable name is IO
@@ -189,7 +189,7 @@ io.on('error',err=>{
 <html>
 
   <script type="module">
-    import { IO, Boho, MBP, Buffer  } from "../dist/iosignal.esm.js"
+    import { IO, Boho, MBP, Buffer  } from "../dist/iosignal.js"
 
     const = io = new IO('wss://io.iosignal.net/ws')
     io.listen('channel#topic', (...args)={

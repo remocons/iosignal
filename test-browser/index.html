@@ -18,14 +18,14 @@
   <h2>Simple pub sub example.</h2>
   <p>you should start server first.</p>
   <p>this index.html load two types of modules. </p>
-  <h5>1. IIFE: iosignal.min.js</h5>
+  <h5>1. IIFE: iosignal-iife.js</h5>
   <p>use global name: IO </p>
   <p>IO has props: Boho, MBP, Buffer,, </p>
-  <h5>2. ESM: iosignal.esm.js</h5>
+  <h5>2. ESM: iosignal.js</h5>
   <p> check the console.</p>
   <h2>message log</h2>
   <div id="messageView">...</div>
-  <script src="../dist/iosignal.min.js"></script>
+  <script src="../dist/iosignal-iife.js"></script>
   <script>
     console.log('IIFE:')
     console.log('IO', IO)
@@ -83,7 +83,7 @@
     }
   </script>
   <!-- <script type="module">
-    import { IO, Boho, MBP, Buffer, sha256  } from "../dist/iosignal.esm.js"
+    import { IO, Boho, MBP, Buffer, sha256  } from "../dist/iosignal.js"
     ESM_IO = IO 
     console.log('ESM:')
     console.log('IO', IO)

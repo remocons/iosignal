@@ -2,15 +2,14 @@ import replace from '@rollup/plugin-replace'
 import resolve from '@rollup/plugin-node-resolve'
 import commonjs from '@rollup/plugin-commonjs'
 import terser from '@rollup/plugin-terser'
-import json from '@rollup/plugin-json'
-import pkg from './package.json'
+// import json from '@rollup/plugin-json'
 
 export default [
   {
     input: './indexWebBrowser.js',
     output: [
       {
-        file: pkg.browser,
+        file: './dist/iosignal-iife.js',
         format: 'iife', 
         name: 'IO',
         sourcemap: true,
@@ -23,7 +22,9 @@ export default [
         delimiters: ['import { webcrypto } from \'', '\''],
         preventAssignment: true
       }),
-      resolve(), 
+      resolve({
+        preferBuiltins: false
+      }), 
       commonjs() 
       ,terser() 
     ]
@@ -32,7 +33,7 @@ export default [
     input: './src/client/IOWebSocket.js',
     output: [
       {
-        file: pkg.browser_esm,
+        file: './dist/iosignal.js',
         format: 'es', // 
         sourcemap: true,
       }
@@ -43,7 +44,9 @@ export default [
         delimiters: ['import { webcrypto } from \'', '\''],
         preventAssignment: true
       }),
-      resolve(), 
+      resolve({
+        preferBuiltins: false
+      }), 
       commonjs() 
       ,terser() 
     ]
@@ -52,7 +55,7 @@ export default [
   ,{
     input: './index.js',
     output: [
-      { file: pkg.main,
+      { file: './dist/iosignal.cjs',
         format: 'cjs'
       }
     ],
@@ -60,7 +63,7 @@ export default [
       resolve({
         preferBuiltins: true
       }), 
-      json(),
+      // json(),
       commonjs()
       ,terser() 
     ]
