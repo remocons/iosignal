@@ -1,4 +1,4 @@
-import { MBP } from 'meta-buffer-pack'
+import MBP from 'meta-buffer-pack'
 import { Remote } from './Remote.js'
 import { serverOption } from './serverOption.js'
 import { IOMsg, CLIENT_STATE } from '../common/constants.js'

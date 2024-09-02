@@ -1,5 +1,5 @@
 import { Transform } from 'stream'
-import { MBP } from 'meta-buffer-pack'
+import MBP from 'meta-buffer-pack'
 
 export const CongType = {
   TYPE_LEN1: 1,

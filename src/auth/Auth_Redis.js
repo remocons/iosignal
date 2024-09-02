@@ -1,5 +1,5 @@
 import { BohoAuth } from './BohoAuth.js';
-import { sha256 } from 'boho'
+import Boho from 'boho'
 const DEVICE_PREFIX = "device:"
 
 export class Auth_Redis extends BohoAuth {
@@ -28,7 +28,7 @@ export class Auth_Redis extends BohoAuth {
 
   // add device auth info
   async addAuth(id, keyStr, cid = '', level = 0) {
-    let Base64hashKey = Buffer.from(sha256.hash(keyStr)).toString('base64')
+    let Base64hashKey = Buffer.from(Boho.sha256.hash(keyStr)).toString('base64')
     return this.redis.hSet(DEVICE_PREFIX + id, { 'key': Base64hashKey, 'cid': cid, 'level': level })
   }
 

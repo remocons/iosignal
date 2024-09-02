@@ -15,24 +15,20 @@ The signaling protocol is built-in, so the server can be used without programmin
 
 ## Install
 
-```
+```shell
 $ npm i iosignal
 ```
 
 ## IOSignal Server
 
-CommonJS and ESM support both
-
-### ESM style
-
-```
+### ESM
+```js
 import { Server } from "iosignal"
 const server = new Server( { port: 7777 } )
 ```
 
-### CJS style
-
-```
+### CJS
+```js
 let { Server } = require('iosignal')
 const server = new Server( { port: 7777 } )
 ```
@@ -59,7 +55,7 @@ const server = new Server(
 - showMessage: "none"|"message" show signal buffer message
 - timeout <milliseconds> ping period & timeout (min. 1000)
 
-### IOSiognal API
+### IOSignal API
 
 IOSignal API examples
 - src/api_reply.js  // 'echo', 'date', 'unixtime'
@@ -72,6 +68,7 @@ To register an API service with the server, use the api() method
 `api('api_name', module )`
 
 ```js
+// node.js
 import { Server ,api_reply  } from 'iosignal'
 const server = new Server( { port: 7777 }  )
 server.api('reply', api_reply) // attach api module
@@ -80,19 +77,21 @@ server.api('reply', api_reply) // attach api module
 Example of a client calling the reply API
 
 ```js
-import { IO } from "iosignal"
-const io = new IO('ws://localhost:7777')
+  // web browser example
+  <script src="../dist/iosignal.iife.js"></script>
+  <script>
+      const io = new IO('ws://localhost:7777')
 
-io.on('ready', async ()=>{
-  let res_echo = await io.req('reply', 'echo', 'hello' )
-  let res_date = await io.req('reply', 'date' )
-  let res_unixtime = await io.req('reply', 'unixtime' )
+      io.on('ready', async ()=>{
+        let res_echo = await io.req('reply', 'echo', 'hello' )
+        let res_date = await io.req('reply', 'date' )
+        let res_unixtime = await io.req('reply', 'unixtime' )
 
-  if( res_echo.ok ) console.log( res_echo.body  )
-  if( res_date.ok ) console.log( res_date.body  )
-  if( res_unixtime.ok ) console.log( res_unixtime.body  )
-
-});
+        if( res_echo.ok ) console.log( res_echo.body  )
+        if( res_date.ok ) console.log( res_date.body  )
+        if( res_unixtime.ok ) console.log( res_unixtime.body  )
+      });
+  </script>
 
 // result
 [ 'hello' ]
@@ -105,27 +104,27 @@ Fri, 09 Feb 2024 14:24:37 GMT
 ## IOSignal Client
 
 ### NodeJS Client
-```
-// ESM
-import { IO } from "iosignal"
+```js
+  // ESM
+  import { IOWS } from "iosignal"
 
-// CJS
-// const { IO } = require('iosignal')
+  // CJS
+  // const { IOWS } = require('iosignal')
 
-const io = new IO('wss://io.iosignal.net/ws')
+  const io = new IOWS('wss://io.iosignal.net/ws')
 
-io.on('ready', ()=>{
-  console.log('ready cid:', io.cid)
-  io.signal('#screen','playToggle')
-});
+  io.on('ready', ()=>{
+    console.log('ready cid:', io.cid)
+    io.signal('#screen','playToggle')
+  });
 
-io.listen('#notify', (...args)=>{
-  console.log( args )
-})
+  io.listen('#notify', (...args)=>{
+    console.log( args )
+  })
 
-io.on('error',err=>{
-    console.log('err', err)
-})
+  io.on('error',err=>{
+      console.log('err', err)
+  })
 
 ```
 
@@ -134,7 +133,7 @@ io.on('error',err=>{
 ```html
 <html>
 
-<script src="../dist/iosignal-iife.js"></script>
+<script src="../dist/iosignal.iife.js"></script>
 
   <script>
     console.log('IO', IO)  // default global variable name is IO
@@ -189,9 +188,9 @@ io.on('error',err=>{
 <html>
 
   <script type="module">
-    import { IO, Boho, MBP, Buffer  } from "../dist/iosignal.js"
+    import IO from "../dist/iosignal.js"
 
-    const = io = new IO('wss://io.iosignal.net/ws')
+    const io = new IO('wss://io.iosignal.net/ws')
     io.listen('channel#topic', (...args)={
       console.log( args )
     })

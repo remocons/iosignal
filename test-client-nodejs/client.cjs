@@ -1,7 +1,7 @@
 
-const { IO } = require('iosignal')
+const { IOWS } = require('iosignal')
 
-const io = new IO('ws://localhost:7777')
+const io = new IOWS('ws://localhost:7777')
 
 io.on('ready', () => {
   console.log('ready cid:', io.cid)

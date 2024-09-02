@@ -1,6 +1,6 @@
-import { webcrypto } from 'crypto';
-import { MBP } from 'meta-buffer-pack'
-import { Boho, BohoMsg, MetaSize } from 'boho'
+// import { webcrypto } from 'crypto';
+import MBP from 'meta-buffer-pack'
+import Boho from 'boho'
 import { serverOption } from './serverOption.js';
 import { IOMsg, ENC_MODE, CLIENT_STATE } from '../common/constants.js'
 import { quotaTable } from '../common/quotaTable.js'
@@ -70,7 +70,7 @@ export class RemoteCore {
     let from = this.boho.isAuthorized ? `did: ${this.did} ${this.cid}@` : `${this.cid}@`
     if (isBinary) {
       let msgTypeName = IOMsg[message[0]]
-      if (!msgTypeName) msgTypeName = BohoMsg[message[0]]
+      if (!msgTypeName) msgTypeName = Boho.BohoMsg[message[0]]
       msgTypeName = ' [' + msgTypeName + ']';
       if (message.byteLength > 40) {
         console.log(from + msgTypeName + ' LEN:', message.length);
@@ -119,7 +119,7 @@ export class RemoteCore {
     if (isBinary) {
       msgType = message[0]
 
-      if (msgType === BohoMsg.ENC_488) {
+      if (msgType === Boho.BohoMsg.ENC_488) {
 
         try {
           decoded = this.boho.decrypt_488(message)
@@ -135,7 +135,7 @@ export class RemoteCore {
           return
         }
 
-      } else if (msgType === BohoMsg.ENC_E2E) { // symetric E2EE Signal
+      } else if (msgType === Boho.BohoMsg.ENC_E2E) { // symetric E2EE Signal
         try {
           decoded = this.boho.decrypt_488(message)
         } catch (err) {
@@ -145,14 +145,14 @@ export class RemoteCore {
         // console.log('e2e unpack:', decoded )
         if (decoded) {
           msgType = decoded[0]
-          message.set(decoded, MetaSize.ENC_488) // set decoded signal_e2e headaer.
-          message = message.subarray(MetaSize.ENC_488) // reset offset.
+          message.set(decoded, Boho.MetaSize.ENC_488) // set decoded signal_e2e headaer.
+          message = message.subarray(Boho.MetaSize.ENC_488) // reset offset.
         } else {
           return
         }
 
       } else {
-        // console.log( `[P] ${ IOMsg[ msgType] || BohoMsg[cmd]}  LEN: ${message.byteLength}` )
+        // console.log( `[P] ${ IOMsg[ msgType] || Boho.BohoMsg[cmd]}  LEN: ${message.byteLength}` )
       }
 
       switch (msgType) {
@@ -170,7 +170,7 @@ export class RemoteCore {
           }
 
           if (!this.cid) {
-            this.cid = '?' + webcrypto.getRandomValues(Buffer.alloc(3)).toString('base64url')
+            this.cid = '?' + globalThis.crypto.getRandomValues(Buffer.alloc(3)).toString('base64url')
             this.manager.cid2remote.set(this.cid, this)
           }
 
@@ -290,7 +290,7 @@ export class RemoteCore {
 
 
         // Auth
-        case BohoMsg.AUTH_REQ:
+        case Boho.BohoMsg.AUTH_REQ:
           if (!this.manager.authManager) return
           if (this.state < CLIENT_STATE.SENT_SERVER_READY) {
             // console.log('protocol error. auth_req before server_ready')
@@ -303,7 +303,7 @@ export class RemoteCore {
           this.setState(CLIENT_STATE.SENT_SERVER_NONCE)
           break;
 
-        case BohoMsg.AUTH_HMAC:
+        case Boho.BohoMsg.AUTH_HMAC:
           if (!this.manager.authManager) return
           if (this.state < CLIENT_STATE.SENT_SERVER_NONCE) {
             // console.log('protocol error. auth_hmac before server_nonce')
@@ -387,7 +387,7 @@ export class RemoteCore {
       // console.log('server bypass E2E signal taginfo:', tagInfo )
 
       let encHeader = this.boho.encrypt_488(data.subarray(0, 3 + tagLen))
-      encHeader[0] = BohoMsg.ENC_E2E
+      encHeader[0] = Boho.BohoMsg.ENC_E2E
       let newEncBuffer = Buffer.concat([encHeader, data.subarray(3 + tagLen)])
       this.send(newEncBuffer)
 

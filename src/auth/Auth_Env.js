@@ -18,7 +18,7 @@
  */
 
 import { BohoAuth } from './BohoAuth.js';
-import { sha256 } from 'boho'
+import Boho from 'boho'
 
 export class Auth_Env extends BohoAuth {
   constructor(authInfo) {
@@ -68,7 +68,7 @@ export class Auth_Env extends BohoAuth {
   }
 
   addAuth(id, keyStr, cid, level = 0) {
-    let Base64hashKey = Buffer.from(sha256.hash(keyStr)).toString('base64')
+    let Base64hashKey = Buffer.from(Boho.sha256.hash(keyStr)).toString('base64')
     this.AUTH.set(id, { key: Base64hashKey, cid: cid, level: level })
   }
 

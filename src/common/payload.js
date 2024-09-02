@@ -1,4 +1,4 @@
-import { MBP } from 'meta-buffer-pack'
+import MBP from 'meta-buffer-pack'
 import { PAYLOAD_TYPE, IOMsg } from "./constants.js";
 const encoder = new TextEncoder()
 

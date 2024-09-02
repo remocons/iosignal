@@ -1,10 +1,11 @@
-import { MBP, Buffer } from 'meta-buffer-pack'
+import MBP from 'meta-buffer-pack'
 import EventEmitter from "eventemitter3";
-import { Boho, BohoMsg, MetaSize } from "boho";
 import { IOMsg, PAYLOAD_TYPE, SIZE_LIMIT, ENC_MODE, STATES } from '../common/constants.js'
 import { quotaTable } from '../common/quotaTable.js'
 import { getSignalPack } from '../common/payload.js';
+import Boho from "boho";
 
+const Buffer = MBP.Buffer;
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
 
@@ -146,7 +147,7 @@ export class IOCore extends EventEmitter {
     let msgType = buffer[0];
     let decoded;
 
-    if (msgType === BohoMsg.ENC_488) {
+    if (msgType === Boho.BohoMsg.ENC_488) {
       decoded = this.boho.decrypt_488(buffer)
       if (decoded) {
         msgType = decoded[0]
@@ -154,7 +155,7 @@ export class IOCore extends EventEmitter {
       } else {
         // console.log('DEC_FAIL', buffer.byteLength)
       }
-    } else if (msgType === BohoMsg.ENC_E2E) {
+    } else if (msgType === Boho.BohoMsg.ENC_E2E) {
 
       try {
         decoded = this.boho.decrypt_488(buffer)
@@ -162,8 +163,8 @@ export class IOCore extends EventEmitter {
           // console.log( 'ENC_E2E decoded ', decoded )
           msgType = decoded[0]
           // decoded has msg_header only. 
-          buffer.set(decoded, MetaSize.ENC_488) // set decoded signal_e2e headaer.
-          buffer = buffer.subarray(MetaSize.ENC_488) // reset offset.
+          buffer.set(decoded, Boho.MetaSize.ENC_488) // set decoded signal_e2e headaer.
+          buffer = buffer.subarray(Boho.MetaSize.ENC_488) // reset offset.
           // console.log('DECODED MsgType:', IOMsg[ msgType ] )
         } else {
           // console.log('488 DEC_FAIL', buffer)
@@ -178,7 +179,7 @@ export class IOCore extends EventEmitter {
     }
 
     let type = IOMsg[msgType]
-    if (!type) type = BohoMsg[msgType]
+    if (!type) type = Boho.BohoMsg[msgType]
 
     // console.log( "MsgType: ", type , " LEN ", buffer.byteLength)
 
@@ -355,7 +356,7 @@ export class IOCore extends EventEmitter {
         this.testPromise(buffer)
         break;
 
-      case BohoMsg.AUTH_NONCE:
+      case Boho.BohoMsg.AUTH_NONCE:
         let auth_hmac = this.boho.auth_hmac(buffer)
         if (auth_hmac) {
           this.send(auth_hmac)
@@ -364,11 +365,11 @@ export class IOCore extends EventEmitter {
         }
         break;
 
-      case BohoMsg.AUTH_FAIL:
+      case Boho.BohoMsg.AUTH_FAIL:
         this.stateChange('auth_fail', 'server reject auth.')
         break;
 
-      case BohoMsg.AUTH_ACK:
+      case Boho.BohoMsg.AUTH_ACK:
         if (this.boho.check_auth_ack_hmac(buffer)) {
           this.stateChange('auth_ready', 'server sent auth_ack')
           this.send(Buffer.from([IOMsg.CID_REQ]))
@@ -484,7 +485,7 @@ export class IOCore extends EventEmitter {
       // encrypt signal_header area only. payload is encrypted with e2e key already.
       let tagLen = data[1]
       let encHeader = this.boho.encrypt_488(data.subarray(0, 3 + tagLen))
-      encHeader[0] = BohoMsg.ENC_E2E
+      encHeader[0] = Boho.BohoMsg.ENC_E2E
       this.send(Buffer.concat([encHeader, data.subarray(3 + tagLen)]))
       // console.log('<< send_enc_mode [ ENC_E2E ]')
 

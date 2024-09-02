@@ -1,4 +1,4 @@
-import { IO, Server } from 'iosignal'
+import { IOWS, Server } from 'iosignal'
 
 let url = 'ws://localhost:5555'
 let server = new Server({
@@ -7,13 +7,13 @@ let server = new Server({
 })
 let done = false;
 
-let tx = new IO(url)
+let tx = new IOWS(url)
 tx.on('ready', () => {
   console.log('tx ready', tx.cid)
 })
 
 
-let rx = new IO(url)
+let rx = new IOWS(url)
 rx.on('ready', () => {
   console.log('rx ready', rx.cid)
 })

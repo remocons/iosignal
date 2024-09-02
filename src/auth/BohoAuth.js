@@ -1,5 +1,5 @@
-import { MBP } from 'meta-buffer-pack'
-import { BohoMsg, Meta } from 'boho'
+import MBP from 'meta-buffer-pack'
+import Boho from 'boho'
 import { quotaTable } from '../common/quotaTable.js'
 import { serverOption } from '../server/serverOption.js'
 import { IOMsg, CLIENT_STATE } from '../common/constants.js'
@@ -22,17 +22,17 @@ export class BohoAuth {
     }
 
     console.log('## AUTH_FAIL reason:', reason)
-    // peer.send( Buffer.from( [BohoMsg.AUTH_FAIL] ))
+    // peer.send( Buffer.from( [Boho.BohoMsg.AUTH_FAIL] ))
     peer.setState(CLIENT_STATE.AUTH_FAIL)
     setTimeout(e => {
-      peer.send(Buffer.from([BohoMsg.AUTH_FAIL]))
+      peer.send(Buffer.from([Boho.BohoMsg.AUTH_FAIL]))
     }, serverOption.auth.delay_auth_fail)
   }
 
   async verify_auth_hmac(auth_hmac, peer) {
     try {
       //1. unpack 
-      let infoPack = MBP.unpack(auth_hmac, Meta.AUTH_HMAC)
+      let infoPack = MBP.unpack(auth_hmac, Boho.Meta.AUTH_HMAC)
       if (!infoPack) {
         this.send_auth_fail(peer, 'unpack auth_pack fail');
         return

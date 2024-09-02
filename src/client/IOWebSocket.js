@@ -1,11 +1,16 @@
 import { IOCore } from "./IOCore.js";
-import { Buffer } from 'meta-buffer-pack'
-export { Boho, RAND, BohoMsg, Meta, MetaSize, sha256, MBP, Buffer } from 'boho'
-export * from '../common/constants.js'
+import Boho from 'boho'
+import * as constants from '../common/constants.js'
+
+const Buffer = Boho.Buffer
 
 // Browser WebSocket
-export class IO extends IOCore {
+export default class IO extends IOCore {
   static binaryType = "arraybuffer"
+  static Boho = Boho;
+  static MBP = Boho.MBP;
+  static Buffer = Boho.Buffer;
+  static constants = constants
 
   constructor(url) {
     super(url);
