@@ -1,4 +1,4 @@
-import { Server, Auth_File } from '../index.js'
+import { Server, Auth_File } from 'iosignal'
 
 const options = {
   port: 7777,

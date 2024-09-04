@@ -1,3 +1,4 @@
+import {version} from "../../package.json";
 import { IOCore } from "./IOCore.js";
 import Boho from 'boho'
 import * as constants from '../common/constants.js'
@@ -6,6 +7,7 @@ const Buffer = Boho.Buffer
 
 // Browser WebSocket
 export default class IO extends IOCore {
+  static version = version
   static binaryType = "arraybuffer"
   static Boho = Boho;
   static MBP = Boho.MBP;

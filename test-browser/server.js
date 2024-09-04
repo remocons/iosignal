@@ -1,4 +1,4 @@
-import { Server } from 'iosignal'
+import { Server, version } from 'iosignal'
 
 const options = {
   port: 7777,
@@ -7,5 +7,6 @@ const options = {
 }
 
 const server = new Server(options)
+console.log( 'iosignal version: ', version )
 
 

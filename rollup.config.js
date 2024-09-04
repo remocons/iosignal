@@ -1,5 +1,6 @@
 import resolve from '@rollup/plugin-node-resolve'
 import commonjs from '@rollup/plugin-commonjs'
+import json from '@rollup/plugin-json'
 import terser from '@rollup/plugin-terser'
 
 export default [
@@ -8,12 +9,12 @@ export default [
     output: [
       {
         file: './dist/iosignal.js',
-        format: 'es', // 
+        format: 'es',
         sourcemap: true,
       },
       {
-        file: './dist/iosignal.iife.js',
-        format: 'iife',
+        file: './dist/iosignal.min.js',
+        format: 'umd',
         name: 'IO',
         sourcemap: true,
       }
@@ -22,6 +23,7 @@ export default [
       resolve({
         preferBuiltins: false
       }),
+      json(),      
       commonjs()
       ,terser() 
     ]
@@ -29,14 +31,14 @@ export default [
   {
     input: './index.js',
     output: [
-      { file: './dist/iosignal.cjs',
-        format: 'cjs'
-      }
+      { file: './dist/iosignal.cjs', format: 'cjs' },
+      { file: './dist/iosignal.mjs', format: 'es' }
     ],
     plugins: [
       resolve({
         preferBuiltins: true
       }), 
+      json(),      
       commonjs()
       ,terser() 
     ]

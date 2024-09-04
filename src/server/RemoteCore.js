@@ -1,4 +1,3 @@
-// import { webcrypto } from 'crypto';
 import MBP from 'meta-buffer-pack'
 import Boho from 'boho'
 import { serverOption } from './serverOption.js';

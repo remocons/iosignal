@@ -1,14 +1,20 @@
 {
   "name": "iosignal",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "iosignal",
   "type": "module",
   "exports": {
-    "import": "./index.js",
-    "require": "./dist/iosignal.cjs"
+    ".": {
+          "import": "./dist/iosignal.mjs",
+          "require": "./dist/iosignal.cjs"
+        },
+    "./iosignal.js": "./dist/iosignal.js"
   },
-  "browser": "./dist/iosignal.js",
+  "browser": "./dist/iosignal.min.js",
+  "jsdelivr": "./dist/iosignal.min.js",
+  "unpkg": "./dist/iosignal.min.js",
   "devDependencies": {
+    "@rollup/plugin-json": "^6.1.0",    
     "@rollup/plugin-commonjs": "^26.0.1",
     "@rollup/plugin-node-resolve": "^15.2.3",
     "@rollup/plugin-terser": "^0.4.4",
@@ -19,17 +25,17 @@
     "start": "node ./test-browser/server.js"
   },
   "engines": {
-    "node": ">=15.0.0"
+    "node": ">=19.0.0"
   },
   "author": {
-    "name": "Taeo Lee",
+    "name": "Lee Taeo",
     "email": "taeo.mocha@gmail.com"
   },
   "license": "MIT",
   "dependencies": {
-    "boho": "^1.0.1",
+    "boho": "^1.0.2",
     "eventemitter3": "^5.0.1",
-    "meta-buffer-pack": "^2.0.2",
+    "meta-buffer-pack": "^2.0.3",
     "ws": "^8.18.0"
   },
   "optionalDependencies": {

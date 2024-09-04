@@ -1,3 +1,4 @@
+export {version} from "./package.json";
 export { IOCongSocket } from './src/client/IOCongSocket.js'
 export { IOWS } from './src/client/IOWS.js'
 export { pack, CongRx } from './src/client/CongPacket.js'
