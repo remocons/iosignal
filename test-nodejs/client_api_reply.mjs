@@ -1,7 +1,7 @@
 
-import { IOWS } from "iosignal"
+import { IO } from "iosignal"
 
-const io = new IOWS('ws://localhost:7777')
+const io = new IO('ws://localhost:7777')
 
 io.on('ready', async () => {
   let res_echo = await io.req('reply', 'echo', 'hello')

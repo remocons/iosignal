@@ -8,12 +8,12 @@ export default [
     input: './src/client/IOWebSocket.js',
     output: [
       {
-        file: './dist/iosignal.js',
+        file: './dist/io.js',
         format: 'es',
         sourcemap: true,
       },
       {
-        file: './dist/iosignal.min.js',
+        file: './dist/io.min.js',
         format: 'umd',
         name: 'IO',
         sourcemap: true,

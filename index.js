@@ -1,6 +1,6 @@
 export {version} from "./package.json";
 export { IOCongSocket } from './src/client/IOCongSocket.js'
-export { IOWS } from './src/client/IOWS.js'
+export { IOWS as IO } from './src/client/IOWS.js'
 export { pack, CongRx } from './src/client/CongPacket.js'
 export { Server } from './src/server/Server.js'
 export { serverOption } from './src/server/serverOption.js'

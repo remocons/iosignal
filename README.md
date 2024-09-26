@@ -71,7 +71,7 @@ Example of a client calling the reply API
 
 ```js
   // web browser api client example
-  <script src="../dist/iosignal.min.js"></script>
+  <script src="../dist/io.min.js"></script>
   <script>
       const io = new IO('ws://localhost:7777')
 
@@ -99,12 +99,12 @@ Fri, 09 Feb 2024 14:24:37 GMT
 ### NodeJS Client
 ```js
   // ESM
-  import { IOWS } from "iosignal"
+  import { IO } from "iosignal"
 
   // CJS
-  // const { IOWS } = require('iosignal')
+  // const { IO } = require('iosignal')
 
-  const io = new IOWS('wss://io.iosignal.net/ws')
+  const io = new IO('wss://io.iosignal.net/ws')
 
   io.on('ready', ()=>{
     console.log('ready cid:', io.cid)
@@ -122,11 +122,11 @@ Fri, 09 Feb 2024 14:24:37 GMT
 ```
 
 ### Browser Client : UMD(IIFE)
-- local file: "./dist/iosignal.min.js"
-- CDN: https://cdn.jsdelivr.net/npm/iosignal@2.1.0/dist/iosignal.min.js
+- local file: "./dist/io.min.js"
+- CDN: https://cdn.jsdelivr.net/npm/iosignal@2.2.0/dist/io.min.js
 ```html
 <html>
-  <script src="../dist/iosignal.min.js"></script>
+  <script src="../dist/io.min.js"></script>
   <script>
     console.log('IO', IO)  // default global variable name is IO
 
@@ -177,14 +177,14 @@ Fri, 09 Feb 2024 14:24:37 GMT
 
 ### Browser client : ESM
 
-- local file: "./dist/iosignal.js"
-- CDN: https://cdn.jsdelivr.net/npm/iosignal@2.1.0/dist/iosignal.js
+- local file: "./dist/io.js"
+- CDN: https://cdn.jsdelivr.net/npm/iosignal@2.2.0/dist/io.js
 
 ```html
 <html>
 
   <script type="module">
-    import IO from "../dist/iosignal.js"
+    import IO from "../dist/io.js"
 
     const io = new IO('wss://io.iosignal.net/ws')
     io.listen('channel#topic', (...args)={
