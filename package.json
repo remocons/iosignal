@@ -30,8 +30,8 @@
     "node": ">=19.0.0"
   },
   "author": {
-    "name": "Lee Taeo",
-    "email": "taeo.mocha@gmail.com"
+    "name": "Taeo Lee",
+    "email": "sixgen@gmail.com"
   },
   "license": "MIT",
   "dependencies": {
