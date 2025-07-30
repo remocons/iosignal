@@ -5,6 +5,19 @@ import { quotaTable } from '../common/quotaTable.js'
 import { getSignalPack } from '../common/payload.js';
 import Boho from "boho";
 
+/**
+ * @typedef {import('meta-buffer-pack').MBP} MBP
+ * @typedef {import('../common/constants.js').IOMsg} IOMsg
+ * @typedef {import('../common/constants.js').PAYLOAD_TYPE} PAYLOAD_TYPE
+ * @typedef {import('../common/constants.js').SIZE_LIMIT} SIZE_LIMIT
+ * @typedef {import('../common/constants.js').ENC_MODE} ENC_MODE
+ * @typedef {import('../common/constants.js').STATES} STATES
+ * @typedef {import('../common/quotaTable.js').quotaTable} quotaTable
+ 
+ * @typedef {import('boho').Boho} Boho
+ * @typedef {import('boho').Buffer} Buffer
+ */
+
 const Buffer = MBP.Buffer;
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
@@ -18,40 +31,165 @@ function byteToUrl(buffer) {
   return address + ':' + port.toString()
 }
 
+/**
+ * Core class for handling WebSocket communication.
+ * @augments {EventEmitter}
+ */
 export class IOCore extends EventEmitter {
+  /**
+   * @param {string} url - The WebSocket URL to connect to.
+   */
   constructor(url) {
     super();
+    /**
+     * Client ID received from the server.
+     * @type {string}
+     */
     this.cid = ""   // get from the server  CID_RES
+    /**
+     * IP address received from the server.
+     * @type {string}
+     */
     this.ip = ""    // get from the server  IAM_RES message.
+    /**
+     * The WebSocket instance.
+     * @type {WebSocket | null}
+     */
     this.socket = null;
+    /**
+     * The default server URL.
+     * @type {string}
+     */
     this.url = url; // init default server url
+    /**
+     * Current connection state (number).
+     * @type {number}
+     */
     this.state = STATES.CLOSED;  // Number type
+    /**
+     * Current connection state (string).
+     * @type {string}
+     */
     this.stateName = this.getStateName() // String type
 
+    /**
+     * Transmitted message counter.
+     * @type {number}
+     */
     this.txCounter = 0;
+    /**
+     * Received message counter.
+     * @type {number}
+     */
     this.rxCounter = 0;
+    /**
+     * Transmitted bytes counter.
+     * @type {number}
+     */
     this.txBytes = 0;
+    /**
+     * Received bytes counter.
+     * @type {number}
+     */
     this.rxBytes = 0;
 
+    /**
+     * Last transmit/receive time.
+     * @type {number}
+     */
     this.lastTxRxTime = Date.now();
+    /**
+     * Period for connection checker.
+     * @type {number}
+     */
     this.connectionCheckerPeriod = SIZE_LIMIT.CONNECTION_CHECKER_PERIOD;
+    /**
+     * Interval ID for connection checker.
+     * @type {NodeJS.Timeout | null}
+     */
     this.connectionCheckerIntervalID = null;
 
+    /**
+     * Boho instance for encryption/decryption.
+     * @type {Boho}
+     */
     this.boho = new Boho()
+    /**
+     * Indicates if the connection is TLS (wss).
+     * @type {boolean}
+     */
     this.TLS = false // true if protocol is wss(TLS)
+    /**
+     * Encryption mode.
+     * @type {number}
+     */
     this.encMode = ENC_MODE.AUTO;
+    /**
+     * Indicates if authentication is used.
+     * @type {boolean}
+     */
     this.useAuth = false;
 
+    /**
+     * Nickname.
+     * @type {string}
+     */
     this.nick = "";
+    /**
+     * Set of subscribed channels.
+     * @type {Set<string>}
+     */
     this.channels = new Set()
+    /**
+     * Map of promises for message responses.
+     * @type {Map<number, Array<Function>>}
+     */
     this.promiseMap = new Map()
+    /**
+     * Timeout for message promises.
+     * @type {number}
+     */
     this.promiseTimeOut = SIZE_LIMIT.PROMISE_TIMEOUT
+    /**
+     * Message ID for promises.
+     * @type {number}
+     */
     this.mid = 0  // promise message id 
 
+    /**
+     * Quota level.
+     * @type {number}
+     */
     this.level = 3; // also defaultQuotaLevel
+    /**
+     * Quota table for current level.
+     * @type {object}
+     */
     this.quota = quotaTable[this.level];
+    /**
+     * Server settings.
+     * @type {object}
+     */
     this.serverSet = {}
+    /**
+     * Map of linked channels.
+     * @type {Map<string, Set<string>>}
+     */
     this.linkMap = new Map()
+
+    /**
+     * Indicates if auto-reconnect is enabled.
+     * @type {boolean} 
+     * @default true
+     * */
+    this.autoReconnect = true; // default true  
+
+    /**
+   * A flag to prevent duplicate close operations.
+   * @type {boolean}
+   * @private
+   */
+    this._closed = false; // 중복 close 방지
 
     this.on('open', this.onOpen.bind(this))
     this.on('close', this.onClose.bind(this))
@@ -59,35 +197,113 @@ export class IOCore extends EventEmitter {
   }
 
 
+
+  /**
+   * Performs common cleanup for the connection. It clears pending promises,
+   * resets the socket reference, and sets the state to closed.
+   * This method is guarded to only run once.
+   * If autoReconnect is false, it also clears the keep-alive timer.
+   */
+  close() {
+    if (this._closed) return;
+    this._closed = true;
+
+    // If auto-reconnect is disabled, we must stop the keep-alive timer.
+    if (this.autoReconnect === false) {
+      clearInterval(this.connectionCheckerIntervalID);
+      this.connectionCheckerIntervalID = null;
+    }
+
+    // socket clean
+    if (this.socket) {
+      try {
+        this.socket.close?.();
+      } catch {}
+      this.socket = null;
+    }
+    this.promiseMap.clear();
+    this.emit('closed');
+    this.stateChange('closed');
+  }
+
+  /**
+   * Disables auto-reconnect and closes the current connection.
+   * The instance can be re-opened manually later. For complete cleanup, use destroy().
+   */
+  stop() {
+    this.autoReconnect = false;
+    this.close();
+  }
+
+  /**
+   * Permanently destroys the instance, cleaning up all resources.
+   * The instance will not be usable after this.
+   */
+  destroy() {
+    this.stop();
+    this.removeAllListeners();
+
+    this.channels.clear();
+    this.linkMap.clear();
+
+    // Help GC
+    this.boho = null;
+  }  
+
+  /**
+   * The core keep-alive logic. It checks if auto-reconnect is enabled.
+   * The actual check for the socket's state is implemented in the child classes.
+   */
+  keepAlive() {
+    if (!this.autoReconnect) return;
+    // The specific logic for checking the socket's state and reconnecting
+    // is implemented in the child classes (IOWS, IOCongSocket, etc.).
+  }
+
+  /**
+   * Redirects the connection to a new URL.
+   * @param {string} url2 - The new URL to redirect to.
+   */
   redirect(url2) {
     this.close()
     this.stateChange('redirecting')
     this.createConnection(url2)
   }
 
+  /**
+   * Opens the WebSocket connection.
+   * @param {string} [url] - Optional URL to connect to. If not provided, uses the instance's URL.
+   */
   open(url) {
-    if (!url && !this.url) return;
-
-    if (url) {
-      if (!this.url) { // default host url
-        this.url = url
-      } else if (url !== this.url) { // default host url change
-        this.url = url;
-        if (this.socket) {
-          this.close()
-          return
-        }
-      }
+    // If a connection is already active or in progress, calling open() implies a reconnect.
+    // Close the existing socket first to ensure a clean state.
+    if (this.socket) {
+      this.close();
     }
 
-    this.createConnection(this.url)
+    if (url) {
+      this.url = url;
+    }
 
+    if (!this.url) {
+      this.emit('error', new Error('URL is not set.'));
+      return;
+    }
+
+    // The actual connection is created here.
+    this.createConnection(this.url);
+
+    // Ensure the keep-alive timer is running.
     if (!this.connectionCheckerIntervalID) {
       this.connectionCheckerIntervalID = setInterval(this.keepAlive.bind(this), this.connectionCheckerPeriod);
     }
   }
 
+  /**
+   * Handles the 'open' event of the WebSocket. Resets the closed flag and sets the state to open.
+   */
   onOpen() {
+    this._closed = false;
     if (this.url.includes("wss://")) {
       this.TLS = true;
     } else {
@@ -96,39 +312,40 @@ export class IOCore extends EventEmitter {
     this.stateChange('open')
   }
 
+  /**
+   * Handles the 'close' event of the WebSocket.
+   */
   onClose() {
     this.boho.isAuthorized = false;
     this.cid = ""
     this.stateChange('closed')
   }
 
-  // manual login
+  /**
+   * Manually logs in with provided ID and key.
+   * @param {string} id - The user ID.
+   * @param {string} key - The user key.
+   * @returns {boolean}
+   */
   login(id, key) {
-    if (!id && !key) {
-      console.log('no id and key.')
-      return
-    }
-    console.log('manual login: ', id)
+    if (!this.auth(id, key)) return false;
 
-    if (!key && id.includes('.')) {
-      this.boho.set_id_key(id)
-    } else if (id && key) {
-      this.boho.set_id8(id)
-      this.boho.set_key(key)
-    } else {
-      console.log('no id or key.')
-      return
-    }
     this.useAuth = true
     let auth_pack = this.boho.auth_req()
     this.send(auth_pack)
+    return true
   }
 
-  // auto login
+  /**
+   * Sets up authentication for auto-login.
+   * @param {string} id - The user ID.
+   * @param {string} key - The user key.
+   * @returns {boolean}
+   */
   auth(id, key) {
     if (!id && !key) {
-      console.log('no id and key.')
-      return
+      this.emit('error', new Error('auth failed. no id and key.'))
+      return false
     }
 
     if (!key && id.includes('.')) {
@@ -137,12 +354,17 @@ export class IOCore extends EventEmitter {
       this.boho.set_id8(id)
       this.boho.set_key(key)
     } else {
-      console.log('no id or key.')
-      return
+      this.emit('error', new Error('auth failed. no id or key.'))
+      return false
     }
     this.useAuth = true
+    return true
   }
 
+  /**
+   * Handles incoming data from the WebSocket.
+   * @param {Buffer} buffer - The incoming data buffer.
+   */
   onData(buffer) {
     let msgType = buffer[0];
     let decoded;
@@ -202,10 +424,8 @@ export class IOCore extends EventEmitter {
           if (jsonInfo.ip) {
             this.ip = jsonInfo.ip;
           }
-          console.log('<IAM_RES>', JSON.stringify(jsonInfo))
-          // console.log('<IAM_RES>', JSON.stringify(jsonInfo,null,2))
         } catch (error) {
-          // console.log('<IAM_RES> data error')
+          this.emit('error', new Error('IAM_RES data error'))
         }
         break;
 
@@ -272,7 +492,7 @@ export class IOCore extends EventEmitter {
           }
 
         } catch (error) {
-          // console.log('<SERVER_SIGNAL> parsing error')
+          this.emit('error', new Error('SERVER_SIGNAL parsing error'))
         }
         break;
 
@@ -283,7 +503,7 @@ export class IOCore extends EventEmitter {
             this.emit(setPack.topic, ...setPack.args)
           }
         } catch (error) {
-          // console.log('<SET> parsing error')
+          this.emit('error', new Error('SET parsing error'))
         }
         break;
 
@@ -312,7 +532,10 @@ export class IOCore extends EventEmitter {
             case PAYLOAD_TYPE.TEXT:
               // !! Must remove null char before decode in JS.
               // string payload contains null char for the c/cpp devices.
-              let payloadStringWithoutNull = payloadBuffer.subarray(0, payloadBuffer.byteLength - 1)
+              let payloadStringWithoutNull = payloadBuffer
+              if (payloadBuffer[payloadBuffer.byteLength - 1] === 0) {
+                payloadStringWithoutNull = payloadBuffer.subarray(0, payloadBuffer.byteLength - 1)
+              }
               let oneString = decoder.decode(payloadStringWithoutNull)
               if (tag.indexOf('@') === 0) this.emit('@', oneString, tag)
               if (tag !== '@') this.emit(tag, oneString, tag)
@@ -348,7 +571,7 @@ export class IOCore extends EventEmitter {
           }
 
         } catch (err) {
-          // console.log('## signal parse err', err)
+          this.emit('error', new Error('signal parse err'))
         }
         break;
 
@@ -392,6 +615,10 @@ export class IOCore extends EventEmitter {
     }
   }
 
+  /**
+   * Sends an IAM (I Am) message to the server.
+   * @param {string} [title] - Optional title for the IAM message.
+   */
   iam(title) {
     // console.log('iam', title)
     if (title) {
@@ -407,17 +634,25 @@ export class IOCore extends EventEmitter {
   }
 
 
+  /**
+   * Sends a PING message to the server.
+   */
   ping() {
     this.send(Buffer.from([IOMsg.PING]))
   }
 
+  /**
+   * Sends a PONG message to the server.
+   */
   pong() {
     this.send(Buffer.from([IOMsg.PONG]))
   }
 
 
-  // application level ping tool.  
-  // simple message sending and reply.
+  /**
+   * Sends an ECHO message to the server.
+   * @param {*} [args] - Optional arguments to echo.
+   */
   echo(args) {
     if (args) {
       console.log('echo args:', args)
@@ -432,10 +667,18 @@ export class IOCore extends EventEmitter {
   }
 
 
+  /**
+   * Sends binary data.
+   * @param {...any} data - Data to send.
+   */
   bin(...data) {
     this.send(MBP.U8pack(...data))
   }
 
+  /**
+   * Sends data over the WebSocket.
+   * @param {Buffer} data - The data buffer to send.
+   */
   send(data) {
     if (data.byteLength > this.quota.signalSize) {
       this.emit('over_size')
@@ -446,22 +689,10 @@ export class IOCore extends EventEmitter {
     this.socket_send(data);
   }
 
-  /*
-   Policy. Should message do encrypt?
-
-   if encMode == auto
-     NO. if connection using TLS line.
-        // ex. wss://url connection.
-     YES. if no TLS line.
-        // ex. ws://url connection.
-
-   if encMode == YES
-     YES. encrypt the message.
-
-   if encMode == NO
-     NO. do not ecnrypt message.
-
-  */
+  /**
+   * Determines if encryption should be used based on current mode and TLS status.
+   * @returns {boolean}
+   */
   getEncryptionMode() {
     if (this.encMode === ENC_MODE.YES ||
       this.encMode === ENC_MODE.AUTO &&
@@ -473,6 +704,11 @@ export class IOCore extends EventEmitter {
     }
   }
 
+  /**
+   * Sends data with encryption based on the encryption mode.
+   * @param {Buffer} data - The data buffer to send.
+   * @param {boolean} [useEncryption] - Optional. Force encryption or not. If undefined, uses default policy.
+   */
   send_enc_mode(data, useEncryption) {
 
     // use default policy.
@@ -501,6 +737,11 @@ export class IOCore extends EventEmitter {
   }
 
 
+  /**
+   * Sets a message promise for a given message ID.
+   * @param {number} mid - The message ID.
+   * @returns {Promise<any>}
+   */
   setMsgPromise(mid) {
     return new Promise((resolve, reject) => {
       this.promiseMap.set(mid, [resolve, reject])
@@ -513,6 +754,10 @@ export class IOCore extends EventEmitter {
     })
   }
 
+  /**
+   * Tests and resolves/rejects a promise based on the incoming buffer.
+   * @param {Buffer} buffer - The incoming data buffer.
+   */
   testPromise(buffer) {
 
     let res = MBP.unpack(buffer)
@@ -537,11 +782,21 @@ export class IOCore extends EventEmitter {
   }
 
 
+  /**
+   * Publishes a signal.
+   * @param {...any} args - Arguments for the signal.
+   */
   publish(...args) {
     this.signal(...args)
   }
 
 
+  /**
+   * Sends a signal with a tag and arguments.
+   * @param {string} tag - The signal tag.
+   * @param {...any} args - Arguments for the signal.
+   * @throws {TypeError} If tag is not a string.
+   */
   signal(tag, ...args) {
     if (typeof tag !== 'string') throw TypeError('tag should be string.')
 
@@ -549,10 +804,23 @@ export class IOCore extends EventEmitter {
     this.send_enc_mode(signalPack)
   }
 
+  /**
+   * Decrypts E2E data.
+   * @param {Buffer} data - The encrypted data.
+   * @param {string} key - The decryption key.
+   * @returns {Buffer}
+   */
   decrypt_e2e(data, key) {
     return this.boho.decrypt_e2e(data, key)
   }
 
+  /**
+   * Sends an E2E (End-to-End) encrypted signal.
+   * @param {string} tag - The signal tag.
+   * @param {Buffer} data - The data to encrypt and send.
+   * @param {string} key - The encryption key.
+   * @throws {TypeError} If tag is not a string.
+   */
   signal_e2e(tag, data, key) {
 
     if (typeof tag !== 'string') throw TypeError('tag should be string.')
@@ -576,6 +844,12 @@ export class IOCore extends EventEmitter {
 
 
 
+  /**
+   * Sets a value in the store.
+   * @param {string} storeName - The name of the store.
+   * @param {...any} args - Arguments to set.
+   * @returns {Promise<any>}
+   */
   set(storeName, ...args) {
     if (!storeName || args.length == 0) {
       return Promise.reject(new Error('set need storeName and value)'))
@@ -583,6 +857,11 @@ export class IOCore extends EventEmitter {
     return this.req('store', 'set', storeName, ...args)
   }
 
+  /**
+   * Gets a value from the store.
+   * @param {string} storeName - The name of the store.
+   * @returns {Promise<any>}
+   */
   async get(storeName) {
     if (!storeName) {
       return Promise.reject(new Error('store get need storeName)'))
@@ -593,6 +872,13 @@ export class IOCore extends EventEmitter {
   }
 
 
+  /**
+   * Sends a request to a target and topic.
+   * @param {string} target - The target of the request.
+   * @param {string} topic - The topic of the request.
+   * @param {...any} args - Optional arguments for the request.
+   * @returns {Promise<any>}
+   */
   req(target, topic, ...args) {
     if (!target || !topic)
       return Promise.reject(new Error('request need target and topic)'))
@@ -618,6 +904,11 @@ export class IOCore extends EventEmitter {
   }
 
 
+  /**
+   * Subscribes to a channel or channels.
+   * @param {string} tag - The tag(s) of the channel(s) to subscribe to (comma-separated).
+   * @throws {TypeError} If tag is not a string or exceeds length limit.
+   */
   subscribe(tag) {
     if (typeof tag !== 'string') throw TypeError('tag should be string.')
     if (this.state !== STATES.READY) return
@@ -637,6 +928,12 @@ export class IOCore extends EventEmitter {
         tagEncoded]))
   }
 
+  /**
+   * Subscribes to a channel or channels with a promise.
+   * @param {string} tag - The tag(s) of the channel(s) to subscribe to (comma-separated).
+   * @returns {Promise<any>}
+   * @throws {TypeError} If tag is not a string or exceeds length limit.
+   */
   subscribe_promise(tag) {
     if (typeof tag !== 'string') throw TypeError('tag should be string.')
     if (this.state !== STATES.READY) {
@@ -655,6 +952,9 @@ export class IOCore extends EventEmitter {
     return this.setMsgPromise(this.mid)
   }
 
+  /**
+   * Subscribes to channels stored in memory (local cache).
+   */
   subscribe_memory_channels() { //local cache . auto_resubscribe
     if (this.channels.size == 0) return
     let chList = Array.from(this.channels).join(',')
@@ -668,6 +968,11 @@ export class IOCore extends EventEmitter {
 
   }
 
+  /**
+   * Unsubscribes from a channel or channels.
+   * @param {string} [tag=""] - The tag(s) of the channel(s) to unsubscribe from (comma-separated). If empty, unsubscribes from all.
+   * @throws {TypeError} If tag is not a string or exceeds length limit.
+   */
   unsubscribe(tag = "") {
     if (typeof tag !== 'string') throw TypeError('tag should be string.')
 
@@ -690,6 +995,12 @@ export class IOCore extends EventEmitter {
   }
 
 
+  /**
+   * Listens for signals on a specific tag.
+   * @param {string} tag - The tag to listen on.
+   * @param {Function} handler - The callback function to handle the signal.
+   * @throws {TypeError} If tag is not a string, handler is not a function, or tag length is invalid.
+   */
   listen(tag, handler) {
     if (typeof tag !== 'string') throw TypeError('tag should be string.')
     if (tag.length > 255 || tag.length == 0) throw TypeError('tag string length range: 1~255')
@@ -706,6 +1017,13 @@ export class IOCore extends EventEmitter {
 
 
 
+  /**
+   * Links a local target to a remote tag and sets up a handler.
+   * @param {string} to - The local link target.
+   * @param {string} tag - The remote tag.
+   * @param {Function} handler - The callback function to handle the signal.
+   * @throws {TypeError} If 'to' or 'tag' are not strings, handler is not a function, or tag length is invalid.
+   */
   link(to, tag, handler) {
     if (typeof to !== 'string') throw TypeError('to(local link target) is not a string.')
     if (typeof tag !== 'string') throw TypeError('tag is not a string.')
@@ -731,44 +1049,54 @@ export class IOCore extends EventEmitter {
   }
 
 
+  /**
+   * Unlinks a specific tag from a local target.
+   * @param {string} to - The local link target.
+   * @param {string} tag - The tag to unlink.
+   * @throws {TypeError} If 'to' or 'tag' are not strings or tag length is invalid.
+   */
   unlink(to, tag) {
     if (typeof to !== 'string') throw TypeError('to(local link target) is not a string.')
     if (typeof tag !== 'string') throw TypeError('tag is not a string.')
     if (tag.length > 255 || tag.length == 0) throw TypeError('tag string length range: 1~255')
 
-    if (!this.linkMap.has(to)) return;
+    const linkSet = this.linkMap.get(to);
+    if (!linkSet || !linkSet.has(tag)) return;
 
-    let linkSet = this.linkMap.get(to)
-    let tags = Array.from(linkSet)
-    for (let i = 0; i < tags.length; i++) {
-      if (tags[i] == tag) {
-        this.unsubscribe(tag)
-        this.removeAllListeners(tag)
-        linkSet.delete(tag)
-        this.linkMap.set(to, linkSet)
-        break;
-      }
+    this.unsubscribe(tag);
+    this.removeAllListeners(tag);
+    linkSet.delete(tag);
+
+    if (linkSet.size === 0) {
+      this.linkMap.delete(to);
     }
-
   }
 
+  /**
+   * Unlinks all tags from a local target.
+   * @param {string} to - The local link target.
+   * @throws {TypeError} If 'to' is not a string.
+   */
   unlinkAll(to) {
     if (typeof to !== 'string') throw TypeError('to(local link target) is not a string.')
-    if (!this.linkMap.has(to)) return;
 
-    let linkSet = this.linkMap.get(to)
-    let tags = Array.from(linkSet)
-    for (let i = 0; i < tags.length; i++) {
-      this.unsubscribe(tags[i])
-      this.removeAllListeners(tags[i])
-      linkSet.delete(tags[i])
+    const linkSet = this.linkMap.get(to);
+    if (!linkSet) return;
+
+    for (const tag of linkSet) {
+      this.unsubscribe(tag);
+      this.removeAllListeners(tag);
     }
-    this.linkMap.delete(to)
 
+    this.linkMap.delete(to);
   }
 
 
 
+  /**
+   * Gets connection metrics.
+   * @returns {{tx: number, rx: number, txb: number, rxb: number, last: number}}
+   */
   getMetric() {
     return {
       tx: this.txCounter,
@@ -780,10 +1108,18 @@ export class IOCore extends EventEmitter {
 
   }
 
+  /**
+   * Gets the current connection state.
+   * @returns {number}
+   */
   getState() {
     return this.state
   }
 
+  /**
+   * Gets the current connection state name.
+   * @returns {string}
+   */
   getStateName() {
     //state <number>
     //value of constant STATES.NAME < number >
@@ -792,6 +1128,10 @@ export class IOCore extends EventEmitter {
     return (STATES[this.state]).toLowerCase()
   }
 
+  /**
+   * Gets security-related information.
+   * @returns {{useAuth: boolean, isTLS: boolean, isAuthorized: boolean, encMode: number, usingEncryption: boolean}}
+   */
   getSecurity() {
     return {
       useAuth: this.useAuth,
@@ -802,6 +1142,11 @@ export class IOCore extends EventEmitter {
     }
   }
 
+  /**
+   * Changes the connection state and emits events.
+   * @param {string} state - The new state name (e.g., 'ready', 'closed').
+   * @param {string} [emitEventAndMessage] - Optional message to emit with the state change event.
+   */
   stateChange(state, emitEventAndMessage) {
     // STATES constant name : string upperCase
     // eventName, .stateName : string lowerCase

@@ -1,4 +1,5 @@
 import { IOCore } from "./IOCore.js"
+import { STATES } from "../common/constants.js";
 import { pack, CongRx } from './CongPacket.js'
 import net from 'net'
 
@@ -9,20 +10,30 @@ export class IOCongSocket extends IOCore {
     if (url) this.open();
   }
 
+  /**
+   * Closes TCP socket and cleans resources.
+   */
   close() {
-    this.socket?.end();
-    this.socket = null;
+    if (this.socket) {
+      if (this.congRx) {
+        this.socket.unpipe(this.congRx);
+        this.congRx.destroy(); // Use destroy() for complete stream cleanup
+        this.congRx = null;
+      }
+      this.socket.removeAllListeners();
+      if (!this.socket.destroyed) {
+        this.socket.destroy(); // destroy() is sufficient for forceful closing
+      }
+    }
+    super.close();
   }
 
-  stop() {
-    this.close()
-    clearInterval(this.connectionCheckerIntervalID);
-    this.connectionCheckerIntervalID = null
-  }
+
 
   keepAlive() {
-    let state = this.socket?.readyState;
-    if (!this.socket || !(state === 'open' || state === 'opening')) {
+    if (!this.autoReconnect) return;
+    // Reconnect only if the socket is fully destroyed and the state is closed.
+    if ((!this.socket || this.socket.destroyed) && this.state === STATES.CLOSED) {
       this.open();
     }
   }

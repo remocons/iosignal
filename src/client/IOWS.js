@@ -1,4 +1,5 @@
 import { IOCore } from "./IOCore.js";
+import { STATES } from "../common/constants.js";
 import { WebSocket } from "ws";
 
 //  Node.js 'ws' websocket
@@ -10,31 +11,27 @@ export class IOWS extends IOCore {
 
 
 
+  /**
+   * Closes ws WebSocket and cleans resources.
+   */
   close() {
     if (this.socket) {
-      this.socket.onclose = null
-      this.socket.onmessage = null
-      this.socket.onerror = null
-      this.socket.close();
-      this.socket = null;
+      this.socket.removeAllListeners();
+      if (this.socket.readyState !== WebSocket.CLOSED) {
+        this.socket.close();
+      }
     }
-    this.emit('close')
+    super.close();
   }
 
-
-
-  stop() {
-    this.close()
-    clearInterval(this.connectionCheckerIntervalID);
-    this.connectionCheckerIntervalID = null
-  }
 
   keepAlive() {
-    if (!this.socket || this.socket?.readyState === 3) {
+    if (!this.autoReconnect) return;
+    // Reconnect only if the socket is closed and the state reflects that.
+    if ((!this.socket || this.socket.readyState === WebSocket.CLOSED) && this.state === STATES.CLOSED) {
       this.open();
     }
   }
-
 
   createConnection(url) {
     // node WebSocket

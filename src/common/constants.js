@@ -1,4 +1,16 @@
 
+/**
+ * @typedef {object} STATES
+ * @property {number} OPENING
+ * @property {number} OPEN
+ * @property {number} CLOSING
+ * @property {number} CLOSED
+ * @property {number} SERVER_READY
+ * @property {number} AUTH_FAIL
+ * @property {number} AUTH_READY
+ * @property {number} READY
+ * @property {number} REDIRECTING
+ */
 // Client STATES: name and number
 export const STATES = {
   OPENING: 0,
@@ -13,7 +25,17 @@ export const STATES = {
 }
 for (let c in STATES) { STATES[STATES[c]] = c }
 
-// server side client state
+/**
+ * @typedef {object} CLIENT_STATE
+ * @property {number} INIT
+ * @property {number} SENT_SERVER_READY
+ * @property {number} RECV_AUTH_REQ
+ * @property {number} SENT_SERVER_NONCE
+ * @property {number} RECV_AUTH_HMAC
+ * @property {number} AUTH_FAIL
+ * @property {number} AUTH_READY
+ * @property {number} CID_READY
+ */
 export const CLIENT_STATE = {
   INIT: 0,
   SENT_SERVER_READY: 1,
@@ -26,6 +48,12 @@ export const CLIENT_STATE = {
 }
 for (let c in CLIENT_STATE) { CLIENT_STATE[CLIENT_STATE[c]] = c }
 
+/**
+ * @typedef {object} ENC_MODE
+ * @property {number} NO
+ * @property {number} YES
+ * @property {number} AUTO
+ */
 export let ENC_MODE = {
   NO: 0,
   YES: 1,
@@ -35,6 +63,15 @@ export let ENC_MODE = {
 for (let c in ENC_MODE) { ENC_MODE[ENC_MODE[c]] = c }
 
 
+/**
+ * @typedef {object} SIZE_LIMIT
+ * @property {number} TAG_LEN1
+ * @property {number} TAG_LEN2
+ * @property {number} CONNECTION_CHECKER_PERIOD
+ * @property {number} PROMISE_TIMEOUT
+ * @property {number} DID
+ * @property {number} CID
+ */
 export const SIZE_LIMIT = {
   TAG_LEN1: 255,
   TAG_LEN2: 65535,
@@ -44,6 +81,15 @@ export const SIZE_LIMIT = {
   CID: 12
 }
 
+/**
+ * @typedef {object} PAYLOAD_TYPE
+ * @property {number} EMPTY
+ * @property {number} TEXT
+ * @property {number} BINARY
+ * @property {number} OBJECT
+ * @property {number} MJSON
+ * @property {number} MBA
+ */
 export let PAYLOAD_TYPE = {
   EMPTY: 0,
   TEXT: 1,
@@ -55,6 +101,40 @@ export let PAYLOAD_TYPE = {
 for (let c in PAYLOAD_TYPE) { PAYLOAD_TYPE[PAYLOAD_TYPE[c]] = c }
 
 
+/**
+ * @typedef {object} IOMsg
+ * @property {number} SERVER_READY
+ * @property {number} CID_REQ
+ * @property {number} CID_RES
+ * @property {number} QUOTA_LEVEL
+ * @property {number} SERVER_CLEAR_AUTH
+ * @property {number} SERVER_REDIRECT
+ * @property {number} LOOP
+ * @property {number} ECHO
+ * @property {number} PING
+ * @property {number} PONG
+ * @property {number} CLOSE
+ * @property {number} SIGNAL
+ * @property {number} SIGNAL_REQ
+ * @property {number} SIGNAL_E2E
+ * @property {number} SUBSCRIBE
+ * @property {number} SUBSCRIBE_REQ
+ * @property {number} UNSUBSCRIBE
+ * @property {number} SERVER_SIGNAL
+ * @property {number} IAM
+ * @property {number} IAM_RES
+ * @property {number} SET
+ * @property {number} RESPONSE_CODE
+ * @property {number} RESPONSE_MBP
+ * @property {number} REQUEST
+ * @property {number} RESPONSE
+ * @property {number} FLOW_MODE
+ * @property {number} WAIT
+ * @property {number} RESUME
+ * @property {number} TIME_OUT
+ * @property {number} OVER_SIZE
+ * @property {number} OVER_FLOW
+ */
 // IO message's one-byte headers.
 export let IOMsg = {
 
@@ -134,11 +214,21 @@ export let IOMsg = {
 for (let c in IOMsg) { IOMsg[IOMsg[c]] = c }
 // console.log( IOMsg );
 
+/**
+ * @typedef {object} API_TYPE
+ * @property {string} REQUEST_RESPONSE
+ * @property {string} ONE_WAY
+ */
 export const API_TYPE = {
   'REQUEST_RESPONSE': 'requet_response',
   'ONE_WAY': 'one_way'
 }
 
+/**
+ * @typedef {object} STATUS
+ * @property {number} OK
+ * @property {number} ERROR
+ */
 // api response status code
 export const STATUS = {
   OK: 0,

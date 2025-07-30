@@ -13,7 +13,7 @@ import require$$2 from 'os';
 import require$$0$1 from 'buffer';
 import { memoryUsage } from 'process';
 
-var version = "3.0.0";
+var version = "3.0.1";
 
 var t$1,e$1={},r$1={};var n$1,i$1,o$1={};
 /*! ieee754. BSD-3-Clause License. Feross Aboukhadijeh <https://feross.org/opensource> */function f$1(){return n$1||(n$1=1,o$1.read=function(t,e,r,n,i){var o,f,u=8*i-n-1,s=(1<<u)-1,h=s>>1,a=-7,c=r?i-1:0,l=r?-1:1,p=t[e+c];for(c+=l,o=p&(1<<-a)-1,p>>=-a,a+=u;a>0;o=256*o+t[e+c],c+=l,a-=8);for(f=o&(1<<-a)-1,o>>=-a,a+=n;a>0;f=256*f+t[e+c],c+=l,a-=8);if(0===o)o=1-h;else {if(o===s)return f?NaN:1/0*(p?-1:1);f+=Math.pow(2,n),o-=h;}return (p?-1:1)*f*Math.pow(2,o-n)},o$1.write=function(t,e,r,n,i,o){var f,u,s,h=8*o-i-1,a=(1<<h)-1,c=a>>1,l=23===i?Math.pow(2,-24)-Math.pow(2,-77):0,p=n?0:o-1,y=n?1:-1,g=e<0||0===e&&1/e<0?1:0;for(e=Math.abs(e),isNaN(e)||e===1/0?(u=isNaN(e)?1:0,f=a):(f=Math.floor(Math.log(e)/Math.LN2),e*(s=Math.pow(2,-f))<1&&(f--,s*=2),(e+=f+c>=1?l/s:l*Math.pow(2,1-c))*s>=2&&(f++,s/=2),f+c>=a?(u=0,f=a):f+c>=1?(u=(e*s-1)*Math.pow(2,i),f+=c):(u=e*Math.pow(2,c-1)*Math.pow(2,i),f=0));i>=8;t[r+p]=255&u,p+=y,u/=256,i-=8);for(f=f<<i|u,h+=i;h>0;t[r+p]=255&f,p+=y,f/=256,h-=8);t[r+p-y]|=128*g;}),o$1}
@@ -378,6 +378,18 @@ function requireEventemitter3 () {
 var eventemitter3Exports = requireEventemitter3();
 var EventEmitter = /*@__PURE__*/getDefaultExportFromCjs(eventemitter3Exports);
 
+/**
+ * @typedef {object} STATES
+ * @property {number} OPENING
+ * @property {number} OPEN
+ * @property {number} CLOSING
+ * @property {number} CLOSED
+ * @property {number} SERVER_READY
+ * @property {number} AUTH_FAIL
+ * @property {number} AUTH_READY
+ * @property {number} READY
+ * @property {number} REDIRECTING
+ */
 // Client STATES: name and number
 const STATES = {
   OPENING: 0,
@@ -392,7 +404,17 @@ const STATES = {
 };
 for (let c in STATES) { STATES[STATES[c]] = c; }
 
-// server side client state
+/**
+ * @typedef {object} CLIENT_STATE
+ * @property {number} INIT
+ * @property {number} SENT_SERVER_READY
+ * @property {number} RECV_AUTH_REQ
+ * @property {number} SENT_SERVER_NONCE
+ * @property {number} RECV_AUTH_HMAC
+ * @property {number} AUTH_FAIL
+ * @property {number} AUTH_READY
+ * @property {number} CID_READY
+ */
 const CLIENT_STATE = {
   INIT: 0,
   SENT_SERVER_READY: 1,
@@ -405,6 +427,12 @@ const CLIENT_STATE = {
 };
 for (let c in CLIENT_STATE) { CLIENT_STATE[CLIENT_STATE[c]] = c; }
 
+/**
+ * @typedef {object} ENC_MODE
+ * @property {number} NO
+ * @property {number} YES
+ * @property {number} AUTO
+ */
 let ENC_MODE = {
   NO: 0,
   YES: 1,
@@ -414,6 +442,15 @@ let ENC_MODE = {
 for (let c in ENC_MODE) { ENC_MODE[ENC_MODE[c]] = c; }
 
 
+/**
+ * @typedef {object} SIZE_LIMIT
+ * @property {number} TAG_LEN1
+ * @property {number} TAG_LEN2
+ * @property {number} CONNECTION_CHECKER_PERIOD
+ * @property {number} PROMISE_TIMEOUT
+ * @property {number} DID
+ * @property {number} CID
+ */
 const SIZE_LIMIT = {
   TAG_LEN1: 255,
   TAG_LEN2: 65535,
@@ -423,6 +460,15 @@ const SIZE_LIMIT = {
   CID: 12
 };
 
+/**
+ * @typedef {object} PAYLOAD_TYPE
+ * @property {number} EMPTY
+ * @property {number} TEXT
+ * @property {number} BINARY
+ * @property {number} OBJECT
+ * @property {number} MJSON
+ * @property {number} MBA
+ */
 let PAYLOAD_TYPE = {
   EMPTY: 0,
   TEXT: 1,
@@ -434,6 +480,40 @@ let PAYLOAD_TYPE = {
 for (let c in PAYLOAD_TYPE) { PAYLOAD_TYPE[PAYLOAD_TYPE[c]] = c; }
 
 
+/**
+ * @typedef {object} IOMsg
+ * @property {number} SERVER_READY
+ * @property {number} CID_REQ
+ * @property {number} CID_RES
+ * @property {number} QUOTA_LEVEL
+ * @property {number} SERVER_CLEAR_AUTH
+ * @property {number} SERVER_REDIRECT
+ * @property {number} LOOP
+ * @property {number} ECHO
+ * @property {number} PING
+ * @property {number} PONG
+ * @property {number} CLOSE
+ * @property {number} SIGNAL
+ * @property {number} SIGNAL_REQ
+ * @property {number} SIGNAL_E2E
+ * @property {number} SUBSCRIBE
+ * @property {number} SUBSCRIBE_REQ
+ * @property {number} UNSUBSCRIBE
+ * @property {number} SERVER_SIGNAL
+ * @property {number} IAM
+ * @property {number} IAM_RES
+ * @property {number} SET
+ * @property {number} RESPONSE_CODE
+ * @property {number} RESPONSE_MBP
+ * @property {number} REQUEST
+ * @property {number} RESPONSE
+ * @property {number} FLOW_MODE
+ * @property {number} WAIT
+ * @property {number} RESUME
+ * @property {number} TIME_OUT
+ * @property {number} OVER_SIZE
+ * @property {number} OVER_FLOW
+ */
 // IO message's one-byte headers.
 let IOMsg = {
 
@@ -513,11 +593,21 @@ let IOMsg = {
 for (let c in IOMsg) { IOMsg[IOMsg[c]] = c; }
 // console.log( IOMsg );
 
+/**
+ * @typedef {object} API_TYPE
+ * @property {string} REQUEST_RESPONSE
+ * @property {string} ONE_WAY
+ */
 const API_TYPE = {
   'REQUEST_RESPONSE': 'requet_response',
   'ONE_WAY': 'one_way'
 };
 
+/**
+ * @typedef {object} STATUS
+ * @property {number} OK
+ * @property {number} ERROR
+ */
 // api response status code
 const STATUS$1 = {
   OK: 0,
@@ -691,6 +781,19 @@ const t=new Uint32Array([1116352408,1899447441,3049323471,3921009573,961987163,1
  * @license  MIT
  */var V=(K||(K=1,function(t){const e=function(){if(j)return D;j=1,D.byteLength=function(t){var e=o(t),r=e[0],n=e[1];return 3*(r+n)/4-n},D.toByteArray=function(t){var n,i,f=o(t),s=f[0],u=f[1],h=new r(function(t,e,r){return 3*(e+r)/4-r}(0,s,u)),a=0,c=u>0?s-4:s;for(i=0;i<c;i+=4)n=e[t.charCodeAt(i)]<<18|e[t.charCodeAt(i+1)]<<12|e[t.charCodeAt(i+2)]<<6|e[t.charCodeAt(i+3)],h[a++]=n>>16&255,h[a++]=n>>8&255,h[a++]=255&n;return 2===u&&(n=e[t.charCodeAt(i)]<<2|e[t.charCodeAt(i+1)]>>4,h[a++]=255&n),1===u&&(n=e[t.charCodeAt(i)]<<10|e[t.charCodeAt(i+1)]<<4|e[t.charCodeAt(i+2)]>>2,h[a++]=n>>8&255,h[a++]=255&n),h},D.fromByteArray=function(e){for(var r,n=e.length,i=n%3,o=[],s=16383,u=0,h=n-i;u<h;u+=s)o.push(f(e,u,u+s>h?h:u+s));return 1===i?(r=e[n-1],o.push(t[r>>2]+t[r<<4&63]+"==")):2===i&&(r=(e[n-2]<<8)+e[n-1],o.push(t[r>>10]+t[r>>4&63]+t[r<<2&63]+"=")),o.join("")};for(var t=[],e=[],r="undefined"!=typeof Uint8Array?Uint8Array:Array,n="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/",i=0;i<64;++i)t[i]=n[i],e[n.charCodeAt(i)]=i;function o(t){var e=t.length;if(e%4>0)throw new Error("Invalid string. Length must be a multiple of 4");var r=t.indexOf("=");return  -1===r&&(r=e),[r,r===e?0:4-r%4]}function f(e,r,n){for(var i,o,f=[],s=r;s<n;s+=3)i=(e[s]<<16&16711680)+(e[s+1]<<8&65280)+(255&e[s+2]),f.push(t[(o=i)>>18&63]+t[o>>12&63]+t[o>>6&63]+t[63&o]);return f.join("")}return e["-".charCodeAt(0)]=62,e["_".charCodeAt(0)]=63,D}(),r=G(),n="function"==typeof Symbol&&"function"==typeof Symbol.for?Symbol.for("nodejs.util.inspect.custom"):null;t.Buffer=f,t.SlowBuffer=function(t){return +t!=t&&(t=0),f.alloc(+t)},t.INSPECT_MAX_BYTES=50;const i=2147483647;function o(t){if(t>i)throw new RangeError('The value "'+t+'" is invalid for option "size"');const e=new Uint8Array(t);return Object.setPrototypeOf(e,f.prototype),e}function f(t,e,r){if("number"==typeof t){if("string"==typeof e)throw new TypeError('The "string" argument must be of type string. Received type number');return h(t)}return s(t,e,r)}function s(t,e,r){if("string"==typeof t)return function(t,e){if("string"==typeof e&&""!==e||(e="utf8"),!f.isEncoding(e))throw new TypeError("Unknown encoding: "+e);const r=0|p(t,e);let n=o(r);const i=n.write(t,e);return i!==r&&(n=n.slice(0,i)),n}(t,e);if(ArrayBuffer.isView(t))return function(t){if(Q(t,Uint8Array)){const e=new Uint8Array(t);return c(e.buffer,e.byteOffset,e.byteLength)}return a(t)}(t);if(null==t)throw new TypeError("The first argument must be one of type string, Buffer, ArrayBuffer, Array, or Array-like Object. Received type "+typeof t);if(Q(t,ArrayBuffer)||t&&Q(t.buffer,ArrayBuffer))return c(t,e,r);if("undefined"!=typeof SharedArrayBuffer&&(Q(t,SharedArrayBuffer)||t&&Q(t.buffer,SharedArrayBuffer)))return c(t,e,r);if("number"==typeof t)throw new TypeError('The "value" argument must not be of type number. Received type number');const n=t.valueOf&&t.valueOf();if(null!=n&&n!==t)return f.from(n,e,r);const i=function(t){if(f.isBuffer(t)){const e=0|l(t.length),r=o(e);return 0===r.length||t.copy(r,0,0,e),r}return void 0!==t.length?"number"!=typeof t.length||X(t.length)?o(0):a(t):"Buffer"===t.type&&Array.isArray(t.data)?a(t.data):void 0}(t);if(i)return i;if("undefined"!=typeof Symbol&&null!=Symbol.toPrimitive&&"function"==typeof t[Symbol.toPrimitive])return f.from(t[Symbol.toPrimitive]("string"),e,r);throw new TypeError("The first argument must be one of type string, Buffer, ArrayBuffer, Array, or Array-like Object. Received type "+typeof t)}function u(t){if("number"!=typeof t)throw new TypeError('"size" argument must be of type number');if(t<0)throw new RangeError('The value "'+t+'" is invalid for option "size"')}function h(t){return u(t),o(t<0?0:0|l(t))}function a(t){const e=t.length<0?0:0|l(t.length),r=o(e);for(let n=0;n<e;n+=1)r[n]=255&t[n];return r}function c(t,e,r){if(e<0||t.byteLength<e)throw new RangeError('"offset" is outside of buffer bounds');if(t.byteLength<e+(r||0))throw new RangeError('"length" is outside of buffer bounds');let n;return n=void 0===e&&void 0===r?new Uint8Array(t):void 0===r?new Uint8Array(t,e):new Uint8Array(t,e,r),Object.setPrototypeOf(n,f.prototype),n}function l(t){if(t>=i)throw new RangeError("Attempt to allocate Buffer larger than maximum size: 0x"+i.toString(16)+" bytes");return 0|t}function p(t,e){if(f.isBuffer(t))return t.length;if(ArrayBuffer.isView(t)||Q(t,ArrayBuffer))return t.byteLength;if("string"!=typeof t)throw new TypeError('The "string" argument must be one of type string, Buffer, or ArrayBuffer. Received type '+typeof t);const r=t.length,n=arguments.length>2&&true===arguments[2];if(!n&&0===r)return 0;let i=false;for(;;)switch(e){case "ascii":case "latin1":case "binary":return r;case "utf8":case "utf-8":return q(t).length;case "ucs2":case "ucs-2":case "utf16le":case "utf-16le":return 2*r;case "hex":return r>>>1;case "base64":return V(t).length;default:if(i)return n?-1:q(t).length;e=(""+e).toLowerCase(),i=true;}}function y(t,e,r){let n=false;if((void 0===e||e<0)&&(e=0),e>this.length)return "";if((void 0===r||r>this.length)&&(r=this.length),r<=0)return "";if((r>>>=0)<=(e>>>=0))return "";for(t||(t="utf8");;)switch(t){case "hex":return T(this,e,r);case "utf8":case "utf-8":return U(this,e,r);case "ascii":return L(this,e,r);case "latin1":case "binary":return v(this,e,r);case "base64":return _(this,e,r);case "ucs2":case "ucs-2":case "utf16le":case "utf-16le":return S(this,e,r);default:if(n)throw new TypeError("Unknown encoding: "+t);t=(t+"").toLowerCase(),n=true;}}function g(t,e,r){const n=t[e];t[e]=t[r],t[r]=n;}function d(t,e,r,n,i){if(0===t.length)return  -1;if("string"==typeof r?(n=r,r=0):r>2147483647?r=2147483647:r<-2147483648&&(r=-2147483648),X(r=+r)&&(r=i?0:t.length-1),r<0&&(r=t.length+r),r>=t.length){if(i)return  -1;r=t.length-1;}else if(r<0){if(!i)return  -1;r=0;}if("string"==typeof e&&(e=f.from(e,n)),f.isBuffer(e))return 0===e.length?-1:b(t,e,r,n,i);if("number"==typeof e)return e&=255,"function"==typeof Uint8Array.prototype.indexOf?i?Uint8Array.prototype.indexOf.call(t,e,r):Uint8Array.prototype.lastIndexOf.call(t,e,r):b(t,[e],r,n,i);throw new TypeError("val must be string, number or Buffer")}function b(t,e,r,n,i){let o,f=1,s=t.length,u=e.length;if(void 0!==n&&("ucs2"===(n=String(n).toLowerCase())||"ucs-2"===n||"utf16le"===n||"utf-16le"===n)){if(t.length<2||e.length<2)return  -1;f=2,s/=2,u/=2,r/=2;}function h(t,e){return 1===f?t[e]:t.readUInt16BE(e*f)}if(i){let n=-1;for(o=r;o<s;o++)if(h(t,o)===h(e,-1===n?0:o-n)){if(-1===n&&(n=o),o-n+1===u)return n*f}else  -1!==n&&(o-=o-n),n=-1;}else for(r+u>s&&(r=s-u),o=r;o>=0;o--){let r=true;for(let n=0;n<u;n++)if(h(t,o+n)!==h(e,n)){r=false;break}if(r)return o}return  -1}function w(t,e,r,n){r=Number(r)||0;const i=t.length-r;n?(n=Number(n))>i&&(n=i):n=i;const o=e.length;let f;for(n>o/2&&(n=o/2),f=0;f<n;++f){const n=parseInt(e.substr(2*f,2),16);if(X(n))return f;t[r+f]=n;}return f}function B(t,e,r,n){return J(q(e,t.length-r),t,r,n)}function m(t,e,r,n){return J(function(t){const e=[];for(let r=0;r<t.length;++r)e.push(255&t.charCodeAt(r));return e}(e),t,r,n)}function E(t,e,r,n){return J(V(e),t,r,n)}function A(t,e,r,n){return J(function(t,e){let r,n,i;const o=[];for(let f=0;f<t.length&&!((e-=2)<0);++f)r=t.charCodeAt(f),n=r>>8,i=r%256,o.push(i),o.push(n);return o}(e,t.length-r),t,r,n)}function _(t,r,n){return 0===r&&n===t.length?e.fromByteArray(t):e.fromByteArray(t.slice(r,n))}function U(t,e,r){r=Math.min(t.length,r);const n=[];let i=e;for(;i<r;){const e=t[i];let o=null,f=e>239?4:e>223?3:e>191?2:1;if(i+f<=r){let r,n,s,u;switch(f){case 1:e<128&&(o=e);break;case 2:r=t[i+1],128==(192&r)&&(u=(31&e)<<6|63&r,u>127&&(o=u));break;case 3:r=t[i+1],n=t[i+2],128==(192&r)&&128==(192&n)&&(u=(15&e)<<12|(63&r)<<6|63&n,u>2047&&(u<55296||u>57343)&&(o=u));break;case 4:r=t[i+1],n=t[i+2],s=t[i+3],128==(192&r)&&128==(192&n)&&128==(192&s)&&(u=(15&e)<<18|(63&r)<<12|(63&n)<<6|63&s,u>65535&&u<1114112&&(o=u));}}null===o?(o=65533,f=1):o>65535&&(o-=65536,n.push(o>>>10&1023|55296),o=56320|1023&o),n.push(o),i+=f;}return function(t){const e=t.length;if(e<=I)return String.fromCharCode.apply(String,t);let r="",n=0;for(;n<e;)r+=String.fromCharCode.apply(String,t.slice(n,n+=I));return r}(n)}t.kMaxLength=i,f.TYPED_ARRAY_SUPPORT=function(){try{const t=new Uint8Array(1),e={foo:function(){return 42}};return Object.setPrototypeOf(e,Uint8Array.prototype),Object.setPrototypeOf(t,e),42===t.foo()}catch(t){return  false}}(),f.TYPED_ARRAY_SUPPORT||"undefined"==typeof console||"function"!=typeof console.error||console.error("This browser lacks typed array (Uint8Array) support which is required by `buffer` v5.x. Use `buffer` v4.x if you require old browser support."),Object.defineProperty(f.prototype,"parent",{enumerable:true,get:function(){if(f.isBuffer(this))return this.buffer}}),Object.defineProperty(f.prototype,"offset",{enumerable:true,get:function(){if(f.isBuffer(this))return this.byteOffset}}),f.poolSize=8192,f.from=function(t,e,r){return s(t,e,r)},Object.setPrototypeOf(f.prototype,Uint8Array.prototype),Object.setPrototypeOf(f,Uint8Array),f.alloc=function(t,e,r){return function(t,e,r){return u(t),t<=0?o(t):void 0!==e?"string"==typeof r?o(t).fill(e,r):o(t).fill(e):o(t)}(t,e,r)},f.allocUnsafe=function(t){return h(t)},f.allocUnsafeSlow=function(t){return h(t)},f.isBuffer=function(t){return null!=t&&true===t._isBuffer&&t!==f.prototype},f.compare=function(t,e){if(Q(t,Uint8Array)&&(t=f.from(t,t.offset,t.byteLength)),Q(e,Uint8Array)&&(e=f.from(e,e.offset,e.byteLength)),!f.isBuffer(t)||!f.isBuffer(e))throw new TypeError('The "buf1", "buf2" arguments must be one of type Buffer or Uint8Array');if(t===e)return 0;let r=t.length,n=e.length;for(let i=0,o=Math.min(r,n);i<o;++i)if(t[i]!==e[i]){r=t[i],n=e[i];break}return r<n?-1:n<r?1:0},f.isEncoding=function(t){switch(String(t).toLowerCase()){case "hex":case "utf8":case "utf-8":case "ascii":case "latin1":case "binary":case "base64":case "ucs2":case "ucs-2":case "utf16le":case "utf-16le":return  true;default:return  false}},f.concat=function(t,e){if(!Array.isArray(t))throw new TypeError('"list" argument must be an Array of Buffers');if(0===t.length)return f.alloc(0);let r;if(void 0===e)for(e=0,r=0;r<t.length;++r)e+=t[r].length;const n=f.allocUnsafe(e);let i=0;for(r=0;r<t.length;++r){let e=t[r];if(Q(e,Uint8Array))i+e.length>n.length?(f.isBuffer(e)||(e=f.from(e)),e.copy(n,i)):Uint8Array.prototype.set.call(n,e,i);else {if(!f.isBuffer(e))throw new TypeError('"list" argument must be an Array of Buffers');e.copy(n,i);}i+=e.length;}return n},f.byteLength=p,f.prototype._isBuffer=true,f.prototype.swap16=function(){const t=this.length;if(t%2!=0)throw new RangeError("Buffer size must be a multiple of 16-bits");for(let e=0;e<t;e+=2)g(this,e,e+1);return this},f.prototype.swap32=function(){const t=this.length;if(t%4!=0)throw new RangeError("Buffer size must be a multiple of 32-bits");for(let e=0;e<t;e+=4)g(this,e,e+3),g(this,e+1,e+2);return this},f.prototype.swap64=function(){const t=this.length;if(t%8!=0)throw new RangeError("Buffer size must be a multiple of 64-bits");for(let e=0;e<t;e+=8)g(this,e,e+7),g(this,e+1,e+6),g(this,e+2,e+5),g(this,e+3,e+4);return this},f.prototype.toString=function(){const t=this.length;return 0===t?"":0===arguments.length?U(this,0,t):y.apply(this,arguments)},f.prototype.toLocaleString=f.prototype.toString,f.prototype.equals=function(t){if(!f.isBuffer(t))throw new TypeError("Argument must be a Buffer");return this===t||0===f.compare(this,t)},f.prototype.inspect=function(){let e="";const r=t.INSPECT_MAX_BYTES;return e=this.toString("hex",0,r).replace(/(.{2})/g,"$1 ").trim(),this.length>r&&(e+=" ... "),"<Buffer "+e+">"},n&&(f.prototype[n]=f.prototype.inspect),f.prototype.compare=function(t,e,r,n,i){if(Q(t,Uint8Array)&&(t=f.from(t,t.offset,t.byteLength)),!f.isBuffer(t))throw new TypeError('The "target" argument must be one of type Buffer or Uint8Array. Received type '+typeof t);if(void 0===e&&(e=0),void 0===r&&(r=t?t.length:0),void 0===n&&(n=0),void 0===i&&(i=this.length),e<0||r>t.length||n<0||i>this.length)throw new RangeError("out of range index");if(n>=i&&e>=r)return 0;if(n>=i)return  -1;if(e>=r)return 1;if(this===t)return 0;let o=(i>>>=0)-(n>>>=0),s=(r>>>=0)-(e>>>=0);const u=Math.min(o,s),h=this.slice(n,i),a=t.slice(e,r);for(let t=0;t<u;++t)if(h[t]!==a[t]){o=h[t],s=a[t];break}return o<s?-1:s<o?1:0},f.prototype.includes=function(t,e,r){return  -1!==this.indexOf(t,e,r)},f.prototype.indexOf=function(t,e,r){return d(this,t,e,r,true)},f.prototype.lastIndexOf=function(t,e,r){return d(this,t,e,r,false)},f.prototype.write=function(t,e,r,n){if(void 0===e)n="utf8",r=this.length,e=0;else if(void 0===r&&"string"==typeof e)n=e,r=this.length,e=0;else {if(!isFinite(e))throw new Error("Buffer.write(string, encoding, offset[, length]) is no longer supported");e>>>=0,isFinite(r)?(r>>>=0,void 0===n&&(n="utf8")):(n=r,r=void 0);}const i=this.length-e;if((void 0===r||r>i)&&(r=i),t.length>0&&(r<0||e<0)||e>this.length)throw new RangeError("Attempt to write outside buffer bounds");n||(n="utf8");let o=false;for(;;)switch(n){case "hex":return w(this,t,e,r);case "utf8":case "utf-8":return B(this,t,e,r);case "ascii":case "latin1":case "binary":return m(this,t,e,r);case "base64":return E(this,t,e,r);case "ucs2":case "ucs-2":case "utf16le":case "utf-16le":return A(this,t,e,r);default:if(o)throw new TypeError("Unknown encoding: "+n);n=(""+n).toLowerCase(),o=true;}},f.prototype.toJSON=function(){return {type:"Buffer",data:Array.prototype.slice.call(this._arr||this,0)}};const I=4096;function L(t,e,r){let n="";r=Math.min(t.length,r);for(let i=e;i<r;++i)n+=String.fromCharCode(127&t[i]);return n}function v(t,e,r){let n="";r=Math.min(t.length,r);for(let i=e;i<r;++i)n+=String.fromCharCode(t[i]);return n}function T(t,e,r){const n=t.length;(!e||e<0)&&(e=0),(!r||r<0||r>n)&&(r=n);let i="";for(let n=e;n<r;++n)i+=W[t[n]];return i}function S(t,e,r){const n=t.slice(e,r);let i="";for(let t=0;t<n.length-1;t+=2)i+=String.fromCharCode(n[t]+256*n[t+1]);return i}function R(t,e,r){if(t%1!=0||t<0)throw new RangeError("offset is not uint");if(t+e>r)throw new RangeError("Trying to access beyond buffer length")}function O(t,e,r,n,i,o){if(!f.isBuffer(t))throw new TypeError('"buffer" argument must be a Buffer instance');if(e>i||e<o)throw new RangeError('"value" argument is out of bounds');if(r+n>t.length)throw new RangeError("Index out of range")}function M(t,e,r,n,i){F(e,n,i,t,r,7);let o=Number(e&BigInt(4294967295));t[r++]=o,o>>=8,t[r++]=o,o>>=8,t[r++]=o,o>>=8,t[r++]=o;let f=Number(e>>BigInt(32)&BigInt(4294967295));return t[r++]=f,f>>=8,t[r++]=f,f>>=8,t[r++]=f,f>>=8,t[r++]=f,r}function C(t,e,r,n,i){F(e,n,i,t,r,7);let o=Number(e&BigInt(4294967295));t[r+7]=o,o>>=8,t[r+6]=o,o>>=8,t[r+5]=o,o>>=8,t[r+4]=o;let f=Number(e>>BigInt(32)&BigInt(4294967295));return t[r+3]=f,f>>=8,t[r+2]=f,f>>=8,t[r+1]=f,f>>=8,t[r]=f,r+8}function N(t,e,r,n,i,o){if(r+n>t.length)throw new RangeError("Index out of range");if(r<0)throw new RangeError("Index out of range")}function x(t,e,n,i,o){return e=+e,n>>>=0,o||N(t,0,n,4),r.write(t,e,n,i,23,4),n+4}function k(t,e,n,i,o){return e=+e,n>>>=0,o||N(t,0,n,8),r.write(t,e,n,i,52,8),n+8}f.prototype.slice=function(t,e){const r=this.length;(t=~~t)<0?(t+=r)<0&&(t=0):t>r&&(t=r),(e=void 0===e?r:~~e)<0?(e+=r)<0&&(e=0):e>r&&(e=r),e<t&&(e=t);const n=this.subarray(t,e);return Object.setPrototypeOf(n,f.prototype),n},f.prototype.readUintLE=f.prototype.readUIntLE=function(t,e,r){t>>>=0,e>>>=0,r||R(t,e,this.length);let n=this[t],i=1,o=0;for(;++o<e&&(i*=256);)n+=this[t+o]*i;return n},f.prototype.readUintBE=f.prototype.readUIntBE=function(t,e,r){t>>>=0,e>>>=0,r||R(t,e,this.length);let n=this[t+--e],i=1;for(;e>0&&(i*=256);)n+=this[t+--e]*i;return n},f.prototype.readUint8=f.prototype.readUInt8=function(t,e){return t>>>=0,e||R(t,1,this.length),this[t]},f.prototype.readUint16LE=f.prototype.readUInt16LE=function(t,e){return t>>>=0,e||R(t,2,this.length),this[t]|this[t+1]<<8},f.prototype.readUint16BE=f.prototype.readUInt16BE=function(t,e){return t>>>=0,e||R(t,2,this.length),this[t]<<8|this[t+1]},f.prototype.readUint32LE=f.prototype.readUInt32LE=function(t,e){return t>>>=0,e||R(t,4,this.length),(this[t]|this[t+1]<<8|this[t+2]<<16)+16777216*this[t+3]},f.prototype.readUint32BE=f.prototype.readUInt32BE=function(t,e){return t>>>=0,e||R(t,4,this.length),16777216*this[t]+(this[t+1]<<16|this[t+2]<<8|this[t+3])},f.prototype.readBigUInt64LE=Z((function(t){z(t>>>=0,"offset");const e=this[t],r=this[t+7];void 0!==e&&void 0!==r||Y(t,this.length-8);const n=e+256*this[++t]+65536*this[++t]+this[++t]*2**24,i=this[++t]+256*this[++t]+65536*this[++t]+r*2**24;return BigInt(n)+(BigInt(i)<<BigInt(32))})),f.prototype.readBigUInt64BE=Z((function(t){z(t>>>=0,"offset");const e=this[t],r=this[t+7];void 0!==e&&void 0!==r||Y(t,this.length-8);const n=e*2**24+65536*this[++t]+256*this[++t]+this[++t],i=this[++t]*2**24+65536*this[++t]+256*this[++t]+r;return (BigInt(n)<<BigInt(32))+BigInt(i)})),f.prototype.readIntLE=function(t,e,r){t>>>=0,e>>>=0,r||R(t,e,this.length);let n=this[t],i=1,o=0;for(;++o<e&&(i*=256);)n+=this[t+o]*i;return i*=128,n>=i&&(n-=Math.pow(2,8*e)),n},f.prototype.readIntBE=function(t,e,r){t>>>=0,e>>>=0,r||R(t,e,this.length);let n=e,i=1,o=this[t+--n];for(;n>0&&(i*=256);)o+=this[t+--n]*i;return i*=128,o>=i&&(o-=Math.pow(2,8*e)),o},f.prototype.readInt8=function(t,e){return t>>>=0,e||R(t,1,this.length),128&this[t]?-1*(255-this[t]+1):this[t]},f.prototype.readInt16LE=function(t,e){t>>>=0,e||R(t,2,this.length);const r=this[t]|this[t+1]<<8;return 32768&r?4294901760|r:r},f.prototype.readInt16BE=function(t,e){t>>>=0,e||R(t,2,this.length);const r=this[t+1]|this[t]<<8;return 32768&r?4294901760|r:r},f.prototype.readInt32LE=function(t,e){return t>>>=0,e||R(t,4,this.length),this[t]|this[t+1]<<8|this[t+2]<<16|this[t+3]<<24},f.prototype.readInt32BE=function(t,e){return t>>>=0,e||R(t,4,this.length),this[t]<<24|this[t+1]<<16|this[t+2]<<8|this[t+3]},f.prototype.readBigInt64LE=Z((function(t){z(t>>>=0,"offset");const e=this[t],r=this[t+7];void 0!==e&&void 0!==r||Y(t,this.length-8);const n=this[t+4]+256*this[t+5]+65536*this[t+6]+(r<<24);return (BigInt(n)<<BigInt(32))+BigInt(e+256*this[++t]+65536*this[++t]+this[++t]*2**24)})),f.prototype.readBigInt64BE=Z((function(t){z(t>>>=0,"offset");const e=this[t],r=this[t+7];void 0!==e&&void 0!==r||Y(t,this.length-8);const n=(e<<24)+65536*this[++t]+256*this[++t]+this[++t];return (BigInt(n)<<BigInt(32))+BigInt(this[++t]*2**24+65536*this[++t]+256*this[++t]+r)})),f.prototype.readFloatLE=function(t,e){return t>>>=0,e||R(t,4,this.length),r.read(this,t,true,23,4)},f.prototype.readFloatBE=function(t,e){return t>>>=0,e||R(t,4,this.length),r.read(this,t,false,23,4)},f.prototype.readDoubleLE=function(t,e){return t>>>=0,e||R(t,8,this.length),r.read(this,t,true,52,8)},f.prototype.readDoubleBE=function(t,e){return t>>>=0,e||R(t,8,this.length),r.read(this,t,false,52,8)},f.prototype.writeUintLE=f.prototype.writeUIntLE=function(t,e,r,n){t=+t,e>>>=0,r>>>=0,n||O(this,t,e,r,Math.pow(2,8*r)-1,0);let i=1,o=0;for(this[e]=255&t;++o<r&&(i*=256);)this[e+o]=t/i&255;return e+r},f.prototype.writeUintBE=f.prototype.writeUIntBE=function(t,e,r,n){t=+t,e>>>=0,r>>>=0,n||O(this,t,e,r,Math.pow(2,8*r)-1,0);let i=r-1,o=1;for(this[e+i]=255&t;--i>=0&&(o*=256);)this[e+i]=t/o&255;return e+r},f.prototype.writeUint8=f.prototype.writeUInt8=function(t,e,r){return t=+t,e>>>=0,r||O(this,t,e,1,255,0),this[e]=255&t,e+1},f.prototype.writeUint16LE=f.prototype.writeUInt16LE=function(t,e,r){return t=+t,e>>>=0,r||O(this,t,e,2,65535,0),this[e]=255&t,this[e+1]=t>>>8,e+2},f.prototype.writeUint16BE=f.prototype.writeUInt16BE=function(t,e,r){return t=+t,e>>>=0,r||O(this,t,e,2,65535,0),this[e]=t>>>8,this[e+1]=255&t,e+2},f.prototype.writeUint32LE=f.prototype.writeUInt32LE=function(t,e,r){return t=+t,e>>>=0,r||O(this,t,e,4,4294967295,0),this[e+3]=t>>>24,this[e+2]=t>>>16,this[e+1]=t>>>8,this[e]=255&t,e+4},f.prototype.writeUint32BE=f.prototype.writeUInt32BE=function(t,e,r){return t=+t,e>>>=0,r||O(this,t,e,4,4294967295,0),this[e]=t>>>24,this[e+1]=t>>>16,this[e+2]=t>>>8,this[e+3]=255&t,e+4},f.prototype.writeBigUInt64LE=Z((function(t,e=0){return M(this,t,e,BigInt(0),BigInt("0xffffffffffffffff"))})),f.prototype.writeBigUInt64BE=Z((function(t,e=0){return C(this,t,e,BigInt(0),BigInt("0xffffffffffffffff"))})),f.prototype.writeIntLE=function(t,e,r,n){if(t=+t,e>>>=0,!n){const n=Math.pow(2,8*r-1);O(this,t,e,r,n-1,-n);}let i=0,o=1,f=0;for(this[e]=255&t;++i<r&&(o*=256);)t<0&&0===f&&0!==this[e+i-1]&&(f=1),this[e+i]=(t/o|0)-f&255;return e+r},f.prototype.writeIntBE=function(t,e,r,n){if(t=+t,e>>>=0,!n){const n=Math.pow(2,8*r-1);O(this,t,e,r,n-1,-n);}let i=r-1,o=1,f=0;for(this[e+i]=255&t;--i>=0&&(o*=256);)t<0&&0===f&&0!==this[e+i+1]&&(f=1),this[e+i]=(t/o|0)-f&255;return e+r},f.prototype.writeInt8=function(t,e,r){return t=+t,e>>>=0,r||O(this,t,e,1,127,-128),t<0&&(t=255+t+1),this[e]=255&t,e+1},f.prototype.writeInt16LE=function(t,e,r){return t=+t,e>>>=0,r||O(this,t,e,2,32767,-32768),this[e]=255&t,this[e+1]=t>>>8,e+2},f.prototype.writeInt16BE=function(t,e,r){return t=+t,e>>>=0,r||O(this,t,e,2,32767,-32768),this[e]=t>>>8,this[e+1]=255&t,e+2},f.prototype.writeInt32LE=function(t,e,r){return t=+t,e>>>=0,r||O(this,t,e,4,2147483647,-2147483648),this[e]=255&t,this[e+1]=t>>>8,this[e+2]=t>>>16,this[e+3]=t>>>24,e+4},f.prototype.writeInt32BE=function(t,e,r){return t=+t,e>>>=0,r||O(this,t,e,4,2147483647,-2147483648),t<0&&(t=4294967295+t+1),this[e]=t>>>24,this[e+1]=t>>>16,this[e+2]=t>>>8,this[e+3]=255&t,e+4},f.prototype.writeBigInt64LE=Z((function(t,e=0){return M(this,t,e,-BigInt("0x8000000000000000"),BigInt("0x7fffffffffffffff"))})),f.prototype.writeBigInt64BE=Z((function(t,e=0){return C(this,t,e,-BigInt("0x8000000000000000"),BigInt("0x7fffffffffffffff"))})),f.prototype.writeFloatLE=function(t,e,r){return x(this,t,e,true,r)},f.prototype.writeFloatBE=function(t,e,r){return x(this,t,e,false,r)},f.prototype.writeDoubleLE=function(t,e,r){return k(this,t,e,true,r)},f.prototype.writeDoubleBE=function(t,e,r){return k(this,t,e,false,r)},f.prototype.copy=function(t,e,r,n){if(!f.isBuffer(t))throw new TypeError("argument should be a Buffer");if(r||(r=0),n||0===n||(n=this.length),e>=t.length&&(e=t.length),e||(e=0),n>0&&n<r&&(n=r),n===r)return 0;if(0===t.length||0===this.length)return 0;if(e<0)throw new RangeError("targetStart out of bounds");if(r<0||r>=this.length)throw new RangeError("Index out of range");if(n<0)throw new RangeError("sourceEnd out of bounds");n>this.length&&(n=this.length),t.length-e<n-r&&(n=t.length-e+r);const i=n-r;return this===t&&"function"==typeof Uint8Array.prototype.copyWithin?this.copyWithin(e,r,n):Uint8Array.prototype.set.call(t,this.subarray(r,n),e),i},f.prototype.fill=function(t,e,r,n){if("string"==typeof t){if("string"==typeof e?(n=e,e=0,r=this.length):"string"==typeof r&&(n=r,r=this.length),void 0!==n&&"string"!=typeof n)throw new TypeError("encoding must be a string");if("string"==typeof n&&!f.isEncoding(n))throw new TypeError("Unknown encoding: "+n);if(1===t.length){const e=t.charCodeAt(0);("utf8"===n&&e<128||"latin1"===n)&&(t=e);}}else "number"==typeof t?t&=255:"boolean"==typeof t&&(t=Number(t));if(e<0||this.length<e||this.length<r)throw new RangeError("Out of range index");if(r<=e)return this;let i;if(e>>>=0,r=void 0===r?this.length:r>>>0,t||(t=0),"number"==typeof t)for(i=e;i<r;++i)this[i]=t;else {const o=f.isBuffer(t)?t:f.from(t,n),s=o.length;if(0===s)throw new TypeError('The value "'+t+'" is invalid for argument "value"');for(i=0;i<r-e;++i)this[i+e]=o[i%s];}return this};const P={};function $(t,e,r){P[t]=class extends r{constructor(){super(),Object.defineProperty(this,"message",{value:e.apply(this,arguments),writable:true,configurable:true}),this.name=`${this.name} [${t}]`,this.stack,delete this.name;}get code(){return t}set code(t){Object.defineProperty(this,"code",{configurable:true,enumerable:true,value:t,writable:true});}toString(){return `${this.name} [${t}]: ${this.message}`}};}function H(t){let e="",r=t.length;const n="-"===t[0]?1:0;for(;r>=n+4;r-=3)e=`_${t.slice(r-3,r)}${e}`;return `${t.slice(0,r)}${e}`}function F(t,e,r,n,i,o){if(t>r||t<e){const r="bigint"==typeof e?"n":"";let n;throw n=0===e||e===BigInt(0)?`>= 0${r} and < 2${r} ** ${8*(o+1)}${r}`:`>= -(2${r} ** ${8*(o+1)-1}${r}) and < 2 ** ${8*(o+1)-1}${r}`,new P.ERR_OUT_OF_RANGE("value",n,t)}!function(t,e,r){z(e,"offset"),void 0!==t[e]&&void 0!==t[e+r]||Y(e,t.length-(r+1));}(n,i,o);}function z(t,e){if("number"!=typeof t)throw new P.ERR_INVALID_ARG_TYPE(e,"number",t)}function Y(t,e,r){if(Math.floor(t)!==t)throw z(t,r),new P.ERR_OUT_OF_RANGE("offset","an integer",t);if(e<0)throw new P.ERR_BUFFER_OUT_OF_BOUNDS;throw new P.ERR_OUT_OF_RANGE("offset",`>= 0 and <= ${e}`,t)}$("ERR_BUFFER_OUT_OF_BOUNDS",(function(t){return t?`${t} is outside of buffer bounds`:"Attempt to access memory outside buffer bounds"}),RangeError),$("ERR_INVALID_ARG_TYPE",(function(t,e){return `The "${t}" argument must be of type number. Received type ${typeof e}`}),TypeError),$("ERR_OUT_OF_RANGE",(function(t,e,r){let n=`The value of "${t}" is out of range.`,i=r;return Number.isInteger(r)&&Math.abs(r)>2**32?i=H(String(r)):"bigint"==typeof r&&(i=String(r),(r>BigInt(2)**BigInt(32)||r<-(BigInt(2)**BigInt(32)))&&(i=H(i)),i+="n"),n+=` It must be ${e}. Received ${i}`,n}),RangeError);const K=/[^+/0-9A-Za-z-_]/g;function q(t,e){let r;e=e||1/0;const n=t.length;let i=null;const o=[];for(let f=0;f<n;++f){if(r=t.charCodeAt(f),r>55295&&r<57344){if(!i){if(r>56319){(e-=3)>-1&&o.push(239,191,189);continue}if(f+1===n){(e-=3)>-1&&o.push(239,191,189);continue}i=r;continue}if(r<56320){(e-=3)>-1&&o.push(239,191,189),i=r;continue}r=65536+(i-55296<<10|r-56320);}else i&&(e-=3)>-1&&o.push(239,191,189);if(i=null,r<128){if((e-=1)<0)break;o.push(r);}else if(r<2048){if((e-=2)<0)break;o.push(r>>6|192,63&r|128);}else if(r<65536){if((e-=3)<0)break;o.push(r>>12|224,r>>6&63|128,63&r|128);}else {if(!(r<1114112))throw new Error("Invalid code point");if((e-=4)<0)break;o.push(r>>18|240,r>>12&63|128,r>>6&63|128,63&r|128);}}return o}function V(t){return e.toByteArray(function(t){if((t=(t=t.split("=")[0]).trim().replace(K,"")).length<2)return "";for(;t.length%4!=0;)t+="=";return t}(t))}function J(t,e,r,n){let i;for(i=0;i<n&&!(i+r>=e.length||i>=t.length);++i)e[i+r]=t[i];return i}function Q(t,e){return t instanceof e||null!=t&&null!=t.constructor&&null!=t.constructor.name&&t.constructor.name===e.name}function X(t){return t!=t}const W=function(){const t="0123456789abcdef",e=new Array(256);for(let r=0;r<16;++r){const n=16*r;for(let i=0;i<16;++i)e[n+i]=t[r]+t[i];}return e}();function Z(t){return "undefined"==typeof BigInt?tt:t}function tt(){throw new Error("BigInt not supported")}}(z)),z);let J={AUTH_REQ:176,AUTH_NONCE:177,AUTH_HMAC:178,AUTH_ACK:179,AUTH_FAIL:180,AUTH_EXT:181,ENC_PACK:182,ENC_E2E:183,ENC_488:184};for(let t in J)J[J[t]]=t;const Q={AUTH_REQ:H.meta(H.MB("header","8",0),H.MB("reserved","8",0)),AUTH_NONCE:H.meta(H.MB("header","8",0),H.MB("unixTime","32L",0),H.MB("milTime","32L",0),H.MB("nonce",V.Buffer.alloc(4))),AUTH_HMAC:H.meta(H.MB("header","8",0),H.MB("id8",V.Buffer.alloc(8)),H.MB("nonce",V.Buffer.alloc(4)),H.MB("hmac32",V.Buffer.alloc(32))),AUTH_ACK:H.meta(H.MB("header","8",0),H.MB("hmac32",V.Buffer.alloc(32))),ENC_PACK:H.meta(H.MB("type","8",0),H.MB("len","32L",0),H.MB("salt12",V.Buffer.alloc(12)),H.MB("hmac",8,0)),ENC_488:H.meta(H.MB("type","8",0),H.MB("len","32L",0),H.MB("otpSrc8",V.Buffer.alloc(8)),H.MB("hmac8",V.Buffer.alloc(8)))};function X(t){let e=t[t.length-1];return e[2]+e[3]}const W={AUTH_REQ:X(Q.AUTH_REQ),AUTH_NONCE:X(Q.AUTH_NONCE),AUTH_HMAC:X(Q.AUTH_HMAC),AUTH_ACK:X(Q.AUTH_ACK),ENC_PACK:X(Q.ENC_PACK),ENC_488:X(Q.ENC_488)};function Z(t){return globalThis.crypto.getRandomValues(V.Buffer.alloc(t))}class tt{constructor(){this._id8=V.Buffer.alloc(8),this._otpSrc44=V.Buffer.alloc(44),this._otp36=V.Buffer.alloc(36),this._hmac=V.Buffer.alloc(32),this.auth_salt12=V.Buffer.alloc(12),this.localNonce=V.Buffer.alloc(4),this.remoteNonce=V.Buffer.alloc(4),this.isAuthorized=false;}clearAuth(){this._id8.fill(0),this._otpSrc44.fill(0),this._otp36.fill(0),this._hmac.fill(0),this.auth_salt12.fill(0),this.localNonce.fill(0),this.remoteNonce.fill(0),this.isAuthorized=false;}set_hash_id8(t){H.B8(F.hash(t)).copy(this._id8,0,0,8);}set_id8(t){let e=H.B8(t);this._id8.fill(0),e.copy(this._id8,0,0,8);}set_key(t){H.B8(F.hash(t)).copy(this._otpSrc44,0,0,32);}set_id_key(t){let e=t.indexOf(".");if(-1==e)return;let r=t.substring(0,e),n=t.substring(e+1);this.set_id8(r),this.set_key(n);}copy_id8(t){t.copy(this._id8,0,0,8);}copy_key(t){t.copy(this._otpSrc44,0,0,32);}sha256_n(t,e){let r=F.hash(t);for(let t=0;t<e;t++)r=F.hash(r);return r}set_clock_rand(){let t=Date.now(),e=parseInt(t/1e3);t%=4294967295;V.Buffer.concat([H.NB("32L",e),H.NB("32L",t),Z(4)]).copy(this._otpSrc44,32);}set_clock_nonce(t){let e=Date.now(),r=parseInt(e/1e3);e%=4294967295;V.Buffer.concat([H.NB("32L",r),H.NB("32L",e),t]).copy(this._otpSrc44,32);}set_salt12(t){t.copy(this._otpSrc44,32);}resetOTP(){H.B8(F.hash(this._otpSrc44)).copy(this._otp36,0,0,32);}getIndexOTP(t){return this._otp36.writeUInt32LE(t,32),F.hash(this._otp36)}generateHMAC(t){let e=V.Buffer.concat([this._otpSrc44,t]);this._hmac=H.B8(F.hash(e));}getHMAC8(t){let e=V.Buffer.concat([this._otpSrc44,t]);return this._hmac=H.B8(F.hash(e)),this._hmac.subarray(0,8)}xotp(t,e=0,r=false){let n=(t=H.B8(t,r)).byteLength,i=e,o=0,f=0;for(;n>0;){f=n<32?n:32;let e=this.getIndexOTP(++i);for(let r=0;r<f;r++)t[o++]^=e[r];n-=32;}return t}auth_req(){return H.pack(H.MB("#type","8",J.AUTH_REQ),H.MB("#reserved","8",0))}auth_nonce(){let t=Date.now(),e=Math.floor(t/1e3),r=t%1e3;return this.localNonce=Z(4),this.auth_salt12=V.Buffer.concat([H.NB("32L",e),H.NB("32L",r),this.localNonce]),V.Buffer.concat([H.NB("8",J.AUTH_NONCE),this.auth_salt12])}auth_hmac(t){let e=H.unpack(t,Q.AUTH_NONCE);if(e){let t=V.Buffer.concat([H.NB("32L",e.unixTime),H.NB("32L",e.milTime),e.nonce]);return this.set_salt12(t),this.localNonce=Z(4),this.generateHMAC(this.localNonce),this.remoteNonce=e.nonce,H.pack(H.MB("#header","8",J.AUTH_HMAC),H.MB("#id8",this._id8),H.MB("#nonce",this.localNonce),H.MB("#hmac32",this._hmac))}return  false}check_auth_hmac(t){let e;if(t instanceof Uint8Array){if(e=H.unpack(t,Q.AUTH_HMAC),!e)return}else e=t;this.set_salt12(this.auth_salt12),this.generateHMAC(e.nonce);let r=this._hmac;if(H.equal(e.hmac32,r)){this.remoteNonce=e.nonce;let t=V.Buffer.concat([this.localNonce,this.remoteNonce,this.localNonce]);this.set_salt12(t),this.generateHMAC(e.nonce);let r=this._hmac,n=H.rawPack(H.MB("header","8",J.AUTH_ACK),H.MB("hmac32",r));return this.isAuthorized=true,n}return  false}check_auth_ack_hmac(t){let e=H.unpack(t,Q.AUTH_ACK);if(e){let t=V.Buffer.concat([this.remoteNonce,this.localNonce,this.remoteNonce]);this.set_salt12(t),this.generateHMAC(this.localNonce);let r=this._hmac;if(H.equal(r,e.hmac32))return this.isAuthorized=true,true}}encrypt_488(t){if(!this.isAuthorized)return;t=H.B8(t),this.set_clock_nonce(this.remoteNonce),this.resetOTP();let e=this.getHMAC8(t),r=this.xotp(t);return H.pack(H.MB("#type","8",J.ENC_488),H.MB("#len","32L",t.byteLength),H.MB("#otpSrc8",this._otpSrc44.subarray(32,40)),H.MB("#hmac8",e),H.MB("#xdata",r))}decrypt_488(t){t=H.B8(t);let e=H.unpack(t,Q.ENC_488);if(e){let t=V.Buffer.concat([e.otpSrc8,this.localNonce]);this.set_salt12(t),this.resetOTP();let r=e.$OTHERS.subarray(0,e.len),n=this.xotp(r),i=this.getHMAC8(n);if(H.equal(i,e.hmac8))return n}}encryptPack(t){t=H.B8(t),this.set_clock_rand(),this.resetOTP();let e=this.getHMAC8(t),r=this.xotp(t);return H.pack(H.MB("#type","8",J.ENC_PACK),H.MB("#len","32L",t.byteLength),H.MB("#salt12",this._otpSrc44.subarray(32)),H.MB("#hmac8",e),H.MB("#xdata",r))}decryptPack(t){if(t[0]!==J.ENC_PACK)return;if(t.readUint32LE(1)==t.byteLength-W.ENC_PACK)try{let e=H.unpack(t,Q.ENC_PACK);if(!e)return;this.set_salt12(e.salt12),this.resetOTP();let r=e.$OTHERS,n=this.xotp(r),i=this.getHMAC8(n);if(H.equal(e.hmac,i))return e.data=n,e}catch(t){}}encrypt_e2e(t,e){let r=V.Buffer.alloc(32);r.set(this._otpSrc44.subarray(0,32)),this.set_key(e);let n=this.encryptPack(t);return this._otpSrc44.set(r),n}decrypt_e2e(t,e){let r=V.Buffer.alloc(32);r.set(this._otpSrc44.subarray(0,32)),this.set_key(e);let n=this.decryptPack(t);return this._otpSrc44.set(r),n}}tt.RAND=Z,tt.BohoMsg=J,tt.Meta=Q,tt.MetaSize=W,tt.sha256=F,tt.MBP=H,tt.Buffer=V.Buffer;
 
+/**
+ * @typedef {import('meta-buffer-pack').MBP} MBP
+ * @typedef {import('../common/constants.js').IOMsg} IOMsg
+ * @typedef {import('../common/constants.js').PAYLOAD_TYPE} PAYLOAD_TYPE
+ * @typedef {import('../common/constants.js').SIZE_LIMIT} SIZE_LIMIT
+ * @typedef {import('../common/constants.js').ENC_MODE} ENC_MODE
+ * @typedef {import('../common/constants.js').STATES} STATES
+ * @typedef {import('../common/quotaTable.js').quotaTable} quotaTable
+ 
+ * @typedef {import('boho').Boho} Boho
+ * @typedef {import('boho').Buffer} Buffer
+ */
+
 const Buffer$1 = M$1.Buffer;
 const encoder$1 = new TextEncoder();
 const decoder$4 = new TextDecoder();
@@ -704,40 +807,165 @@ function byteToUrl(buffer) {
   return address + ':' + port.toString()
 }
 
+/**
+ * Core class for handling WebSocket communication.
+ * @augments {EventEmitter}
+ */
 class IOCore extends EventEmitter {
+  /**
+   * @param {string} url - The WebSocket URL to connect to.
+   */
   constructor(url) {
     super();
+    /**
+     * Client ID received from the server.
+     * @type {string}
+     */
     this.cid = "";   // get from the server  CID_RES
+    /**
+     * IP address received from the server.
+     * @type {string}
+     */
     this.ip = "";    // get from the server  IAM_RES message.
+    /**
+     * The WebSocket instance.
+     * @type {WebSocket | null}
+     */
     this.socket = null;
+    /**
+     * The default server URL.
+     * @type {string}
+     */
     this.url = url; // init default server url
+    /**
+     * Current connection state (number).
+     * @type {number}
+     */
     this.state = STATES.CLOSED;  // Number type
+    /**
+     * Current connection state (string).
+     * @type {string}
+     */
     this.stateName = this.getStateName(); // String type
 
+    /**
+     * Transmitted message counter.
+     * @type {number}
+     */
     this.txCounter = 0;
+    /**
+     * Received message counter.
+     * @type {number}
+     */
     this.rxCounter = 0;
+    /**
+     * Transmitted bytes counter.
+     * @type {number}
+     */
     this.txBytes = 0;
+    /**
+     * Received bytes counter.
+     * @type {number}
+     */
     this.rxBytes = 0;
 
+    /**
+     * Last transmit/receive time.
+     * @type {number}
+     */
     this.lastTxRxTime = Date.now();
+    /**
+     * Period for connection checker.
+     * @type {number}
+     */
     this.connectionCheckerPeriod = SIZE_LIMIT.CONNECTION_CHECKER_PERIOD;
+    /**
+     * Interval ID for connection checker.
+     * @type {NodeJS.Timeout | null}
+     */
     this.connectionCheckerIntervalID = null;
 
+    /**
+     * Boho instance for encryption/decryption.
+     * @type {Boho}
+     */
     this.boho = new tt();
+    /**
+     * Indicates if the connection is TLS (wss).
+     * @type {boolean}
+     */
     this.TLS = false; // true if protocol is wss(TLS)
+    /**
+     * Encryption mode.
+     * @type {number}
+     */
     this.encMode = ENC_MODE.AUTO;
+    /**
+     * Indicates if authentication is used.
+     * @type {boolean}
+     */
     this.useAuth = false;
 
+    /**
+     * Nickname.
+     * @type {string}
+     */
     this.nick = "";
+    /**
+     * Set of subscribed channels.
+     * @type {Set<string>}
+     */
     this.channels = new Set();
+    /**
+     * Map of promises for message responses.
+     * @type {Map<number, Array<Function>>}
+     */
     this.promiseMap = new Map();
+    /**
+     * Timeout for message promises.
+     * @type {number}
+     */
     this.promiseTimeOut = SIZE_LIMIT.PROMISE_TIMEOUT;
+    /**
+     * Message ID for promises.
+     * @type {number}
+     */
     this.mid = 0;  // promise message id 
 
+    /**
+     * Quota level.
+     * @type {number}
+     */
     this.level = 3; // also defaultQuotaLevel
+    /**
+     * Quota table for current level.
+     * @type {object}
+     */
     this.quota = quotaTable[this.level];
+    /**
+     * Server settings.
+     * @type {object}
+     */
     this.serverSet = {};
+    /**
+     * Map of linked channels.
+     * @type {Map<string, Set<string>>}
+     */
     this.linkMap = new Map();
+
+    /**
+     * Indicates if auto-reconnect is enabled.
+     * @type {boolean} 
+     * @default true
+     * */
+    this.autoReconnect = true; // default true  
+
+    /**
+   * A flag to prevent duplicate close operations.
+   * @type {boolean}
+   * @private
+   */
+    this._closed = false; // 중복 close 방지
 
     this.on('open', this.onOpen.bind(this));
     this.on('close', this.onClose.bind(this));
@@ -745,35 +973,113 @@ class IOCore extends EventEmitter {
   }
 
 
+
+  /**
+   * Performs common cleanup for the connection. It clears pending promises,
+   * resets the socket reference, and sets the state to closed.
+   * This method is guarded to only run once.
+   * If autoReconnect is false, it also clears the keep-alive timer.
+   */
+  close() {
+    if (this._closed) return;
+    this._closed = true;
+
+    // If auto-reconnect is disabled, we must stop the keep-alive timer.
+    if (this.autoReconnect === false) {
+      clearInterval(this.connectionCheckerIntervalID);
+      this.connectionCheckerIntervalID = null;
+    }
+
+    // socket clean
+    if (this.socket) {
+      try {
+        this.socket.close?.();
+      } catch {}
+      this.socket = null;
+    }
+    this.promiseMap.clear();
+    this.emit('closed');
+    this.stateChange('closed');
+  }
+
+  /**
+   * Disables auto-reconnect and closes the current connection.
+   * The instance can be re-opened manually later. For complete cleanup, use destroy().
+   */
+  stop() {
+    this.autoReconnect = false;
+    this.close();
+  }
+
+  /**
+   * Permanently destroys the instance, cleaning up all resources.
+   * The instance will not be usable after this.
+   */
+  destroy() {
+    this.stop();
+    this.removeAllListeners();
+
+    this.channels.clear();
+    this.linkMap.clear();
+
+    // Help GC
+    this.boho = null;
+  }  
+
+  /**
+   * The core keep-alive logic. It checks if auto-reconnect is enabled.
+   * The actual check for the socket's state is implemented in the child classes.
+   */
+  keepAlive() {
+    if (!this.autoReconnect) return;
+    // The specific logic for checking the socket's state and reconnecting
+    // is implemented in the child classes (IOWS, IOCongSocket, etc.).
+  }
+
+  /**
+   * Redirects the connection to a new URL.
+   * @param {string} url2 - The new URL to redirect to.
+   */
   redirect(url2) {
     this.close();
     this.stateChange('redirecting');
     this.createConnection(url2);
   }
 
+  /**
+   * Opens the WebSocket connection.
+   * @param {string} [url] - Optional URL to connect to. If not provided, uses the instance's URL.
+   */
   open(url) {
-    if (!url && !this.url) return;
-
-    if (url) {
-      if (!this.url) { // default host url
-        this.url = url;
-      } else if (url !== this.url) { // default host url change
-        this.url = url;
-        if (this.socket) {
-          this.close();
-          return
-        }
-      }
+    // If a connection is already active or in progress, calling open() implies a reconnect.
+    // Close the existing socket first to ensure a clean state.
+    if (this.socket) {
+      this.close();
     }
 
+    if (url) {
+      this.url = url;
+    }
+
+    if (!this.url) {
+      this.emit('error', new Error('URL is not set.'));
+      return;
+    }
+
+    // The actual connection is created here.
     this.createConnection(this.url);
 
+    // Ensure the keep-alive timer is running.
     if (!this.connectionCheckerIntervalID) {
       this.connectionCheckerIntervalID = setInterval(this.keepAlive.bind(this), this.connectionCheckerPeriod);
     }
   }
 
+  /**
+   * Handles the 'open' event of the WebSocket. Resets the closed flag and sets the state to open.
+   */
   onOpen() {
+    this._closed = false;
     if (this.url.includes("wss://")) {
       this.TLS = true;
     } else {
@@ -782,39 +1088,40 @@ class IOCore extends EventEmitter {
     this.stateChange('open');
   }
 
+  /**
+   * Handles the 'close' event of the WebSocket.
+   */
   onClose() {
     this.boho.isAuthorized = false;
     this.cid = "";
     this.stateChange('closed');
   }
 
-  // manual login
+  /**
+   * Manually logs in with provided ID and key.
+   * @param {string} id - The user ID.
+   * @param {string} key - The user key.
+   * @returns {boolean}
+   */
   login(id, key) {
-    if (!id && !key) {
-      console.log('no id and key.');
-      return
-    }
-    console.log('manual login: ', id);
+    if (!this.auth(id, key)) return false;
 
-    if (!key && id.includes('.')) {
-      this.boho.set_id_key(id);
-    } else if (id && key) {
-      this.boho.set_id8(id);
-      this.boho.set_key(key);
-    } else {
-      console.log('no id or key.');
-      return
-    }
     this.useAuth = true;
     let auth_pack = this.boho.auth_req();
     this.send(auth_pack);
+    return true
   }
 
-  // auto login
+  /**
+   * Sets up authentication for auto-login.
+   * @param {string} id - The user ID.
+   * @param {string} key - The user key.
+   * @returns {boolean}
+   */
   auth(id, key) {
     if (!id && !key) {
-      console.log('no id and key.');
-      return
+      this.emit('error', new Error('auth failed. no id and key.'));
+      return false
     }
 
     if (!key && id.includes('.')) {
@@ -823,12 +1130,17 @@ class IOCore extends EventEmitter {
       this.boho.set_id8(id);
       this.boho.set_key(key);
     } else {
-      console.log('no id or key.');
-      return
+      this.emit('error', new Error('auth failed. no id or key.'));
+      return false
     }
     this.useAuth = true;
+    return true
   }
 
+  /**
+   * Handles incoming data from the WebSocket.
+   * @param {Buffer} buffer - The incoming data buffer.
+   */
   onData(buffer) {
     let msgType = buffer[0];
     let decoded;
@@ -886,10 +1198,8 @@ class IOCore extends EventEmitter {
           if (jsonInfo.ip) {
             this.ip = jsonInfo.ip;
           }
-          console.log('<IAM_RES>', JSON.stringify(jsonInfo));
-          // console.log('<IAM_RES>', JSON.stringify(jsonInfo,null,2))
         } catch (error) {
-          // console.log('<IAM_RES> data error')
+          this.emit('error', new Error('IAM_RES data error'));
         }
         break;
 
@@ -953,7 +1263,7 @@ class IOCore extends EventEmitter {
           }
 
         } catch (error) {
-          // console.log('<SERVER_SIGNAL> parsing error')
+          this.emit('error', new Error('SERVER_SIGNAL parsing error'));
         }
         break;
 
@@ -964,7 +1274,7 @@ class IOCore extends EventEmitter {
             this.emit(setPack.topic, ...setPack.args);
           }
         } catch (error) {
-          // console.log('<SET> parsing error')
+          this.emit('error', new Error('SET parsing error'));
         }
         break;
 
@@ -993,7 +1303,10 @@ class IOCore extends EventEmitter {
             case PAYLOAD_TYPE.TEXT:
               // !! Must remove null char before decode in JS.
               // string payload contains null char for the c/cpp devices.
-              let payloadStringWithoutNull = payloadBuffer.subarray(0, payloadBuffer.byteLength - 1);
+              let payloadStringWithoutNull = payloadBuffer;
+              if (payloadBuffer[payloadBuffer.byteLength - 1] === 0) {
+                payloadStringWithoutNull = payloadBuffer.subarray(0, payloadBuffer.byteLength - 1);
+              }
               let oneString = decoder$4.decode(payloadStringWithoutNull);
               if (tag.indexOf('@') === 0) this.emit('@', oneString, tag);
               if (tag !== '@') this.emit(tag, oneString, tag);
@@ -1029,7 +1342,7 @@ class IOCore extends EventEmitter {
           }
 
         } catch (err) {
-          // console.log('## signal parse err', err)
+          this.emit('error', new Error('signal parse err'));
         }
         break;
 
@@ -1073,6 +1386,10 @@ class IOCore extends EventEmitter {
     }
   }
 
+  /**
+   * Sends an IAM (I Am) message to the server.
+   * @param {string} [title] - Optional title for the IAM message.
+   */
   iam(title) {
     // console.log('iam', title)
     if (title) {
@@ -1088,17 +1405,25 @@ class IOCore extends EventEmitter {
   }
 
 
+  /**
+   * Sends a PING message to the server.
+   */
   ping() {
     this.send(Buffer$1.from([IOMsg.PING]));
   }
 
+  /**
+   * Sends a PONG message to the server.
+   */
   pong() {
     this.send(Buffer$1.from([IOMsg.PONG]));
   }
 
 
-  // application level ping tool.  
-  // simple message sending and reply.
+  /**
+   * Sends an ECHO message to the server.
+   * @param {*} [args] - Optional arguments to echo.
+   */
   echo(args) {
     if (args) {
       console.log('echo args:', args);
@@ -1113,10 +1438,18 @@ class IOCore extends EventEmitter {
   }
 
 
+  /**
+   * Sends binary data.
+   * @param {...any} data - Data to send.
+   */
   bin(...data) {
     this.send(M$1.U8pack(...data));
   }
 
+  /**
+   * Sends data over the WebSocket.
+   * @param {Buffer} data - The data buffer to send.
+   */
   send(data) {
     if (data.byteLength > this.quota.signalSize) {
       this.emit('over_size');
@@ -1127,22 +1460,10 @@ class IOCore extends EventEmitter {
     this.socket_send(data);
   }
 
-  /*
-   Policy. Should message do encrypt?
-
-   if encMode == auto
-     NO. if connection using TLS line.
-        // ex. wss://url connection.
-     YES. if no TLS line.
-        // ex. ws://url connection.
-
-   if encMode == YES
-     YES. encrypt the message.
-
-   if encMode == NO
-     NO. do not ecnrypt message.
-
-  */
+  /**
+   * Determines if encryption should be used based on current mode and TLS status.
+   * @returns {boolean}
+   */
   getEncryptionMode() {
     if (this.encMode === ENC_MODE.YES ||
       this.encMode === ENC_MODE.AUTO &&
@@ -1154,6 +1475,11 @@ class IOCore extends EventEmitter {
     }
   }
 
+  /**
+   * Sends data with encryption based on the encryption mode.
+   * @param {Buffer} data - The data buffer to send.
+   * @param {boolean} [useEncryption] - Optional. Force encryption or not. If undefined, uses default policy.
+   */
   send_enc_mode(data, useEncryption) {
 
     // use default policy.
@@ -1182,6 +1508,11 @@ class IOCore extends EventEmitter {
   }
 
 
+  /**
+   * Sets a message promise for a given message ID.
+   * @param {number} mid - The message ID.
+   * @returns {Promise<any>}
+   */
   setMsgPromise(mid) {
     return new Promise((resolve, reject) => {
       this.promiseMap.set(mid, [resolve, reject]);
@@ -1194,6 +1525,10 @@ class IOCore extends EventEmitter {
     })
   }
 
+  /**
+   * Tests and resolves/rejects a promise based on the incoming buffer.
+   * @param {Buffer} buffer - The incoming data buffer.
+   */
   testPromise(buffer) {
 
     let res = M$1.unpack(buffer);
@@ -1218,11 +1553,21 @@ class IOCore extends EventEmitter {
   }
 
 
+  /**
+   * Publishes a signal.
+   * @param {...any} args - Arguments for the signal.
+   */
   publish(...args) {
     this.signal(...args);
   }
 
 
+  /**
+   * Sends a signal with a tag and arguments.
+   * @param {string} tag - The signal tag.
+   * @param {...any} args - Arguments for the signal.
+   * @throws {TypeError} If tag is not a string.
+   */
   signal(tag, ...args) {
     if (typeof tag !== 'string') throw TypeError('tag should be string.')
 
@@ -1230,10 +1575,23 @@ class IOCore extends EventEmitter {
     this.send_enc_mode(signalPack);
   }
 
+  /**
+   * Decrypts E2E data.
+   * @param {Buffer} data - The encrypted data.
+   * @param {string} key - The decryption key.
+   * @returns {Buffer}
+   */
   decrypt_e2e(data, key) {
     return this.boho.decrypt_e2e(data, key)
   }
 
+  /**
+   * Sends an E2E (End-to-End) encrypted signal.
+   * @param {string} tag - The signal tag.
+   * @param {Buffer} data - The data to encrypt and send.
+   * @param {string} key - The encryption key.
+   * @throws {TypeError} If tag is not a string.
+   */
   signal_e2e(tag, data, key) {
 
     if (typeof tag !== 'string') throw TypeError('tag should be string.')
@@ -1257,6 +1615,12 @@ class IOCore extends EventEmitter {
 
 
 
+  /**
+   * Sets a value in the store.
+   * @param {string} storeName - The name of the store.
+   * @param {...any} args - Arguments to set.
+   * @returns {Promise<any>}
+   */
   set(storeName, ...args) {
     if (!storeName || args.length == 0) {
       return Promise.reject(new Error('set need storeName and value)'))
@@ -1264,6 +1628,11 @@ class IOCore extends EventEmitter {
     return this.req('store', 'set', storeName, ...args)
   }
 
+  /**
+   * Gets a value from the store.
+   * @param {string} storeName - The name of the store.
+   * @returns {Promise<any>}
+   */
   async get(storeName) {
     if (!storeName) {
       return Promise.reject(new Error('store get need storeName)'))
@@ -1274,6 +1643,13 @@ class IOCore extends EventEmitter {
   }
 
 
+  /**
+   * Sends a request to a target and topic.
+   * @param {string} target - The target of the request.
+   * @param {string} topic - The topic of the request.
+   * @param {...any} args - Optional arguments for the request.
+   * @returns {Promise<any>}
+   */
   req(target, topic, ...args) {
     if (!target || !topic)
       return Promise.reject(new Error('request need target and topic)'))
@@ -1299,6 +1675,11 @@ class IOCore extends EventEmitter {
   }
 
 
+  /**
+   * Subscribes to a channel or channels.
+   * @param {string} tag - The tag(s) of the channel(s) to subscribe to (comma-separated).
+   * @throws {TypeError} If tag is not a string or exceeds length limit.
+   */
   subscribe(tag) {
     if (typeof tag !== 'string') throw TypeError('tag should be string.')
     if (this.state !== STATES.READY) return
@@ -1318,6 +1699,12 @@ class IOCore extends EventEmitter {
         tagEncoded]));
   }
 
+  /**
+   * Subscribes to a channel or channels with a promise.
+   * @param {string} tag - The tag(s) of the channel(s) to subscribe to (comma-separated).
+   * @returns {Promise<any>}
+   * @throws {TypeError} If tag is not a string or exceeds length limit.
+   */
   subscribe_promise(tag) {
     if (typeof tag !== 'string') throw TypeError('tag should be string.')
     if (this.state !== STATES.READY) {
@@ -1336,6 +1723,9 @@ class IOCore extends EventEmitter {
     return this.setMsgPromise(this.mid)
   }
 
+  /**
+   * Subscribes to channels stored in memory (local cache).
+   */
   subscribe_memory_channels() { //local cache . auto_resubscribe
     if (this.channels.size == 0) return
     let chList = Array.from(this.channels).join(',');
@@ -1349,6 +1739,11 @@ class IOCore extends EventEmitter {
 
   }
 
+  /**
+   * Unsubscribes from a channel or channels.
+   * @param {string} [tag=""] - The tag(s) of the channel(s) to unsubscribe from (comma-separated). If empty, unsubscribes from all.
+   * @throws {TypeError} If tag is not a string or exceeds length limit.
+   */
   unsubscribe(tag = "") {
     if (typeof tag !== 'string') throw TypeError('tag should be string.')
 
@@ -1371,6 +1766,12 @@ class IOCore extends EventEmitter {
   }
 
 
+  /**
+   * Listens for signals on a specific tag.
+   * @param {string} tag - The tag to listen on.
+   * @param {Function} handler - The callback function to handle the signal.
+   * @throws {TypeError} If tag is not a string, handler is not a function, or tag length is invalid.
+   */
   listen(tag, handler) {
     if (typeof tag !== 'string') throw TypeError('tag should be string.')
     if (tag.length > 255 || tag.length == 0) throw TypeError('tag string length range: 1~255')
@@ -1387,6 +1788,13 @@ class IOCore extends EventEmitter {
 
 
 
+  /**
+   * Links a local target to a remote tag and sets up a handler.
+   * @param {string} to - The local link target.
+   * @param {string} tag - The remote tag.
+   * @param {Function} handler - The callback function to handle the signal.
+   * @throws {TypeError} If 'to' or 'tag' are not strings, handler is not a function, or tag length is invalid.
+   */
   link(to, tag, handler) {
     if (typeof to !== 'string') throw TypeError('to(local link target) is not a string.')
     if (typeof tag !== 'string') throw TypeError('tag is not a string.')
@@ -1412,44 +1820,54 @@ class IOCore extends EventEmitter {
   }
 
 
+  /**
+   * Unlinks a specific tag from a local target.
+   * @param {string} to - The local link target.
+   * @param {string} tag - The tag to unlink.
+   * @throws {TypeError} If 'to' or 'tag' are not strings or tag length is invalid.
+   */
   unlink(to, tag) {
     if (typeof to !== 'string') throw TypeError('to(local link target) is not a string.')
     if (typeof tag !== 'string') throw TypeError('tag is not a string.')
     if (tag.length > 255 || tag.length == 0) throw TypeError('tag string length range: 1~255')
 
-    if (!this.linkMap.has(to)) return;
+    const linkSet = this.linkMap.get(to);
+    if (!linkSet || !linkSet.has(tag)) return;
 
-    let linkSet = this.linkMap.get(to);
-    let tags = Array.from(linkSet);
-    for (let i = 0; i < tags.length; i++) {
-      if (tags[i] == tag) {
-        this.unsubscribe(tag);
-        this.removeAllListeners(tag);
-        linkSet.delete(tag);
-        this.linkMap.set(to, linkSet);
-        break;
-      }
+    this.unsubscribe(tag);
+    this.removeAllListeners(tag);
+    linkSet.delete(tag);
+
+    if (linkSet.size === 0) {
+      this.linkMap.delete(to);
     }
-
   }
 
+  /**
+   * Unlinks all tags from a local target.
+   * @param {string} to - The local link target.
+   * @throws {TypeError} If 'to' is not a string.
+   */
   unlinkAll(to) {
     if (typeof to !== 'string') throw TypeError('to(local link target) is not a string.')
-    if (!this.linkMap.has(to)) return;
 
-    let linkSet = this.linkMap.get(to);
-    let tags = Array.from(linkSet);
-    for (let i = 0; i < tags.length; i++) {
-      this.unsubscribe(tags[i]);
-      this.removeAllListeners(tags[i]);
-      linkSet.delete(tags[i]);
+    const linkSet = this.linkMap.get(to);
+    if (!linkSet) return;
+
+    for (const tag of linkSet) {
+      this.unsubscribe(tag);
+      this.removeAllListeners(tag);
     }
-    this.linkMap.delete(to);
 
+    this.linkMap.delete(to);
   }
 
 
 
+  /**
+   * Gets connection metrics.
+   * @returns {{tx: number, rx: number, txb: number, rxb: number, last: number}}
+   */
   getMetric() {
     return {
       tx: this.txCounter,
@@ -1461,10 +1879,18 @@ class IOCore extends EventEmitter {
 
   }
 
+  /**
+   * Gets the current connection state.
+   * @returns {number}
+   */
   getState() {
     return this.state
   }
 
+  /**
+   * Gets the current connection state name.
+   * @returns {string}
+   */
   getStateName() {
     //state <number>
     //value of constant STATES.NAME < number >
@@ -1473,6 +1899,10 @@ class IOCore extends EventEmitter {
     return (STATES[this.state]).toLowerCase()
   }
 
+  /**
+   * Gets security-related information.
+   * @returns {{useAuth: boolean, isTLS: boolean, isAuthorized: boolean, encMode: number, usingEncryption: boolean}}
+   */
   getSecurity() {
     return {
       useAuth: this.useAuth,
@@ -1483,6 +1913,11 @@ class IOCore extends EventEmitter {
     }
   }
 
+  /**
+   * Changes the connection state and emits events.
+   * @param {string} state - The new state name (e.g., 'ready', 'closed').
+   * @param {string} [emitEventAndMessage] - Optional message to emit with the state change event.
+   */
   stateChange(state, emitEventAndMessage) {
     // STATES constant name : string upperCase
     // eventName, .stateName : string lowerCase
@@ -1642,20 +2077,30 @@ class IOCongSocket extends IOCore {
     if (url) this.open();
   }
 
+  /**
+   * Closes TCP socket and cleans resources.
+   */
   close() {
-    this.socket?.end();
-    this.socket = null;
+    if (this.socket) {
+      if (this.congRx) {
+        this.socket.unpipe(this.congRx);
+        this.congRx.destroy(); // Use destroy() for complete stream cleanup
+        this.congRx = null;
+      }
+      this.socket.removeAllListeners();
+      if (!this.socket.destroyed) {
+        this.socket.destroy(); // destroy() is sufficient for forceful closing
+      }
+    }
+    super.close();
   }
 
-  stop() {
-    this.close();
-    clearInterval(this.connectionCheckerIntervalID);
-    this.connectionCheckerIntervalID = null;
-  }
+
 
   keepAlive() {
-    let state = this.socket?.readyState;
-    if (!this.socket || !(state === 'open' || state === 'opening')) {
+    if (!this.autoReconnect) return;
+    // Reconnect only if the socket is fully destroyed and the state is closed.
+    if ((!this.socket || this.socket.destroyed) && this.state === STATES.CLOSED) {
       this.open();
     }
   }
@@ -7065,31 +7510,27 @@ class IOWS extends IOCore {
 
 
 
+  /**
+   * Closes ws WebSocket and cleans resources.
+   */
   close() {
     if (this.socket) {
-      this.socket.onclose = null;
-      this.socket.onmessage = null;
-      this.socket.onerror = null;
-      this.socket.close();
-      this.socket = null;
+      this.socket.removeAllListeners();
+      if (this.socket.readyState !== WebSocket.CLOSED) {
+        this.socket.close();
+      }
     }
-    this.emit('close');
+    super.close();
   }
 
-
-
-  stop() {
-    this.close();
-    clearInterval(this.connectionCheckerIntervalID);
-    this.connectionCheckerIntervalID = null;
-  }
 
   keepAlive() {
-    if (!this.socket || this.socket?.readyState === 3) {
+    if (!this.autoReconnect) return;
+    // Reconnect only if the socket is closed and the state reflects that.
+    if ((!this.socket || this.socket.readyState === WebSocket.CLOSED) && this.state === STATES.CLOSED) {
       this.open();
     }
   }
-
 
   createConnection(url) {
     // node WebSocket

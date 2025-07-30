@@ -1,4 +1,4 @@
-[ en | [kr](docs/README.kr.md) ]
+[ English | [한국어](docs/README.ko.md) ]
 
 # IOSignal
 
@@ -13,6 +13,149 @@ $ npm i iosignal
 
 
 ## IOSignal Client
+
+
+### React Client Example
+
+A sample React project is available in `examples/react-chat-js`. This example demonstrates how to integrate `iosignal` into a React application for real-time chat functionality.
+
+**Key Concepts:**
+
+-   **`useRef`**: To maintain a stable reference to the `io` instance across component re-renders.
+-   **`useEffect`**: To manage the lifecycle of the `io` instance, including initialization and cleanup. Event handlers are set up within this hook.
+- To release the `io` instance when the component unmounts, use `io.destroy()`. Event handlers registered during mount are also automatically removed.
+
+**To run the example:**
+
+1.  Navigate to the server directory and start the server:
+    ```shell
+    cd examples/server
+    npm install
+    node .
+    ```
+2.  In a new terminal, navigate to the React project directory, install dependencies, and start the development server:
+    ```shell
+    cd examples/react-chat-js
+    npm install
+    npm run dev
+    ```
+
+**Example Code (`App.jsx`):**
+
+If you open multiple browsers and enter a message, it will be delivered to each other via the server.
+
+```javascript
+import { useState, useEffect, useRef } from 'react';
+import './App.css';
+import IO from 'iosignal/io.js';
+
+const url = 'ws://localhost:7777';
+const channel_tag = 'channel#topic';
+
+function App() {
+  const [messages, setMessages] = useState([]);
+  const [input, setInput] = useState('Hello, World!');
+  const [ioState, setIoState] = useState(null);
+  const [cid, setCid] = useState(null);
+  const [counts, setCounts] = useState({ instances: 0, websockets: 0 });
+  const ioRef = useRef(null);
+  const messagesEndRef = useRef(null);
+
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  };
+
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages]);
+
+  useEffect(() => {
+    ioRef.current = new IO(url);
+    setCounts({ instances: IO.instanceCount, websockets: IO.webSocketCount });
+
+    const handleReady = () => {
+      console.log('ready cid:', ioRef.current.cid);
+      setCid(ioRef.current.cid);
+      ioRef.current.subscribe(channel_tag);
+    };
+
+    const handleChange = (state) => {
+      setIoState(state);
+      setCounts({ instances: IO.instanceCount, websockets: IO.webSocketCount });
+    };
+
+    const handleChannelMessage = (msgObj, tag) => {
+      console.log('Received message in App:', msgObj, tag);
+      if (typeof msgObj === 'string') {
+        msgObj = { text: msgObj, cid: 'cli unknown' };
+      }
+      setMessages((prevMessages) => [...prevMessages, `${msgObj.cid} : ${msgObj.text}`]);
+    };
+
+    const handleError = (error) => {
+      console.error('IO Error in App:', error);
+      setIoState(`Error: ${error.message}`);
+    };
+
+    ioRef.current.on('ready', handleReady);
+    ioRef.current.on('change', handleChange);
+    ioRef.current.on(channel_tag, handleChannelMessage);
+    ioRef.current.on('error', handleError);
+
+    return () => {
+      ioRef.current.destroy();
+      console.log('IO instance destroyed.');
+      ioRef.current = null;
+    };
+  }, []);
+
+  const sendMessage = () => {
+    if (input.trim()) {
+      const msgObj = { text: input, cid: ioRef.current.cid };
+      ioRef.current.signal(channel_tag, msgObj);
+      setInput('date' + Date.now());
+    }
+  };
+
+  const ioStateStyle = {
+    color: ioState === 'ready' ? 'green' : 'red',
+    fontWeight: 'bold',
+  };
+
+  return (
+    <div className="App">
+      <h1>React Chat Example</h1>
+      <div>URL: {url}</div>
+      <div>Channel: {channel_tag}</div>
+      <div>IO State: <span style={ioStateStyle}>{ioState}</span></div>
+      <div>Client ID: {cid}</div>
+      <div>IO Instances: {counts.instances}</div>
+      <div>WebSockets Created: {counts.websockets}</div>
+      <div className="messages">
+        {messages.map((msg, index) => (
+          <div key={index}>{msg}</div>
+        ))}
+        <div ref={messagesEndRef} />
+      </div>
+      <div className="input-area">
+        <input
+          type="text"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyUp={(e) => e.key === 'Enter' && sendMessage()}
+          disabled={ioState !== 'ready'}
+        />
+        <button onClick={sendMessage} disabled={ioState !== 'ready'}>
+          Send
+        </button>
+      </div>
+    </div>
+  );
+}
+
+export default App;
+```
+
 
 ### Browser client : ESM
 

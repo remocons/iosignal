@@ -1,6 +1,6 @@
 {
   "name": "iosignal",
-  "version": "3.0.0",
+  "version": "3.0.1",
   "description": "iosignal",
   "type": "module",
   "exports": {
@@ -12,11 +12,13 @@
     "./io.js": "./dist/io.js",
     "./browser": "./dist/io.js"
   },
+  "types": "./dist/types/src/client/browser/IOWebSocket.d.ts",
   "browser": "./dist/io.min.js",
   "jsdelivr": "./dist/io.min.js",
   "unpkg": "./dist/io.min.js",
   "scripts": {
-    "build": "rollup -c",
+    "build": "rollup -c && npm run build:types",
+    "build:types": "tsc --project tsconfig.json",
     "start": "node ./test-browser/server.js"
   },
   "engines": {
@@ -31,8 +33,12 @@
     "@rollup/plugin-commonjs": "^28.0.0",
     "@rollup/plugin-json": "^6.1.0",
     "@rollup/plugin-node-resolve": "^15.3.0",
+    "@rollup/plugin-replace": "^6.0.1",
     "@rollup/plugin-terser": "^0.4.4",
-    "rollup": "^4.36.0"
+    "@types/node": "^24.1.0",
+    "rollup": "^4.36.0",
+    "rollup-plugin-dts": "^6.2.1",
+    "typescript": "^5.8.3"
   },
   "dependencies": {
     "boho": "^1.1.1",

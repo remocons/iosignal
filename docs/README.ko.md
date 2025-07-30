@@ -1,4 +1,5 @@
-[ [en](../README.md) | kr ]
+[ [English](../README.md) | 한국어 ]
+
 
 # IOSignal
 
@@ -11,6 +12,146 @@ $ npm i iosignal
 ```
 
 ## IOSignal 클라이언트
+
+### React 클라이언트 예제
+
+`examples/react-chat-js`에서 샘플 React 프로젝트를 확인할 수 있습니다. 이 예제는 실시간 채팅 기능을 위해 `iosignal`을 React 애플리케이션에 통합하는 방법을 보여줍니다.
+
+**주요 개념:**
+
+-   **`useRef`**: 컴포넌트가 리렌더링되어도 `io` 인스턴스에 대한 안정적인 참조를 유지합니다.
+-   **`useEffect`**: `io` 인스턴스의 생명주기를 관리하며, 초기화 및 정리 작업을 포함합니다. 이벤트 핸들러는 이 훅 내에서 설정됩니다.
+
+**예제 실행 방법:**
+
+1.  서버 디렉토리로 이동하여 서버를 시작합니다:
+    ```shell
+    cd examples/server
+    npm install
+    node .
+    ```
+2.  새 터미널에서 React 프로젝트 디렉토리로 이동하여 종속성을 설치하고 개발 서버를 시작합니다:
+    ```shell
+    cd examples/react-chat-js
+    npm install
+    npm run dev
+    ```
+
+**예제 코드 (`App.jsx`):**
+
+여러 브라우저를 열고 메시지를 입력하면 서버를 통해 서로에게 전달됩니다.
+
+```javascript
+import { useState, useEffect, useRef } from 'react';
+import './App.css';
+import IO from 'iosignal/io.js';
+
+const url = 'ws://localhost:7777';
+const channel_tag = 'channel#topic';
+
+function App() {
+  const [messages, setMessages] = useState([]);
+  const [input, setInput] = useState('Hello, World!');
+  const [ioState, setIoState] = useState(null);
+  const [cid, setCid] = useState(null);
+  const [counts, setCounts] = useState({ instances: 0, websockets: 0 });
+  const ioRef = useRef(null);
+  const messagesEndRef = useRef(null);
+
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  };
+
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages]);
+
+  useEffect(() => {
+    ioRef.current = new IO(url);
+    setCounts({ instances: IO.instanceCount, websockets: IO.webSocketCount });
+
+    const handleReady = () => {
+      console.log('ready cid:', ioRef.current.cid);
+      setCid(ioRef.current.cid);
+      ioRef.current.subscribe(channel_tag);
+    };
+
+    const handleChange = (state) => {
+      setIoState(state);
+      setCounts({ instances: IO.instanceCount, websockets: IO.webSocketCount });
+    };
+
+    const handleChannelMessage = (msgObj, tag) => {
+      console.log('Received message in App:', msgObj, tag);
+      if (typeof msgObj === 'string') {
+        msgObj = { text: msgObj, cid: 'cli unknown' };
+      }
+      setMessages((prevMessages) => [...prevMessages, `${msgObj.cid} : ${msgObj.text}`]);
+    };
+
+    const handleError = (error) => {
+      console.error('IO Error in App:', error);
+      setIoState(`Error: ${error.message}`);
+    };
+
+    ioRef.current.on('ready', handleReady);
+    ioRef.current.on('change', handleChange);
+    ioRef.current.on(channel_tag, handleChannelMessage);
+    ioRef.current.on('error', handleError);
+
+    return () => {
+      ioRef.current.destroy();
+      console.log('IO instance destroyed.');
+      ioRef.current = null;
+    };
+  }, []);
+
+  const sendMessage = () => {
+    if (input.trim()) {
+      const msgObj = { text: input, cid: ioRef.current.cid };
+      ioRef.current.signal(channel_tag, msgObj);
+      setInput('date' + Date.now());
+    }
+  };
+
+  const ioStateStyle = {
+    color: ioState === 'ready' ? 'green' : 'red',
+    fontWeight: 'bold',
+  };
+
+  return (
+    <div className="App">
+      <h1>React Chat Example</h1>
+      <div>URL: {url}</div>
+      <div>Channel: {channel_tag}</div>
+      <div>IO State: <span style={ioStateStyle}>{ioState}</span></div>
+      <div>Client ID: {cid}</div>
+      <div>IO Instances: {counts.instances}</div>
+      <div>WebSockets Created: {counts.websockets}</div>
+      <div className="messages">
+        {messages.map((msg, index) => (
+          <div key={index}>{msg}</div>
+        ))}
+        <div ref={messagesEndRef} />
+      </div>
+      <div className="input-area">
+        <input
+          type="text"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyUp={(e) => e.key === 'Enter' && sendMessage()}
+          disabled={ioState !== 'ready'}
+        />
+        <button onClick={sendMessage} disabled={ioState !== 'ready'}>
+          Send
+        </button>
+      </div>
+    </div>
+  );
+}
+
+export default App;
+```
 
 ### 브라우저 클라이언트 : ESM
 
@@ -200,7 +341,7 @@ Fri, 09 Feb 2024 14:24:37 GMT
  - 아두이노는 CongSocket을 사용합니다.
 
 ## IOSignal 서버 아키텍처
-![IOSignal](./iosignal_architecture.png)
+![IOSignal](../iosignal_architecture.png)
 
 ## IOSignal 저장소
 
