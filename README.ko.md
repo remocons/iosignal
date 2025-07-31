@@ -1,4 +1,4 @@
-[ [English](../README.md) | 한국어 ]
+[ [English](README.md) | 한국어 ]
 
 
 # IOSignal
@@ -341,7 +341,7 @@ Fri, 09 Feb 2024 14:24:37 GMT
  - 아두이노는 CongSocket을 사용합니다.
 
 ## IOSignal 서버 아키텍처
-![IOSignal](../iosignal_architecture.png)
+![IOSignal](./docs/iosignal_architecture.png)
 
 ## IOSignal 저장소
 
