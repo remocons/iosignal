@@ -64,10 +64,10 @@ function App() {
 
     // Cleanup function: remove event listeners when component unmounts
     return () => {
-      // ioRef.current.off('ready', handleReady);
-      // ioRef.current.off('change', handleChange);
-      // ioRef.current.off(channel_tag, handleChannelMessage);
-      // ioRef.current.off('error', handleError);
+      ioRef.current.off('ready', handleReady);
+      ioRef.current.off('change', handleChange);
+      ioRef.current.off(channel_tag, handleChannelMessage);
+      ioRef.current.off('error', handleError);
  
       // destroy() is called to clean up the io instance, all listeners are removed automatically
       ioRef.current.destroy(); // Clean up the io instance

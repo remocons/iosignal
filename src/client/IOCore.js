@@ -216,9 +216,22 @@ export class IOCore extends EventEmitter {
 
     // socket clean
     if (this.socket) {
-      try {
-        this.socket.close?.();
-      } catch {}
+      // For WebSockets, readyState are: 0-CONNECTING, 1-OPEN, 2-CLOSING, 3-CLOSED
+      // Calling close() on a CONNECTING socket will cause a browser error.
+      if (this.socket.readyState === 0) { // 0 is WebSocket.CONNECTING
+        // To avoid the error, we wait for the connection to open, then immediately close it.
+        // We also clear other handlers to prevent any other logic from running.
+        const socket = this.socket;
+        socket.onopen = () => { if(socket) socket.close(); };
+        socket.onmessage = null;
+        socket.onerror = null;
+        socket.onclose = null;
+      } else {
+        try {
+          // For other sockets (like TCP) or other WebSocket states, close directly.
+          this.socket.close?.();
+        } catch {}
+      }
       this.socket = null;
     }
     this.promiseMap.clear();
@@ -385,8 +398,8 @@ export class IOCore extends EventEmitter {
           // console.log( 'ENC_E2E decoded ', decoded )
           msgType = decoded[0]
           // decoded has msg_header only. 
-          buffer.set(decoded, Boho.MetaSize.ENC_488) // set decoded signal_e2e headaer.
-          buffer = buffer.subarray(Boho.MetaSize.ENC_488) // reset offset.
+          buffer.set(decoded, Boho.MetaSize.ENC_488) // set decoded signal_e2e headaer. 
+          buffer = buffer.subarray(Boho.MetaSize.ENC_488) // reset offset. 
           // console.log('DECODED MsgType:', IOMsg[ msgType ] )
         } else {
           // console.log('488 DEC_FAIL', buffer)

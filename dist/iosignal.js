@@ -13,7 +13,7 @@ import require$$2 from 'os';
 import require$$0$1 from 'buffer';
 import { memoryUsage } from 'process';
 
-var version = "3.0.1";
+var version = "3.1.0";
 
 var t$1,e$1={},r$1={};var n$1,i$1,o$1={};
 /*! ieee754. BSD-3-Clause License. Feross Aboukhadijeh <https://feross.org/opensource> */function f$1(){return n$1||(n$1=1,o$1.read=function(t,e,r,n,i){var o,f,u=8*i-n-1,s=(1<<u)-1,h=s>>1,a=-7,c=r?i-1:0,l=r?-1:1,p=t[e+c];for(c+=l,o=p&(1<<-a)-1,p>>=-a,a+=u;a>0;o=256*o+t[e+c],c+=l,a-=8);for(f=o&(1<<-a)-1,o>>=-a,a+=n;a>0;f=256*f+t[e+c],c+=l,a-=8);if(0===o)o=1-h;else {if(o===s)return f?NaN:1/0*(p?-1:1);f+=Math.pow(2,n),o-=h;}return (p?-1:1)*f*Math.pow(2,o-n)},o$1.write=function(t,e,r,n,i,o){var f,u,s,h=8*o-i-1,a=(1<<h)-1,c=a>>1,l=23===i?Math.pow(2,-24)-Math.pow(2,-77):0,p=n?0:o-1,y=n?1:-1,g=e<0||0===e&&1/e<0?1:0;for(e=Math.abs(e),isNaN(e)||e===1/0?(u=isNaN(e)?1:0,f=a):(f=Math.floor(Math.log(e)/Math.LN2),e*(s=Math.pow(2,-f))<1&&(f--,s*=2),(e+=f+c>=1?l/s:l*Math.pow(2,1-c))*s>=2&&(f++,s/=2),f+c>=a?(u=0,f=a):f+c>=1?(u=(e*s-1)*Math.pow(2,i),f+=c):(u=e*Math.pow(2,c-1)*Math.pow(2,i),f=0));i>=8;t[r+p]=255&u,p+=y,u/=256,i-=8);for(f=f<<i|u,h+=i;h>0;t[r+p]=255&f,p+=y,f/=256,h-=8);t[r+p-y]|=128*g;}),o$1}
@@ -992,9 +992,22 @@ class IOCore extends EventEmitter {
 
     // socket clean
     if (this.socket) {
-      try {
-        this.socket.close?.();
-      } catch {}
+      // For WebSockets, readyState are: 0-CONNECTING, 1-OPEN, 2-CLOSING, 3-CLOSED
+      // Calling close() on a CONNECTING socket will cause a browser error.
+      if (this.socket.readyState === 0) { // 0 is WebSocket.CONNECTING
+        // To avoid the error, we wait for the connection to open, then immediately close it.
+        // We also clear other handlers to prevent any other logic from running.
+        const socket = this.socket;
+        socket.onopen = () => { if(socket) socket.close(); };
+        socket.onmessage = null;
+        socket.onerror = null;
+        socket.onclose = null;
+      } else {
+        try {
+          // For other sockets (like TCP) or other WebSocket states, close directly.
+          this.socket.close?.();
+        } catch {}
+      }
       this.socket = null;
     }
     this.promiseMap.clear();
@@ -1159,8 +1172,8 @@ class IOCore extends EventEmitter {
           // console.log( 'ENC_E2E decoded ', decoded )
           msgType = decoded[0];
           // decoded has msg_header only. 
-          buffer.set(decoded, tt.MetaSize.ENC_488); // set decoded signal_e2e headaer.
-          buffer = buffer.subarray(tt.MetaSize.ENC_488); // reset offset.
+          buffer.set(decoded, tt.MetaSize.ENC_488); // set decoded signal_e2e headaer. 
+          buffer = buffer.subarray(tt.MetaSize.ENC_488); // reset offset. 
           // console.log('DECODED MsgType:', IOMsg[ msgType ] )
         } else {
           // console.log('488 DEC_FAIL', buffer)

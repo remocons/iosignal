@@ -83,22 +83,7 @@ export default class IO extends IOCore {
   }
 
 
-  /**
-   * Closes the WebSocket connection and cleans up its event handlers.
-   * This is intended for temporary disconnections, and the connection might be re-established by keepAlive.
-   */
-  close() {
-    if (this.socket) {
-      this.socket.onopen = null;
-      this.socket.onclose = null;
-      this.socket.onmessage = null;
-      this.socket.onerror = null;
-      if (this.socket.readyState === WebSocket.OPEN || this.socket.readyState === WebSocket.CONNECTING) {
-        this.socket.close();
-      }
-    }
-    super.close();
-  }
+  
 
   /**
    * Permanently stops the connection and cleans up its specific resources.

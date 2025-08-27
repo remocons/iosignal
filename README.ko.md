@@ -11,7 +11,21 @@ IOSignal은 웹 브라우저, Node.js, 아두이노 간의 실시간 통신을 �
 $ npm i iosignal
 ```
 
-## IOSignal 클라이언트
+## 예제
+
+이 프로젝트는 다양한 환경에서 `iosignal`을 사용하는 방법을 보여주는 여러 예제를 `examples` 디렉토리에 포함하고 있습니다.
+
+### Node.js 서버 예제
+
+`examples/server`에서 간단한 시그널링 서버를 사용할 수 있습니다. 이 서버는 클라이언트 예제들이 서로 통신하는 데 필요합니다.
+
+**서버 실행 방법:**
+```shell
+cd examples/server
+npm install
+node .
+```
+서버는 WebSocket 연결을 위해 `localhost:7777`에서 시작됩니다.
 
 ### React 클라이언트 예제
 
@@ -24,12 +38,7 @@ $ npm i iosignal
 
 **예제 실행 방법:**
 
-1.  서버 디렉토리로 이동하여 서버를 시작합니다:
-    ```shell
-    cd examples/server
-    npm install
-    node .
-    ```
+1.  예제 서버가 실행 중인지 확인하세요 (위의 설명 참조).
 2.  새 터미널에서 React 프로젝트 디렉토리로 이동하여 종속성을 설치하고 개발 서버를 시작합니다:
     ```shell
     cd examples/react-chat-js
@@ -151,6 +160,192 @@ function App() {
 }
 
 export default App;
+```
+
+### Svelte 클라이언트 예제
+
+`examples/svelte-chat-js`에서 샘플 Svelte 프로젝트를 확인할 수 있습니다. 이 예제는 실시간 채팅 기능을 위해 Svelte 5와 Runes를 사용하는 애플리케이션에 `iosignal`을 통합하는 방법을 보여줍니다.
+
+**주요 개념:**
+
+-   **`$state`**: 메시지, 입력 필드, 연결 상태 등을 위한 반응형 상태 변수를 생성합니다.
+-   **`$effect`**: `io` 인스턴스의 생명주기를 관리합니다. 컴포넌트가 마운트될 때 실행되고, 반환된 정리(cleanup) 함수(`io.destroy()`를 호출하는)는 컴포넌트가 언마운트될 때 실행됩니다.
+
+**예제 실행 방법:**
+
+1.  예제 서버가 실행 중인지 확인하세요 (위의 설명 참조).
+2.  새 터미널에서 Svelte 프로젝트 디렉토리로 이동하여 종속성을 설치하고 개발 서버를 시작합니다:
+    ```shell
+    cd examples/svelte-chat-js
+    npm install
+    npm run dev
+    ```
+
+**예제 코드 (`+page.svelte`):**
+
+```svelte
+<script>
+  import { dev, browser } from "$app/environment";
+  import IO from "iosignal/io.js";
+
+  // const url = 'ws://192.168.0.15:7777';
+  const url = "ws://localhost:7777";
+  const channel_tag = "channel#topic";
+
+  let messages = $state([]);
+  let input = $state("Hello, World!");
+  let ioState = $state(null);
+  let cid = $state(null);
+  let counts = $state({ instances: 0, websockets: 0 });
+  let io = null;
+  let messagesEnd;
+
+  const scrollToBottom = () => {
+    messagesEnd?.scrollIntoView({ behavior: "smooth" });
+  };
+
+  if (browser) {
+    io = new IO(url);
+    if (dev)
+      console.log("new io:", IO.version, IO.instanceCount, IO.webSocketCount);
+
+    counts = { instances: IO.instanceCount, websockets: IO.webSocketCount };
+
+    const handleReady = () => {
+      console.log("ready cid:", io.cid);
+      cid = io.cid;
+      io.subscribe(channel_tag);
+    };
+
+    const handleChange = (state) => {
+      ioState = state;
+      counts = { instances: IO.instanceCount, websockets: IO.webSocketCount };
+    };
+
+    const handleChannelMessage = (msgObj, tag) => {
+      console.log("Received message in App:", msgObj, tag);
+      messages = [...messages, `${msgObj.cid} : ${msgObj.text}`];
+      scrollToBottom();
+    };
+
+    const handleError = (error) => {
+      console.error("IO Error in App:", error);
+      ioState = `Error: ${error.message}`;
+    };
+
+    io.on("ready", handleReady);
+    io.on("change", handleChange);
+    io.on(channel_tag, handleChannelMessage);
+    io.on("error", handleError);
+
+    $effect(() => {
+      return () => {
+        io.destroy();
+        io = null;
+      };
+    });
+  }
+
+  const sendMessage = () => {
+    if (input.trim()) {
+      // console.log('Sending message:', input);
+      const msgObj = { text: input, cid: io.cid };
+      // console.log('Sending message object:', msgObj);
+      io.signal(channel_tag, msgObj);
+      input = "date" + Date.now();
+    }
+  };
+
+  let ioStateStyle = $derived(
+    `color: ${ioState === "ready" ? "green" : "red"}; font-weight: bold;`,
+  );
+</script>
+
+<div class="App">
+  <h1>Svelte 5 Chat Example</h1>
+  <div>URL: {url}</div>
+  <div>Channel: {channel_tag}</div>
+  <div>IO State: <span style={ioStateStyle}>{ioState}</span></div>
+  <div>Client ID: {cid}</div>
+  <div>IO Instances: {counts.instances}</div>
+  <div>WebSockets Created: {counts.websockets}</div>
+  <div class="messages">
+    {#each messages as msg, index (index)}
+      <div>{msg}</div>
+    {/each}
+    <div bind:this={messagesEnd}></div>
+  </div>
+  <div class="input-area">
+    <input
+      type="text"
+      bind:value={input}
+      onkeyup={(e) => e.key === "Enter" && sendMessage()}
+      disabled={ioState !== "ready"}
+    />
+    <button onclick={sendMessage} disabled={ioState !== "ready"}> Send </button>
+  </div>
+</div>
+
+<style>
+  .App {
+    height: 100%;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    padding: 20px;
+    box-sizing: border-box;
+  }
+
+  h1 {
+    margin-top: 0;
+    color: #333;
+  }
+
+  .messages {
+    flex-grow: 1;
+    border: 1px solid #ccc;
+    padding: 10px;
+    overflow-y: auto;
+    margin-bottom: 10px;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+  }
+
+  .messages div {
+    background-color: #f0f0f0;
+    padding: 8px;
+    margin-bottom: 5px;
+    border-radius: 5px;
+    text-align: left;
+  }
+
+  .input-area {
+    display: flex;
+    gap: 10px;
+    margin-top: auto;
+  }
+
+  .input-area input {
+    flex-grow: 1;
+    padding: 10px;
+    border: 1px solid #ccc;
+    border-radius: 5px;
+  }
+
+  .input-area button {
+    padding: 10px 15px;
+    background-color: #007bff;
+    color: white;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+  }
+
+  .input-area button:hover {
+    background-color: #0056b3;
+  }
+</style>
 ```
 
 ### 브라우저 클라이언트 : ESM

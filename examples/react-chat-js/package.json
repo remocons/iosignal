@@ -1,7 +1,7 @@
 {
   "name": "react-chat-js",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -9,12 +9,12 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "react": "^18.2.0",
-    "react-dom": "^18.2.0",
-    "iosignal": "file:../.."
+    "iosignal": "file:../..",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1"
   },
   "devDependencies": {
-    "@vitejs/plugin-react": "^4.2.1",
-    "vite": "^5.0.8"
+    "@vitejs/plugin-react": "^5.0.1",
+    "vite": "^7.1.3"
   }
 }
