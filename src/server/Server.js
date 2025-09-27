@@ -11,6 +11,8 @@ export class Server extends EventEmitter {
     super();
     this.apiNames = new Set()
     this.wss = {};
+    this.port = null;
+    this.congPort = null;
 
     if (options.timeout) {
       let pingT = parseInt(options.timeout)
@@ -31,38 +33,44 @@ export class Server extends EventEmitter {
       serverOption.showMetric = options.showMetric
     }
 
-    if (options.timeout) {
-      serverOption.timeout = options.timeout
-    }
-
-    if (options.port) {
-      serverOption.port = parseInt(options.port)
+    if (options.port || options.port == 0) {
+      this.port = parseInt(options.port)
     }
 
     if (options.httpServer) {
-      serverOption.httpServer = options.httpServer
+      this.httpServer = options.httpServer
     }
 
-    if (options.congPort) {
-      serverOption.congPort = parseInt(options.congPort)
+    if (options.congPort || options.congPort == 0) {
+      this.congPort = parseInt(options.congPort)
     }
 
     this.manager = new Manager(this, authManager)
 
-    if (serverOption.port || serverOption.httpServer) this.startWSServer(serverOption)
-    if (serverOption.congPort) this.startCongServer(serverOption.congPort)
+    this.serverCountToListen = 0;
+    this.listeningServerCount = 0;
+    if (this.port || this.port == 0 || this.httpServer) this.serverCountToListen++;
+    if (this.congPort || this.congPort == 0) this.serverCountToListen++;
+
+    if (this.serverCountToListen === 0) {
+      process.nextTick(() => this.emit('ready'));
+    } else {
+      if (this.port || this.port == 0 || this.httpServer) this.startWSServer();
+      if (this.congPort || this.congPort == 0) this.startCongServer();
+    }
 
   }
 
 
-  startWSServer(serverOption) {
+  startWSServer() {
 
-    if (serverOption.port) {
-      console.log('opening WebSocket Server port:', serverOption.port)
-      this.wss = new WebSocketServer({ port: serverOption.port })
-    } else if (serverOption.httpServer) {
+    // console.log('optoins', options )
+    if (this.port || this.port == 0) {
+      console.log('opening WebSocket Server port:', this.port)
+      this.wss = new WebSocketServer({ port: this.port })
+    } else if (this.httpServer) {
       console.log('opening WebSocket Server external httpServer:')
-      this.wss = new WebSocketServer({ server: serverOption.httpServer })
+      this.wss = new WebSocketServer({ server: this.httpServer })
     } else {
       throw new TypeError(
         'One and only one of the "port", "httpServer"' +
@@ -70,6 +78,15 @@ export class Server extends EventEmitter {
       );
     }
 
+
+    this.wss.once('listening', () => {
+      this.port = this.wss.address().port;
+      console.log('wss server bound port:',  this.port );
+      this.listeningServerCount++;
+      if (this.listeningServerCount === this.serverCountToListen) {
+        this.emit('ready');
+      }
+    });
 
     // this.wss.setMaxListeners(0)
 
@@ -92,8 +109,8 @@ export class Server extends EventEmitter {
 
   }
 
-  startCongServer(congPort) {
-    console.log('opening CongSocket Server:', congPort)
+  startCongServer() {
+    console.log('opening CongSocket Server port:', this.congPort)
 
     this.congServer = net.createServer((socket) => {
       this.manager.addRemote(socket)
@@ -103,8 +120,15 @@ export class Server extends EventEmitter {
         if (err.code == 'EADDRINUSE') {
           process.exit()
         }
-      }).listen(congPort, () => {
-        // console.log('congsocket server bound' );
+      }).on('close', () => {
+        console.log('### cong server closed.')
+      }).listen(this.congPort, () => {
+        this.congPort = this.congServer.address().port;
+        console.log('congsocket server bound port:', this.congPort );
+        this.listeningServerCount++;
+        if (this.listeningServerCount === this.serverCountToListen) {
+          this.emit('ready');
+        }
       });
   }
 
@@ -158,6 +182,46 @@ export class Server extends EventEmitter {
     }
 
     return this
+  }
+
+  close(callback) {
+    console.log('closing io-signal server...')
+    if (this.manager) {
+      this.manager.close()
+    }
+
+    let serverCount = 0;
+    if (this.wss) serverCount++;
+    if (this.congServer) serverCount++;
+
+    if (serverCount === 0) {
+      if (callback) process.nextTick(callback);
+      return;
+    }
+
+    let closedCount = 0;
+    const onClosed = () => {
+      closedCount++;
+      if (closedCount === serverCount) {
+        console.log('io-signal server closed.')
+        if (callback) callback();
+      }
+    }
+
+    if (this.wss) {
+      this.wss.close(() => {
+        console.log('wss server closed.')
+        onClosed()
+      })
+    }
+
+    if (this.congServer) {
+      this.congServer.close((err) => {
+        if (err) console.error('congServer close error', err)
+        console.log('cong server closed.')
+        onClosed()
+      })
+    }
   }
 
 }

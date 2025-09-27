@@ -2,9 +2,9 @@
 
 export let serverOption = {
   clientTracking: false,
-  port: 0, //wsPort
+  port: null, // WebSocket
+  congPort: null, // CongSocket
   httpServer: null,
-  congPort: 0,
   timeout: 50000,
   showMessage: 'none',
   showMetric: 0,

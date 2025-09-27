@@ -13,7 +13,9 @@ import require$$2 from 'os';
 import require$$0$1 from 'buffer';
 import { memoryUsage } from 'process';
 
-var version = "3.1.0";
+var version$1 = "3.2.0";
+var pkg = {
+	version: version$1};
 
 var t$1,e$1={},r$1={};var n$1,i$1,o$1={};
 /*! ieee754. BSD-3-Clause License. Feross Aboukhadijeh <https://feross.org/opensource> */function f$1(){return n$1||(n$1=1,o$1.read=function(t,e,r,n,i){var o,f,u=8*i-n-1,s=(1<<u)-1,h=s>>1,a=-7,c=r?i-1:0,l=r?-1:1,p=t[e+c];for(c+=l,o=p&(1<<-a)-1,p>>=-a,a+=u;a>0;o=256*o+t[e+c],c+=l,a-=8);for(f=o&(1<<-a)-1,o>>=-a,a+=n;a>0;f=256*f+t[e+c],c+=l,a-=8);if(0===o)o=1-h;else {if(o===s)return f?NaN:1/0*(p?-1:1);f+=Math.pow(2,n),o-=h;}return (p?-1:1)*f*Math.pow(2,o-n)},o$1.write=function(t,e,r,n,i,o){var f,u,s,h=8*o-i-1,a=(1<<h)-1,c=a>>1,l=23===i?Math.pow(2,-24)-Math.pow(2,-77):0,p=n?0:o-1,y=n?1:-1,g=e<0||0===e&&1/e<0?1:0;for(e=Math.abs(e),isNaN(e)||e===1/0?(u=isNaN(e)?1:0,f=a):(f=Math.floor(Math.log(e)/Math.LN2),e*(s=Math.pow(2,-f))<1&&(f--,s*=2),(e+=f+c>=1?l/s:l*Math.pow(2,1-c))*s>=2&&(f++,s/=2),f+c>=a?(u=0,f=a):f+c>=1?(u=(e*s-1)*Math.pow(2,i),f+=c):(u=e*Math.pow(2,c-1)*Math.pow(2,i),f=0));i>=8;t[r+p]=255&u,p+=y,u/=256,i-=8);for(f=f<<i|u,h+=i;h>0;t[r+p]=255&f,p+=y,f/=256,h-=8);t[r+p-y]|=128*g;}),o$1}
@@ -7586,9 +7588,9 @@ class IOWS extends IOCore {
 
 let serverOption = {
   clientTracking: false,
-  port: 0, //wsPort
+  port: null, // WebSocket
+  congPort: null, // CongSocket
   httpServer: null,
-  congPort: 0,
   timeout: 50000,
   showMessage: 'none',
   showMetric: 0,
@@ -8131,6 +8133,8 @@ class Remote extends RemoteCore {
       socket.on("ping", this.receiveMonitor.bind(this));
       socket.on("error", (e) => { console.log('Websocket error', e, e.code); });
       socket.onclose = (e) => {
+        // Clean up all listeners on the socket to prevent leaks
+        socket.removeAllListeners();
         this.manager.removeRemote(this);
       };
     } else { // TCP else
@@ -8150,6 +8154,9 @@ class Remote extends RemoteCore {
 
       socket.on('error', e => { console.log('TCP Socket error', e); });
       socket.on('close', e => {
+        // Clean up listeners on both the socket and the parser
+        socket.removeAllListeners();
+        this.congRx.removeAllListeners();
         this.manager.removeRemote(this);
       });
 
@@ -8873,7 +8880,23 @@ class Manager {
     }
   }
 
+  close() {
+    clearInterval(this.pingIntervalID);
+    if (this.monitIntervalID) {
+      clearInterval(this.monitIntervalID);
+    }
 
+    this.remotes.forEach(remote => {
+      remote.close();
+    });
+
+    this.remotes.clear();
+    this.cid2remote.clear();
+    this.retain_messages.clear();
+    this.channel_map.clear();
+
+    console.log('Manager closed');
+  }
 }
 
 const STATUS = {
@@ -8889,6 +8912,8 @@ class Server extends require$$0$3 {
     super();
     this.apiNames = new Set();
     this.wss = {};
+    this.port = null;
+    this.congPort = null;
 
     if (options.timeout) {
       let pingT = parseInt(options.timeout);
@@ -8909,38 +8934,44 @@ class Server extends require$$0$3 {
       serverOption.showMetric = options.showMetric;
     }
 
-    if (options.timeout) {
-      serverOption.timeout = options.timeout;
-    }
-
-    if (options.port) {
-      serverOption.port = parseInt(options.port);
+    if (options.port || options.port == 0) {
+      this.port = parseInt(options.port);
     }
 
     if (options.httpServer) {
-      serverOption.httpServer = options.httpServer;
+      this.httpServer = options.httpServer;
     }
 
-    if (options.congPort) {
-      serverOption.congPort = parseInt(options.congPort);
+    if (options.congPort || options.congPort == 0) {
+      this.congPort = parseInt(options.congPort);
     }
 
     this.manager = new Manager(this, authManager);
 
-    if (serverOption.port || serverOption.httpServer) this.startWSServer(serverOption);
-    if (serverOption.congPort) this.startCongServer(serverOption.congPort);
+    this.serverCountToListen = 0;
+    this.listeningServerCount = 0;
+    if (this.port || this.port == 0 || this.httpServer) this.serverCountToListen++;
+    if (this.congPort || this.congPort == 0) this.serverCountToListen++;
+
+    if (this.serverCountToListen === 0) {
+      process.nextTick(() => this.emit('ready'));
+    } else {
+      if (this.port || this.port == 0 || this.httpServer) this.startWSServer();
+      if (this.congPort || this.congPort == 0) this.startCongServer();
+    }
 
   }
 
 
-  startWSServer(serverOption) {
+  startWSServer() {
 
-    if (serverOption.port) {
-      console.log('opening WebSocket Server port:', serverOption.port);
-      this.wss = new WebSocketServer({ port: serverOption.port });
-    } else if (serverOption.httpServer) {
+    // console.log('optoins', options )
+    if (this.port || this.port == 0) {
+      console.log('opening WebSocket Server port:', this.port);
+      this.wss = new WebSocketServer({ port: this.port });
+    } else if (this.httpServer) {
       console.log('opening WebSocket Server external httpServer:');
-      this.wss = new WebSocketServer({ server: serverOption.httpServer });
+      this.wss = new WebSocketServer({ server: this.httpServer });
     } else {
       throw new TypeError(
         'One and only one of the "port", "httpServer"' +
@@ -8948,6 +8979,15 @@ class Server extends require$$0$3 {
       );
     }
 
+
+    this.wss.once('listening', () => {
+      this.port = this.wss.address().port;
+      console.log('wss server bound port:',  this.port );
+      this.listeningServerCount++;
+      if (this.listeningServerCount === this.serverCountToListen) {
+        this.emit('ready');
+      }
+    });
 
     // this.wss.setMaxListeners(0)
 
@@ -8970,8 +9010,8 @@ class Server extends require$$0$3 {
 
   }
 
-  startCongServer(congPort) {
-    console.log('opening CongSocket Server:', congPort);
+  startCongServer() {
+    console.log('opening CongSocket Server port:', this.congPort);
 
     this.congServer = net.createServer((socket) => {
       this.manager.addRemote(socket);
@@ -8981,8 +9021,15 @@ class Server extends require$$0$3 {
         if (err.code == 'EADDRINUSE') {
           process.exit();
         }
-      }).listen(congPort, () => {
-        // console.log('congsocket server bound' );
+      }).on('close', () => {
+        console.log('### cong server closed.');
+      }).listen(this.congPort, () => {
+        this.congPort = this.congServer.address().port;
+        console.log('congsocket server bound port:', this.congPort );
+        this.listeningServerCount++;
+        if (this.listeningServerCount === this.serverCountToListen) {
+          this.emit('ready');
+        }
       });
   }
 
@@ -9036,6 +9083,46 @@ class Server extends require$$0$3 {
     }
 
     return this
+  }
+
+  close(callback) {
+    console.log('closing io-signal server...');
+    if (this.manager) {
+      this.manager.close();
+    }
+
+    let serverCount = 0;
+    if (this.wss) serverCount++;
+    if (this.congServer) serverCount++;
+
+    if (serverCount === 0) {
+      if (callback) process.nextTick(callback);
+      return;
+    }
+
+    let closedCount = 0;
+    const onClosed = () => {
+      closedCount++;
+      if (closedCount === serverCount) {
+        console.log('io-signal server closed.');
+        if (callback) callback();
+      }
+    };
+
+    if (this.wss) {
+      this.wss.close(() => {
+        console.log('wss server closed.');
+        onClosed();
+      });
+    }
+
+    if (this.congServer) {
+      this.congServer.close((err) => {
+        if (err) console.error('congServer close error', err);
+        console.log('cong server closed.');
+        onClosed();
+      });
+    }
   }
 
 }
@@ -9568,5 +9655,7 @@ class RedisAPI {
   }
 
 }
+
+const version = pkg.version;
 
 export { API_TYPE, Auth_Env, Auth_File, Auth_Redis, tt as Boho, BohoAuth, CLIENT_STATE, CongRx, ENC_MODE, FileLogger, IOWS as IO, IOCongSocket, IOMsg, M$1 as MBP, PAYLOAD_TYPE, RedisAPI, SIZE_LIMIT, STATES, STATUS$1 as STATUS, Server, api_reply, api_sudo, getPayloadFromSignalPack, getSignalPack, pack, parsePayload, serverOption, version };

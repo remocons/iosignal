@@ -40,6 +40,8 @@ export class Remote extends RemoteCore {
       socket.on("ping", this.receiveMonitor.bind(this));
       socket.on("error", (e) => { console.log('Websocket error', e, e.code) });
       socket.onclose = (e) => {
+        // Clean up all listeners on the socket to prevent leaks
+        socket.removeAllListeners();
         this.manager.removeRemote(this);
       };
     } else { // TCP else
@@ -59,6 +61,9 @@ export class Remote extends RemoteCore {
 
       socket.on('error', e => { console.log('TCP Socket error', e) })
       socket.on('close', e => {
+        // Clean up listeners on both the socket and the parser
+        socket.removeAllListeners();
+        this.congRx.removeAllListeners();
         this.manager.removeRemote(this);
       })
 

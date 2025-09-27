@@ -429,5 +429,21 @@ export class Manager {
     }
   }
 
+  close() {
+    clearInterval(this.pingIntervalID);
+    if (this.monitIntervalID) {
+      clearInterval(this.monitIntervalID);
+    }
 
+    this.remotes.forEach(remote => {
+      remote.close();
+    });
+
+    this.remotes.clear();
+    this.cid2remote.clear();
+    this.retain_messages.clear();
+    this.channel_map.clear();
+
+    console.log('Manager closed');
+  }
 }

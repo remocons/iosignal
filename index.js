@@ -1,4 +1,5 @@
-export {version} from "./package.json";
+import pkg from './package.json' with { type: 'json' };
+export const version = pkg.version;
 export { IOCongSocket } from './src/client/IOCongSocket.js'
 export { IOWS as IO } from './src/client/IOWS.js'
 export { pack, CongRx } from './src/client/CongPacket.js'
