@@ -13,7 +13,7 @@ import require$$2 from 'os';
 import require$$0$1 from 'buffer';
 import { memoryUsage } from 'process';
 
-var version$1 = "3.2.0";
+var version$1 = "3.3.0";
 var pkg = {
 	version: version$1};
 
@@ -985,7 +985,7 @@ class IOCore extends EventEmitter {
   close() {
     if (this._closed) return;
     this._closed = true;
-
+// console.log('####### IOCOre.js close() called')
     // If auto-reconnect is disabled, we must stop the keep-alive timer.
     if (this.autoReconnect === false) {
       clearInterval(this.connectionCheckerIntervalID);
@@ -1206,13 +1206,26 @@ class IOCore extends EventEmitter {
       case IOMsg.PONG:
         break;
 
+      case IOMsg.ECHO:
+        try {
+          let str = decoder$4.decode(buffer.subarray(1));
+          
+          this.emit('echo', str);
+        } catch (error) {
+          this.emit('error', new Error('ECHO data error'));
+        }
+        break;
+        
       case IOMsg.IAM_RES:
         try {
           let str = decoder$4.decode(buffer.subarray(1));
           let jsonInfo = JSON.parse(str);
-          if (jsonInfo.ip) {
-            this.ip = jsonInfo.ip;
-          }
+          if (jsonInfo.ip) { this.ip = jsonInfo.ip; }
+          if (jsonInfo.nick) { this.nick = jsonInfo.nick; }
+          if (jsonInfo.did) { this.did = jsonInfo.did; }
+          if (jsonInfo.uid) { this.uid = jsonInfo.uid; }
+          // TIP. cid from [CID_RES], level from [QUOTA_LEVEL]
+          this.emit('iam_res', str );
         } catch (error) {
           this.emit('error', new Error('IAM_RES data error'));
         }
@@ -1231,13 +1244,14 @@ class IOCore extends EventEmitter {
         let quotaLevel = buffer[1];
         this.level = quotaLevel;
         this.quota = quotaTable[quotaLevel];
-        console.log('## QUOTA:', quotaLevel, JSON.stringify(this.quota));
+        console.log('[QUOTA_LEVEL]', JSON.stringify(this.quota));
         break;
 
       case IOMsg.SERVER_CLEAR_AUTH:
         this.useAuth = false;
         this.boho.clearAuth();
         this.stop();
+        console.log('[SERVER_CLEAR_AUTH] io stop.');
         break;
 
       case IOMsg.SERVER_REDIRECT:
@@ -1441,7 +1455,7 @@ class IOCore extends EventEmitter {
    */
   echo(args) {
     if (args) {
-      console.log('echo args:', args);
+      // console.log('send echo args:', args)
       this.send_enc_mode(M$1.pack(
         M$1.MB('#MsgType', '8', IOMsg.ECHO),
         M$1.MB('#msg', args)
@@ -1530,13 +1544,13 @@ class IOCore extends EventEmitter {
    */
   setMsgPromise(mid) {
     return new Promise((resolve, reject) => {
-      this.promiseMap.set(mid, [resolve, reject]);
-      setTimeout(e => {
+      const timeoutId = setTimeout(e => {
         if (this.promiseMap.has(mid)) {
           reject('timeout');
           this.promiseMap.delete(mid);
         }
       }, this.promiseTimeOut);
+      this.promiseMap.set(mid, [resolve, reject, timeoutId]);
     })
   }
 
@@ -1550,7 +1564,8 @@ class IOCore extends EventEmitter {
     if (!res) return
 
     if (this.promiseMap.has(res.mid)) {
-      let [resolve, reject] = this.promiseMap.get(res.mid);
+      let [resolve, reject, timeoutId] = this.promiseMap.get(res.mid);
+      clearTimeout(timeoutId);
       this.promiseMap.delete(res.mid);
 
       if (res.status < 128) {
@@ -1659,9 +1674,9 @@ class IOCore extends EventEmitter {
 
 
   /**
-   * Sends a request to a target and topic.
-   * @param {string} target - The target of the request.
-   * @param {string} topic - The topic of the request.
+   * Sends a request to a target and topic.(remote api call)
+   * @param {string} target - The target(api name) of the request.
+   * @param {string} topic - The topic(api function name) of the request.
    * @param {...any} args - Optional arguments for the request.
    * @returns {Promise<any>}
    */
@@ -1937,6 +1952,7 @@ class IOCore extends EventEmitter {
     // STATES constant name : string upperCase
     // eventName, .stateName : string lowerCase
     // .state : number
+    // console.log('### stateChange reason:', emitEventAndMessage )
     let eventName = state.toLowerCase();
     this.state = STATES[state.toUpperCase()]; // state: number
     if (emitEventAndMessage) this.emit(eventName, emitEventAndMessage);
@@ -1959,6 +1975,8 @@ const CongType = {
 // support LittleEndian system.
 function pack(payload) {
 
+  if( payload.byteLength == undefined ) payload = Buffer.from(payload);
+  
   if (payload.byteLength < 256) { //one byte len
     return M$1.pack(
       M$1.MB('#type', '8', CongType.TYPE_LEN1),
@@ -7591,6 +7609,7 @@ let serverOption = {
   port: null, // WebSocket
   congPort: null, // CongSocket
   httpServer: null,
+  wsPath: null,
   timeout: 50000,
   showMessage: 'none',
   showMetric: 0,
@@ -7632,10 +7651,10 @@ let serverOption = {
   },
 
   auth: {
-    delay_auth_fail: 1000,
+    delay_auth_fail: 600,
   },
 
-  memberOnly: false
+  membersOnly: false
 
 };
 
@@ -7662,15 +7681,13 @@ class RemoteCore {
     this.ssid = RemoteCore.ssid++;  // ordered index number
     this.manager = manager;
 
-    this.cid; // Communication Id
-    this.did; // Device Id
-    this.uid; // User Id
-    this.nick = "";
+    this.cid = ''; // Communication Id
+    this.did = ''; // Device Id
+    this.uid = ''; // User Id
+    this.nick = '';
 
-
-    this.lastEchoMessage = "N";
     this.privateNode = false;
-    this.HOME_CHANNEL = "";
+    this.HOME_CHANNEL = '';
     this.level = serverOption.defaultQuotaIndex;
     this.quota = quotaTable[this.level];
     this.isAdmin = false;
@@ -7686,7 +7703,8 @@ class RemoteCore {
   setState(state) {
     this.state = state;
     if (serverOption.debug.showAuthInfo) {
-      this.stateLog.push(state);
+      // let s = state + ":" + CLIENT_STATE[ state] 
+      this.stateLog.push( state  );
       console.log(this.stateLog.join('>'));
     }
   }
@@ -7701,7 +7719,7 @@ class RemoteCore {
 
 
   showMessageLog(message, isBinary) {
-    let from = this.boho.isAuthorized ? `did: ${this.did} ${this.cid}@` : `${this.cid}@`;
+    let from = this.boho.isAuthorized ? `[FROM]did: ${this.did} cid:${this.cid}` : `[FROM]cid:${this.cid}`;
     if (isBinary) {
       let msgTypeName = IOMsg[message[0]];
       if (!msgTypeName) msgTypeName = tt.BohoMsg[message[0]];
@@ -7798,6 +7816,7 @@ class RemoteCore {
         case IOMsg.CID_REQ:
           if (this.state < CLIENT_STATE.SENT_SERVER_READY) {
             // Protocol violation: CID_REQ was sent before receiving the SERVER_READY signal.
+            console.log('CID_REQ before SERVER_READY');
             this.close();
           }
 
@@ -7815,22 +7834,16 @@ class RemoteCore {
           this.setState(CLIENT_STATE.CID_READY);
           break;
 
-
-        case IOMsg.ECHO: // TEXT only 
-          try {
-            let msg = decoder$3.decode(message.subarray(1));
-            this.lastEchoMessage = msg;
-          } catch (error) {
-            // console.log('ECHO message is not a text')
+        case IOMsg.ECHO:
+          if( message.byteLength < 30) {      
+            this.send(message, isBinary);
           }
-          this.send(message, isBinary);
           break;
 
         case IOMsg.IAM:
-          if (message.byteLength > 1) {
-            let iamInfo = message.subarray(1);
-            this.nick = decoder$3.decode(iamInfo);
-            console.log('iam nick reset', this.nick);
+          if (message.byteLength > 1 && message.byteLength < 30) {            
+              // if iam request has a text message then reset the nick property.
+              this.nick = decoder$3.decode(message.subarray(1));
           }
           this.iamResponse();
           break;
@@ -7851,7 +7864,7 @@ class RemoteCore {
 
         case IOMsg.UNSUBSCRIBE:
           if (message.byteLength == 2) {
-            this.manager.unsubscribe([""], this);
+            this.manager.unsubscribe([''], this);
           } else if (message.byteLength >= 3) {
             let tagLen = message.readUInt8(1);
 
@@ -7925,7 +7938,7 @@ class RemoteCore {
         case tt.BohoMsg.AUTH_REQ:
           if (!this.manager.authManager) return
           if (this.state < CLIENT_STATE.SENT_SERVER_READY) {
-            // console.log('protocol error. auth_req before server_ready')
+            console.log('protocol error. auth_req before server_ready');
             this.close();
           }
           this.setState(CLIENT_STATE.RECV_AUTH_REQ);
@@ -7938,22 +7951,23 @@ class RemoteCore {
         case tt.BohoMsg.AUTH_HMAC:
           if (!this.manager.authManager) return
           if (this.state < CLIENT_STATE.SENT_SERVER_NONCE) {
-            // console.log('protocol error. auth_hmac before server_nonce')
+            console.log('protocol error. auth_hmac before server_nonce');
             this.close();
           }
           this.setState(CLIENT_STATE.RECV_AUTH_HMAC);
           //async
           this.manager.authManager.verify_auth_hmac(message, this)
             .then(authInfo => {
-              if (authInfo) {
-                this.manager.deligateSignal(remote, '@$name', authInfo.name);
+              if (authInfo?.name) {
+                this.manager.deligateSignal(this, '@$name', authInfo.name);
                 // console.log('device login success authInfo', authInfo)
                 // this.manager.sender('@$name', authInfo.name )
               }
 
+              // console.log('[VERIFY AUTH_HMAC] SubClass of BohoAuth return authInfo:', authInfo )
             })
             .catch(e => {
-
+              console.log('authInfo return fail.', e );
             });
 
           return;
@@ -7979,23 +7993,19 @@ class RemoteCore {
   response(msgId, statusCode, body) {
     // console.log('response body', body)
     if (body) {
-
       this.send_enc_mode(M$1.pack(
         MB('#type', '8', IOMsg.RESPONSE_MBP),
         MB('status', '8', statusCode),
         MB('mid', '16', msgId),
         MB('body', body)
       ));
-
     } else {
       this.send_enc_mode(M$1.pack(
         MB('#type', '8', IOMsg.RESPONSE_MBP),
         MB('status', '8', statusCode),
         MB('mid', '16', msgId)
       ));
-
     }
-
   }
 
 
@@ -8036,9 +8046,9 @@ class RemoteCore {
 
 
 
-  iamResponse(info = "") {
+  iamResponse(info = '') {
 
-    if (info == "") {
+    if (info == '') {
       let channels = [];
       for (let tag of this.channels.keys()) {
         channels.push(tag);
@@ -8046,15 +8056,17 @@ class RemoteCore {
 
       info = {
         "ssid": this.ssid,
-        "uid": this.uid,
         "cid": this.cid,
         "did": this.did,
+        "uid": this.uid,
+        "level": this.level,
         "nick": this.nick,
         "ip": this.ip
         , 'tag': channels
       };
     }
 
+    // console.log( 'iam res info', info )
     let pack = M$1.pack(
       MB('#MsgType', '8', IOMsg.IAM_RES),
       MB('#info', info)
@@ -8440,8 +8452,7 @@ class Metric {
           ip: remote.ip,
           uptime: Math.trunc((Date.now() - remote.socket.openTime) / 1000),
           nick: remote.nick,
-          ssid: remote.ssid,
-          echo: remote.lastEchoMessage
+          ssid: remote.ssid
         }
       } else if (mode == 3) {
         return {
@@ -8656,11 +8667,11 @@ class Manager {
   }
 
   sender(tag, remote, message) {
-    if (serverOption.memberOnly && !remote.boho.isAuthorized) {
-      // console.log("## MemberOnly, reject unAuthorized remote." )
+    if (serverOption.membersOnly && !remote.boho.isAuthorized) {
+      console.log("[membersOnly] unAuthorized remote.",tag  );
       remote.send(Buffer.from([IOMsg.SERVER_CLEAR_AUTH]));
       remote.close();
-      return ['err', 'not autrized']
+      return ['err', 'unAuthorized']
     }
 
     if (tag.indexOf('$') == 0) return ['err', 'prefix $ is reserved for userSet tag.']
@@ -8895,7 +8906,6 @@ class Manager {
     this.retain_messages.clear();
     this.channel_map.clear();
 
-    console.log('Manager closed');
   }
 }
 
@@ -8919,20 +8929,20 @@ class Server extends require$$0$3 {
       let pingT = parseInt(options.timeout);
       if (pingT && pingT >= 1000) serverOption.timeout = pingT;
     }
-
     if (options.monitorPeriod) {
       let monitorT = parseInt(options.monitorPeriod);
       if (monitorT && monitorT >= 1000) serverOption.monitorPeriod = monitorT;
     }
-
-
     if (options.showMessage) {
       serverOption.showMessage = options.showMessage;
     }
-
     if (options.showMetric) {
       serverOption.showMetric = options.showMetric;
     }
+    if (options.membersOnly) {
+      serverOption.membersOnly = options.membersOnly;
+    }
+
 
     if (options.port || options.port == 0) {
       this.port = parseInt(options.port);
@@ -8940,6 +8950,10 @@ class Server extends require$$0$3 {
 
     if (options.httpServer) {
       this.httpServer = options.httpServer;
+    }
+
+    if (options.wsPath) {
+      this.wsPath = options.wsPath;
     }
 
     if (options.congPort || options.congPort == 0) {
@@ -8954,7 +8968,7 @@ class Server extends require$$0$3 {
     if (this.congPort || this.congPort == 0) this.serverCountToListen++;
 
     if (this.serverCountToListen === 0) {
-      process.nextTick(() => this.emit('ready'));
+      throw new Error('Cannot create Server: At least one of "port", "httpServer", or "congPort" must be specified.');
     } else {
       if (this.port || this.port == 0 || this.httpServer) this.startWSServer();
       if (this.congPort || this.congPort == 0) this.startCongServer();
@@ -8964,21 +8978,17 @@ class Server extends require$$0$3 {
 
 
   startWSServer() {
-
     // console.log('optoins', options )
     if (this.port || this.port == 0) {
-      console.log('opening WebSocket Server port:', this.port);
-      this.wss = new WebSocketServer({ port: this.port });
-    } else if (this.httpServer) {
-      console.log('opening WebSocket Server external httpServer:');
-      this.wss = new WebSocketServer({ server: this.httpServer });
+      this.wss = new WebSocketServer({ port: this.port , path: this.wsPath });
+    } else if (this.httpServer ) {
+      this.wss = new WebSocketServer({ server: this.httpServer, path: this.wsPath });
     } else {
       throw new TypeError(
         'One and only one of the "port", "httpServer"' +
         'must be specified'
       );
     }
-
 
     this.wss.once('listening', () => {
       this.port = this.wss.address().port;
@@ -8990,7 +9000,6 @@ class Server extends require$$0$3 {
     });
 
     // this.wss.setMaxListeners(0)
-
     this.wss.on('error', (err) => {
       console.error('### ws server error:', err.message);
       if (err.code == 'EADDRINUSE') {
@@ -8998,8 +9007,8 @@ class Server extends require$$0$3 {
       }
     });
 
-    this.wss.on('close', (err) => {
-      console.log('### WS server closed.', err);
+    this.wss.on('close', () => {
+      console.log('### WS server is closed.');
     });
 
     this.wss.on('connection', (ws, req) => {
@@ -9011,8 +9020,6 @@ class Server extends require$$0$3 {
   }
 
   startCongServer() {
-    console.log('opening CongSocket Server port:', this.congPort);
-
     this.congServer = net.createServer((socket) => {
       this.manager.addRemote(socket);
     })
@@ -9022,7 +9029,7 @@ class Server extends require$$0$3 {
           process.exit();
         }
       }).on('close', () => {
-        console.log('### cong server closed.');
+        console.log('### congsocket server is closed.');
       }).listen(this.congPort, () => {
         this.congPort = this.congServer.address().port;
         console.log('congsocket server bound port:', this.congPort );
@@ -9033,63 +9040,75 @@ class Server extends require$$0$3 {
       });
   }
 
-
-
+/**
+ * API register.
+ * target:  api_name <string>
+ * api: api_module <function module|class instance>
+ * return this
+ */
   api(target, api) {
 
-    this.apiNames.add(target);
-
+    if( typeof target !== 'string'){
+      throw new Error(`api( target ,api ) target name is not a string.`)
+    }
     if (!api.checkPermission || typeof api.checkPermission != 'function') {
-      throw new Error('wrong api interface. no checkPermission function.')
+      throw new Error(`API ${target} : no checkPermission or not a function.`)
     }
-
-
-    if (typeof api.request == 'function' && Array.isArray(api.commands)) {
-      console.log(`API TYPE1. A Class with one request function. target: ${target} list: ${api.commands}`);
-
-      this.on(target, (remote, req) => {
-        if (api.checkPermission(remote, req)) {
-          api.request(remote, req);
-        } else {
-          remote.response(req.mid, STATUS.ERROR, "NO_PERMISSION.");
-        }
-      });
-
-    } else {
-      let apiList = [];
-      Object.keys(api).forEach(v => {
-        if (typeof api[v] === 'function') apiList.push(v);
-        console.log('api list', typeof api[v], v);
-      });
-
-      console.log(`API TYPE2. Multiple function list.  target: ${target} list:${apiList}`);
-
-      this.on(target, (remote, req) => {
-        let r;
-        if (!api.checkPermission(remote, req)) {
-          r = "NO_PERMISSION.";
-        } else {
-          if (api[req.topic]) {
-            console.log(`API TYPE2. request target: ${target}  has topic:${req.topic}`);
-            api[req.topic](remote, req);
+    if(!api.commands || !Array.isArray(api.commands) ){
+      throw new Error(`API ${target} : no commands or !Array.`)
+    }
+    
+    // API TYPE 1. single request() function.
+    if ( api.request && typeof api.request == 'function' ) {
+      this.on(target, async (remote, req) => {
+        try {
+          if (!api.checkPermission(remote, req)) {
+            remote.response(req.mid, STATUS.ERROR, "NO_PERMISSION.");
             return
-          } else {
-            r = `target: ${req.target} has not topic name: ${req.topic}`;
           }
+          if( api.commands.includes( req.topic )){
+            console.log('server api req', req );
+            await api.request(remote, req);
+          }else {
+            remote.response(req.mid, STATUS.ERROR, "UNKNOWN_COMMAND");
+          }
+        } catch (error) {
+          console.error(`Unhandled API Error in target [${target}]:`, error);
+          remote.response(req.mid, STATUS.ERROR, "INTERNAL_SERVER_ERROR");
         }
-
-        remote.response(req.mid, STATUS.ERROR, r);
+      });
+    } else {
+      // API TYPE 2. multiple functions.
+      this.on(target, async (remote, req) => {
+        try {
+          if (!api.checkPermission(remote, req)) {
+            remote.response(req.mid, STATUS.ERROR, "NO_PERMISSION.");
+            return
+          }
+          if( api.commands.includes( req.topic )){
+            await api[req.topic](remote, req);
+          }else {
+            remote.response(req.mid, STATUS.ERROR, "UNKNOWN_COMMAND");
+          }
+        } catch (error) {
+          console.error(`Unhandled API Error in target [${target}]:`, error);
+          remote.response(req.mid, STATUS.ERROR, "INTERNAL_SERVER_ERROR");
+        }
       });
     }
-
+    this.apiNames.add(target);
+    console.log(`[API registed: ${target} ] accept commands: ${api.commands}`);
     return this
   }
 
   close(callback) {
-    console.log('closing io-signal server...');
+    console.log('closing iosignal server...');
     if (this.manager) {
       this.manager.close();
     }
+
+    this.apiNames.forEach(v => this.removeAllListeners(v));
+    this.apiNames.clear();
 
     let serverCount = 0;
     if (this.wss) serverCount++;
@@ -9104,14 +9123,14 @@ class Server extends require$$0$3 {
     const onClosed = () => {
       closedCount++;
       if (closedCount === serverCount) {
-        console.log('io-signal server closed.');
+        console.log('IOSignal server is closed.');
         if (callback) callback();
       }
     };
 
     if (this.wss) {
       this.wss.close(() => {
-        console.log('wss server closed.');
+        // console.log('wss server closed.')
         onClosed();
       });
     }
@@ -9119,7 +9138,7 @@ class Server extends require$$0$3 {
     if (this.congServer) {
       this.congServer.close((err) => {
         if (err) console.error('congServer close error', err);
-        console.log('cong server closed.');
+        // console.log('cong server closed.')
         onClosed();
       });
     }
@@ -9142,10 +9161,9 @@ class BohoAuth {
       let peerInfo = `FAIL #${peer.ssid} reason:${reason} `;
       this.authLogger.log(peerInfo);
     }
-
-    console.log('## AUTH_FAIL reason:', reason);
-    // peer.send( Buffer.from( [Boho.BohoMsg.AUTH_FAIL] ))
+    // console.log('##### AUTH_FAIL reason: ', reason)
     peer.setState(CLIENT_STATE.AUTH_FAIL);
+    // add some delay time.
     setTimeout(e => {
       peer.send(Buffer.from([tt.BohoMsg.AUTH_FAIL]));
     }, serverOption.auth.delay_auth_fail);
@@ -9155,28 +9173,29 @@ class BohoAuth {
     try {
       //1. unpack 
       let infoPack = M$1.unpack(auth_hmac, tt.Meta.AUTH_HMAC);
+
       if (!infoPack) {
         this.send_auth_fail(peer, 'unpack auth_pack fail');
         return
       }
-
+      
       let id = "";
       if (infoPack.id8.includes(0)) {
         id = decoder.decode(infoPack.id8.subarray(0, infoPack.id8.indexOf(0)));
       } else {
         id = decoder.decode(infoPack.id8);
       }
-
+      
       //2. get key of id from DB
       let authInfo = await this.getAuth(id);
-
-      // console.log('##### authInfo',authInfo )
-      if (serverOption.debug.showAuthInfo) {
-      }
 
       if (!authInfo) {
         this.send_auth_fail(peer, 'NO ID:' + id);
         return
+      }
+
+      if (serverOption.debug.showAuthInfo) {
+        console.log('[debug]showAuthInfo',authInfo );
       }
 
       // console.log('db authInfo.key: ', authInfo.key)
@@ -9229,6 +9248,7 @@ class BohoAuth {
 
       //6. delete current (temp rand)cid if exist.
       if (peer.cid) {
+        console.log('duplicate cid');
         peer.manager.cid2remote.delete(peer.cid);
       }
 
@@ -9236,6 +9256,7 @@ class BohoAuth {
       peer.did = id;
       peer.cid = authInfo.cid;
       peer.nick = authInfo.cid; // temporary: nick as cid
+      if( authInfo.uid ) peer.uid = authInfo.uid; 
 
       //8. setting quota level. 
       let quotaLevel = serverOption.defaultQuotaIndex;
@@ -9274,12 +9295,10 @@ class BohoAuth {
       }
       return authInfo
     } catch (error) {
-      this.send_auth_fail(peer, 'caught: unknown error' + error);
+      this.send_auth_fail(peer, '[BohoAuth]caught: unknown error:' + error);
     }
 
   }
-
-
 
 
 }
@@ -9437,11 +9456,15 @@ class Auth_Redis extends BohoAuth {
 
   // get device key from DB. (for Boho auth.)
   async getAuth(id) {
-    let result = await this.redis.hGetAll(DEVICE_PREFIX + id);
-    if (result.key) return result
+    try {
+      let result = await this.redis.hGetAll(DEVICE_PREFIX + id);
+      if (result.key) return result
+    } catch (error) {
+      console.log('getAuth', error);
+    }
   }
 
-
+  //api_sudo call
   async getAuthIdList() {
     let result = await this.redis.keys(DEVICE_PREFIX + '*');
     result = result.map(v => {
@@ -9456,6 +9479,7 @@ class Auth_Redis extends BohoAuth {
     return this.redis.hSet(DEVICE_PREFIX + id, { 'key': Base64hashKey, 'cid': cid, 'level': level })
   }
 
+  //api_sudo call
   async delAuth(id) {
     return this.redis.del(DEVICE_PREFIX + id)
   }
@@ -9466,16 +9490,16 @@ class Auth_Redis extends BohoAuth {
 
 }
 
-const MIN_LEVEL$2 = 0;
+const commands$1 = ['echo', 'date', 'unixtime'];
 
+const MIN_LEVEL$2 = 0;
 function checkPermission$1(remote) {
-  if (remote.level >= MIN_LEVEL$2) {
-    return true
-  } else {
-    return false
-  }
+  return (remote.level >= MIN_LEVEL$2) ? true : false;
 }
 
+/**
+ * client api call example:  await io.req('reply','echo','hello')
+ */
 async function echo(remote, req) {
   if (!req.args)
     remote.response(req.mid, STATUS.ERROR, 'no message to echo');
@@ -9483,11 +9507,17 @@ async function echo(remote, req) {
     remote.response(req.mid, STATUS.OK, req.args);
 }
 
+/**
+ * client api call example:  await io.req('reply','date')
+ */
 async function date(remote, req) {
   let r = new Date().toUTCString();
   remote.response(req.mid, STATUS.OK, r);
 }
 
+/**
+ * client api call example:  await io.req('reply','unixtime')
+ */
 async function unixtime(remote, req) {
   let r = Math.floor(Date.now() / 1000);
   remote.response(req.mid, STATUS.OK, r);
@@ -9496,12 +9526,11 @@ async function unixtime(remote, req) {
 var api_reply = /*#__PURE__*/Object.freeze({
   __proto__: null,
   checkPermission: checkPermission$1,
+  commands: commands$1,
   date: date,
   echo: echo,
   unixtime: unixtime
 });
-
-const MIN_LEVEL$1 = 255;
 
 const commands = [
   'cid', 'remotes', 'clients',
@@ -9512,13 +9541,9 @@ const commands = [
   'adddevice', 'getdevice', 'deldevice'
 ];
 
-
+const MIN_LEVEL$1 = 255;
 function checkPermission(remote) {
-  if (remote.level >= MIN_LEVEL$1) {
-    return true
-  } else {
-    return false
-  }
+  return (remote.level >= MIN_LEVEL$1) ? true : false;
 }
 
 async function request(remote, req) {
@@ -9595,15 +9620,23 @@ var api_sudo = /*#__PURE__*/Object.freeze({
   request: request
 });
 
+/**
+ * RedisAPI <IOSignal API>
+ * 
+ * iosignal 클라이언트의 redis 질의 요청을 받으면, 
+ * redisClient 로 연결된 redis-server 에게 질의 후 결과를 되돌려 준다. 
+ * 
+ * client ex:  
+ * await io.req('redis','hget','user:id' )
+ * 
+ */
+
 const MIN_LEVEL = 200;
 const COMMANDS = [
-  'GET', 'SET',
-  'HGETALL', 'HGET',
-  'HSET', 'SADD',
-  'SISMEMBER', 'SMEMBERS',
-  'EXISTS', 'SREM',
-  'DEL', 'KEYS',
-  'SAVE'
+  'GET', 'SET', 'HGETALL', 'HGET', 'HSET', 'SADD', 'SISMEMBER',
+  'SMEMBERS', 'EXISTS', 'SREM', 'DEL', 'KEYS', 'SAVE',
+  'get', 'set', 'hGetAll', 'hGet', 'hSet', 'sAdd', 'sIsMember',
+  'sMembers', 'exists', 'sRem', 'del', 'keys', 'save'
 ];
 
 class RedisAPI {
@@ -9616,42 +9649,23 @@ class RedisAPI {
     this.commands = COMMANDS;
   }
 
-
   checkPermission(remote, req) {
-    console.log('checkPermission', remote.level, 'vs', this.minLevel);
-    if (remote.level >= this.minLevel) {
-      return true
-    } else {
-      return false
-    }
+    return (remote.level >= this.minLevel) ? true : false;
   }
 
-
   async request(remote, req) {
-
     let result;
-    let status = STATUS.OK;
     try {
       let cmd = req.topic;
-      cmd = cmd.toUpperCase();
-      if (COMMANDS.includes(cmd)) {
-        console.log('RedisAPI call:', cmd, req.args);
-
-        if (req.args.length > 0) {
-          result = await this.redisClient[cmd](...req.args);
-        } else {
-          result = await this.redisClient[cmd]();
-        }
-
-
+      if (req.args?.length > 0) {
+        result = await this.redisClient[cmd](...req.args);
       } else {
-        status = STATUS.ERROR;
+        result = await this.redisClient[cmd]();
       }
-      remote.response(req.mid, status, result);
+      remote.response(req.mid, STATUS.OK, result);
     } catch (e) {
       remote.response(req.mid, STATUS.ERROR, e.message);
     }
-
   }
 
 }

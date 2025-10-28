@@ -211,6 +211,8 @@ declare class IOCore extends EventEmitter<string | symbol, any> {
      * @param {Buffer} buffer - The incoming data buffer.
      */
     onData(buffer: Buffer$1): void;
+    did: any;
+    uid: any;
     /**
      * Sends an IAM (I Am) message to the server.
      * @param {string} [title] - Optional title for the IAM message.
@@ -302,9 +304,9 @@ declare class IOCore extends EventEmitter<string | symbol, any> {
      */
     get(storeName: string): Promise<any>;
     /**
-     * Sends a request to a target and topic.
-     * @param {string} target - The target of the request.
-     * @param {string} topic - The topic of the request.
+     * Sends a request to a target and topic.(remote api call)
+     * @param {string} target - The target(api name) of the request.
+     * @param {string} topic - The topic(api function name) of the request.
      * @param {...any} args - Optional arguments for the request.
      * @returns {Promise<any>}
      */
