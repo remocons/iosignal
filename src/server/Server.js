@@ -18,20 +18,20 @@ export class Server extends EventEmitter {
       let pingT = parseInt(options.timeout)
       if (pingT && pingT >= 1000) serverOption.timeout = pingT
     }
-
     if (options.monitorPeriod) {
       let monitorT = parseInt(options.monitorPeriod)
       if (monitorT && monitorT >= 1000) serverOption.monitorPeriod = monitorT
     }
-
-
     if (options.showMessage) {
       serverOption.showMessage = options.showMessage
     }
-
     if (options.showMetric) {
       serverOption.showMetric = options.showMetric
     }
+    if (options.membersOnly) {
+      serverOption.membersOnly = options.membersOnly
+    }
+
 
     if (options.port || options.port == 0) {
       this.port = parseInt(options.port)
@@ -39,6 +39,10 @@ export class Server extends EventEmitter {
 
     if (options.httpServer) {
       this.httpServer = options.httpServer
+    }
+
+    if (options.wsPath) {
+      this.wsPath = options.wsPath
     }
 
     if (options.congPort || options.congPort == 0) {
@@ -53,7 +57,7 @@ export class Server extends EventEmitter {
     if (this.congPort || this.congPort == 0) this.serverCountToListen++;
 
     if (this.serverCountToListen === 0) {
-      process.nextTick(() => this.emit('ready'));
+      throw new Error('Cannot create Server: At least one of "port", "httpServer", or "congPort" must be specified.');
     } else {
       if (this.port || this.port == 0 || this.httpServer) this.startWSServer();
       if (this.congPort || this.congPort == 0) this.startCongServer();
@@ -63,21 +67,17 @@ export class Server extends EventEmitter {
 
 
   startWSServer() {
-
     // console.log('optoins', options )
     if (this.port || this.port == 0) {
-      console.log('opening WebSocket Server port:', this.port)
-      this.wss = new WebSocketServer({ port: this.port })
-    } else if (this.httpServer) {
-      console.log('opening WebSocket Server external httpServer:')
-      this.wss = new WebSocketServer({ server: this.httpServer })
+      this.wss = new WebSocketServer({ port: this.port , path: this.wsPath })
+    } else if (this.httpServer ) {
+      this.wss = new WebSocketServer({ server: this.httpServer, path: this.wsPath })
     } else {
       throw new TypeError(
         'One and only one of the "port", "httpServer"' +
         'must be specified'
       );
     }
-
 
     this.wss.once('listening', () => {
       this.port = this.wss.address().port;
@@ -89,7 +89,6 @@ export class Server extends EventEmitter {
     });
 
     // this.wss.setMaxListeners(0)
-
     this.wss.on('error', (err) => {
       console.error('### ws server error:', err.message)
       if (err.code == 'EADDRINUSE') {
@@ -97,8 +96,8 @@ export class Server extends EventEmitter {
       }
     })
 
-    this.wss.on('close', (err) => {
-      console.log('### WS server closed.', err)
+    this.wss.on('close', () => {
+      console.log('### WS server is closed.')
     })
 
     this.wss.on('connection', (ws, req) => {
@@ -110,8 +109,6 @@ export class Server extends EventEmitter {
   }
 
   startCongServer() {
-    console.log('opening CongSocket Server port:', this.congPort)
-
     this.congServer = net.createServer((socket) => {
       this.manager.addRemote(socket)
     })
@@ -121,7 +118,7 @@ export class Server extends EventEmitter {
           process.exit()
         }
       }).on('close', () => {
-        console.log('### cong server closed.')
+        console.log('### congsocket server is closed.')
       }).listen(this.congPort, () => {
         this.congPort = this.congServer.address().port;
         console.log('congsocket server bound port:', this.congPort );
@@ -132,63 +129,75 @@ export class Server extends EventEmitter {
       });
   }
 
-
-
+/**
+ * API register.
+ * target:  api_name <string>
+ * api: api_module <function module|class instance>
+ * return this
+ */
   api(target, api) {
 
-    this.apiNames.add(target)
-
+    if( typeof target !== 'string'){
+      throw new Error(`api( target ,api ) target name is not a string.`)
+    }
     if (!api.checkPermission || typeof api.checkPermission != 'function') {
-      throw new Error('wrong api interface. no checkPermission function.')
+      throw new Error(`API ${target} : no checkPermission or not a function.`)
     }
-
-
-    if (typeof api.request == 'function' && Array.isArray(api.commands)) {
-      console.log(`API TYPE1. A Class with one request function. target: ${target} list: ${api.commands}`)
-
-      this.on(target, (remote, req) => {
-        if (api.checkPermission(remote, req)) {
-          api.request(remote, req)
-        } else {
-          remote.response(req.mid, STATUS.ERROR, "NO_PERMISSION.")
-        }
-      })
-
-    } else {
-      let apiList = []
-      Object.keys(api).forEach(v => {
-        if (typeof api[v] === 'function') apiList.push(v)
-        console.log('api list', typeof api[v], v)
-      })
-
-      console.log(`API TYPE2. Multiple function list.  target: ${target} list:${apiList}`)
-
-      this.on(target, (remote, req) => {
-        let r;
-        if (!api.checkPermission(remote, req)) {
-          r = "NO_PERMISSION."
-        } else {
-          if (api[req.topic]) {
-            console.log(`API TYPE2. request target: ${target}  has topic:${req.topic}`)
-            api[req.topic](remote, req)
+    if(!api.commands || !Array.isArray(api.commands) ){
+      throw new Error(`API ${target} : no commands or !Array.`)
+    }
+    
+    // API TYPE 1. single request() function.
+    if ( api.request && typeof api.request == 'function' ) {
+      this.on(target, async (remote, req) => {
+        try {
+          if (!api.checkPermission(remote, req)) {
+            remote.response(req.mid, STATUS.ERROR, "NO_PERMISSION.")
             return
-          } else {
-            r = `target: ${req.target} has not topic name: ${req.topic}`
           }
+          if( api.commands.includes( req.topic )){
+            console.log('server api req', req )
+            await api.request(remote, req)
+          }else{
+            remote.response(req.mid, STATUS.ERROR, "UNKNOWN_COMMAND");
+          }
+        } catch (error) {
+          console.error(`Unhandled API Error in target [${target}]:`, error);
+          remote.response(req.mid, STATUS.ERROR, "INTERNAL_SERVER_ERROR");
         }
-
-        remote.response(req.mid, STATUS.ERROR, r)
+      })
+    } else {
+      // API TYPE 2. multiple functions.
+      this.on(target, async (remote, req) => {
+        try {
+          if (!api.checkPermission(remote, req)) {
+            remote.response(req.mid, STATUS.ERROR, "NO_PERMISSION.")
+            return
+          }
+          if( api.commands.includes( req.topic )){
+            await api[req.topic](remote, req)
+          }else{
+            remote.response(req.mid, STATUS.ERROR, "UNKNOWN_COMMAND");
+          }
+        } catch (error) {
+          console.error(`Unhandled API Error in target [${target}]:`, error);
+          remote.response(req.mid, STATUS.ERROR, "INTERNAL_SERVER_ERROR");
+        }
       })
     }
-
+    this.apiNames.add(target)
+    console.log(`[API registed: ${target} ] accept commands: ${api.commands}`)
     return this
   }
 
   close(callback) {
-    console.log('closing io-signal server...')
+    console.log('closing iosignal server...')
     if (this.manager) {
       this.manager.close()
     }
+
+    this.apiNames.forEach(v => this.removeAllListeners(v))
+    this.apiNames.clear()
 
     let serverCount = 0;
     if (this.wss) serverCount++;
@@ -203,14 +212,14 @@ export class Server extends EventEmitter {
     const onClosed = () => {
       closedCount++;
       if (closedCount === serverCount) {
-        console.log('io-signal server closed.')
+        console.log('IOSignal server is closed.')
         if (callback) callback();
       }
     }
 
     if (this.wss) {
       this.wss.close(() => {
-        console.log('wss server closed.')
+        // console.log('wss server closed.')
         onClosed()
       })
     }
@@ -218,7 +227,7 @@ export class Server extends EventEmitter {
     if (this.congServer) {
       this.congServer.close((err) => {
         if (err) console.error('congServer close error', err)
-        console.log('cong server closed.')
+        // console.log('cong server closed.')
         onClosed()
       })
     }

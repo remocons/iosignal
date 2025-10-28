@@ -1,14 +1,21 @@
+/**
+ * RedisAPI <IOSignal API>
+ * 
+ * iosignal 클라이언트의 redis 질의 요청을 받으면, 
+ * redisClient 로 연결된 redis-server 에게 질의 후 결과를 되돌려 준다. 
+ * 
+ * client ex:  
+ * await io.req('redis','hget','user:id' )
+ * 
+ */
 import { STATUS } from './api_constant.js'
 
 const MIN_LEVEL = 200;
 const COMMANDS = [
-  'GET', 'SET',
-  'HGETALL', 'HGET',
-  'HSET', 'SADD',
-  'SISMEMBER', 'SMEMBERS',
-  'EXISTS', 'SREM',
-  'DEL', 'KEYS',
-  'SAVE'
+  'GET', 'SET', 'HGETALL', 'HGET', 'HSET', 'SADD', 'SISMEMBER',
+  'SMEMBERS', 'EXISTS', 'SREM', 'DEL', 'KEYS', 'SAVE',
+  'get', 'set', 'hGetAll', 'hGet', 'hSet', 'sAdd', 'sIsMember',
+  'sMembers', 'exists', 'sRem', 'del', 'keys', 'save'
 ]
 
 export class RedisAPI {
@@ -21,42 +28,23 @@ export class RedisAPI {
     this.commands = COMMANDS
   }
 
-
   checkPermission(remote, req) {
-    console.log('checkPermission', remote.level, 'vs', this.minLevel)
-    if (remote.level >= this.minLevel) {
-      return true
-    } else {
-      return false
-    }
+    return (remote.level >= this.minLevel) ? true : false;
   }
 
-
   async request(remote, req) {
-
     let result;
-    let status = STATUS.OK;
     try {
       let cmd = req.topic
-      cmd = cmd.toUpperCase()
-      if (COMMANDS.includes(cmd)) {
-        console.log('RedisAPI call:', cmd, req.args)
-
-        if (req.args.length > 0) {
-          result = await this.redisClient[cmd](...req.args)
-        } else {
-          result = await this.redisClient[cmd]()
-        }
-
-
+      if (req.args?.length > 0) {
+        result = await this.redisClient[cmd](...req.args)
       } else {
-        status = STATUS.ERROR;
+        result = await this.redisClient[cmd]()
       }
-      remote.response(req.mid, status, result)
+      remote.response(req.mid, STATUS.OK, result)
     } catch (e) {
       remote.response(req.mid, STATUS.ERROR, e.message)
     }
-
   }
 
 }

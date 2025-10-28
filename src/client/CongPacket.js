@@ -11,6 +11,8 @@ export const CongType = {
 // support LittleEndian system.
 export function pack(payload) {
 
+  if( payload.byteLength == undefined ) payload = Buffer.from(payload)
+  
   if (payload.byteLength < 256) { //one byte len
     return MBP.pack(
       MBP.MB('#type', '8', CongType.TYPE_LEN1),

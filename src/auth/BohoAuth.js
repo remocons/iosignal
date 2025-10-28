@@ -20,10 +20,9 @@ export class BohoAuth {
       let peerInfo = `FAIL #${peer.ssid} reason:${reason} `
       this.authLogger.log(peerInfo)
     }
-
-    console.log('## AUTH_FAIL reason:', reason)
-    // peer.send( Buffer.from( [Boho.BohoMsg.AUTH_FAIL] ))
+    // console.log('##### AUTH_FAIL reason: ', reason)
     peer.setState(CLIENT_STATE.AUTH_FAIL)
+    // add some delay time.
     setTimeout(e => {
       peer.send(Buffer.from([Boho.BohoMsg.AUTH_FAIL]))
     }, serverOption.auth.delay_auth_fail)
@@ -33,28 +32,29 @@ export class BohoAuth {
     try {
       //1. unpack 
       let infoPack = MBP.unpack(auth_hmac, Boho.Meta.AUTH_HMAC)
+
       if (!infoPack) {
         this.send_auth_fail(peer, 'unpack auth_pack fail');
         return
       }
-
+      
       let id = ""
       if (infoPack.id8.includes(0)) {
         id = decoder.decode(infoPack.id8.subarray(0, infoPack.id8.indexOf(0)));
       } else {
         id = decoder.decode(infoPack.id8);
       }
-
+      
       //2. get key of id from DB
       let authInfo = await this.getAuth(id)
-
-      // console.log('##### authInfo',authInfo )
-      if (serverOption.debug.showAuthInfo) {
-      }
 
       if (!authInfo) {
         this.send_auth_fail(peer, 'NO ID:' + id);
         return
+      }
+
+      if (serverOption.debug.showAuthInfo) {
+        console.log('[debug]showAuthInfo',authInfo )
       }
 
       // console.log('db authInfo.key: ', authInfo.key)
@@ -107,6 +107,7 @@ export class BohoAuth {
 
       //6. delete current (temp rand)cid if exist.
       if (peer.cid) {
+        console.log('duplicate cid')
         peer.manager.cid2remote.delete(peer.cid)
       }
 
@@ -114,6 +115,7 @@ export class BohoAuth {
       peer.did = id
       peer.cid = authInfo.cid
       peer.nick = authInfo.cid // temporary: nick as cid
+      if( authInfo.uid ) peer.uid = authInfo.uid 
 
       //8. setting quota level. 
       let quotaLevel = serverOption.defaultQuotaIndex;
@@ -152,12 +154,10 @@ export class BohoAuth {
       }
       return authInfo
     } catch (error) {
-      this.send_auth_fail(peer, 'caught: unknown error' + error);
+      this.send_auth_fail(peer, '[BohoAuth]caught: unknown error:' + error);
     }
 
   }
-
-
 
 
 }

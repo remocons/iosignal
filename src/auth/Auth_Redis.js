@@ -13,11 +13,15 @@ export class Auth_Redis extends BohoAuth {
 
   // get device key from DB. (for Boho auth.)
   async getAuth(id) {
-    let result = await this.redis.hGetAll(DEVICE_PREFIX + id)
-    if (result.key) return result
+    try {
+      let result = await this.redis.hGetAll(DEVICE_PREFIX + id)
+      if (result.key) return result
+    } catch (error) {
+      console.log('getAuth', error)
+    }
   }
 
-
+  //api_sudo call
   async getAuthIdList() {
     let result = await this.redis.keys(DEVICE_PREFIX + '*')
     result = result.map(v => {
@@ -32,6 +36,7 @@ export class Auth_Redis extends BohoAuth {
     return this.redis.hSet(DEVICE_PREFIX + id, { 'key': Base64hashKey, 'cid': cid, 'level': level })
   }
 
+  //api_sudo call
   async delAuth(id) {
     return this.redis.del(DEVICE_PREFIX + id)
   }

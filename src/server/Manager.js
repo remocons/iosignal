@@ -193,11 +193,11 @@ export class Manager {
   }
 
   sender(tag, remote, message) {
-    if (serverOption.memberOnly && !remote.boho.isAuthorized) {
-      // console.log("## MemberOnly, reject unAuthorized remote." )
+    if (serverOption.membersOnly && !remote.boho.isAuthorized) {
+      console.log("[membersOnly] unAuthorized remote.",tag  )
       remote.send(Buffer.from([IOMsg.SERVER_CLEAR_AUTH]))
       remote.close()
-      return ['err', 'not autrized']
+      return ['err', 'unAuthorized']
     }
 
     if (tag.indexOf('$') == 0) return ['err', 'prefix $ is reserved for userSet tag.']
@@ -444,6 +444,5 @@ export class Manager {
     this.retain_messages.clear();
     this.channel_map.clear();
 
-    console.log('Manager closed');
   }
 }

@@ -207,7 +207,7 @@ export class IOCore extends EventEmitter {
   close() {
     if (this._closed) return;
     this._closed = true;
-
+// console.log('####### IOCOre.js close() called')
     // If auto-reconnect is disabled, we must stop the keep-alive timer.
     if (this.autoReconnect === false) {
       clearInterval(this.connectionCheckerIntervalID);
@@ -430,13 +430,26 @@ export class IOCore extends EventEmitter {
       case IOMsg.PONG:
         break;
 
+      case IOMsg.ECHO:
+        try {
+          let str = decoder.decode(buffer.subarray(1))
+          
+          this.emit('echo', str)
+        } catch (error) {
+          this.emit('error', new Error('ECHO data error'))
+        }
+        break;
+        
       case IOMsg.IAM_RES:
         try {
           let str = decoder.decode(buffer.subarray(1))
           let jsonInfo = JSON.parse(str)
-          if (jsonInfo.ip) {
-            this.ip = jsonInfo.ip;
-          }
+          if (jsonInfo.ip) { this.ip = jsonInfo.ip; }
+          if (jsonInfo.nick) { this.nick = jsonInfo.nick; }
+          if (jsonInfo.did) { this.did = jsonInfo.did; }
+          if (jsonInfo.uid) { this.uid = jsonInfo.uid; }
+          // TIP. cid from [CID_RES], level from [QUOTA_LEVEL]
+          this.emit('iam_res', str )
         } catch (error) {
           this.emit('error', new Error('IAM_RES data error'))
         }
@@ -455,13 +468,14 @@ export class IOCore extends EventEmitter {
         let quotaLevel = buffer[1]
         this.level = quotaLevel;
         this.quota = quotaTable[quotaLevel];
-        console.log('## QUOTA:', quotaLevel, JSON.stringify(this.quota))
+        console.log('[QUOTA_LEVEL]', JSON.stringify(this.quota))
         break;
 
       case IOMsg.SERVER_CLEAR_AUTH:
         this.useAuth = false;
         this.boho.clearAuth();
         this.stop();
+        console.log('[SERVER_CLEAR_AUTH] io stop.')
         break;
 
       case IOMsg.SERVER_REDIRECT:
@@ -668,7 +682,7 @@ export class IOCore extends EventEmitter {
    */
   echo(args) {
     if (args) {
-      console.log('echo args:', args)
+      // console.log('send echo args:', args)
       this.send_enc_mode(MBP.pack(
         MBP.MB('#MsgType', '8', IOMsg.ECHO),
         MBP.MB('#msg', args)
@@ -757,13 +771,13 @@ export class IOCore extends EventEmitter {
    */
   setMsgPromise(mid) {
     return new Promise((resolve, reject) => {
-      this.promiseMap.set(mid, [resolve, reject])
-      setTimeout(e => {
+      const timeoutId = setTimeout(e => {
         if (this.promiseMap.has(mid)) {
           reject('timeout');
           this.promiseMap.delete(mid)
         }
       }, this.promiseTimeOut);
+      this.promiseMap.set(mid, [resolve, reject, timeoutId]);
     })
   }
 
@@ -777,7 +791,8 @@ export class IOCore extends EventEmitter {
     if (!res) return
 
     if (this.promiseMap.has(res.mid)) {
-      let [resolve, reject] = this.promiseMap.get(res.mid)
+      let [resolve, reject, timeoutId] = this.promiseMap.get(res.mid)
+      clearTimeout(timeoutId)
       this.promiseMap.delete(res.mid)
 
       if (res.status < 128) {
@@ -886,9 +901,9 @@ export class IOCore extends EventEmitter {
 
 
   /**
-   * Sends a request to a target and topic.
-   * @param {string} target - The target of the request.
-   * @param {string} topic - The topic of the request.
+   * Sends a request to a target and topic.(remote api call)
+   * @param {string} target - The target(api name) of the request.
+   * @param {string} topic - The topic(api function name) of the request.
    * @param {...any} args - Optional arguments for the request.
    * @returns {Promise<any>}
    */
@@ -1164,6 +1179,7 @@ export class IOCore extends EventEmitter {
     // STATES constant name : string upperCase
     // eventName, .stateName : string lowerCase
     // .state : number
+    // console.log('### stateChange reason:', emitEventAndMessage )
     let eventName = state.toLowerCase()
     this.state = STATES[state.toUpperCase()] // state: number
     if (emitEventAndMessage) this.emit(eventName, emitEventAndMessage)

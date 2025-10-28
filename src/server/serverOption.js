@@ -5,6 +5,7 @@ export let serverOption = {
   port: null, // WebSocket
   congPort: null, // CongSocket
   httpServer: null,
+  wsPath: null,
   timeout: 50000,
   showMessage: 'none',
   showMetric: 0,
@@ -46,10 +47,10 @@ export let serverOption = {
   },
 
   auth: {
-    delay_auth_fail: 1000,
+    delay_auth_fail: 600,
   },
 
-  memberOnly: false
+  membersOnly: false
 
 }
 

@@ -27,15 +27,13 @@ export class RemoteCore {
     this.ssid = RemoteCore.ssid++;  // ordered index number
     this.manager = manager;
 
-    this.cid; // Communication Id
-    this.did; // Device Id
-    this.uid; // User Id
-    this.nick = ""
+    this.cid = ''; // Communication Id
+    this.did = ''; // Device Id
+    this.uid = ''; // User Id
+    this.nick = ''
 
-
-    this.lastEchoMessage = "N"
     this.privateNode = false
-    this.HOME_CHANNEL = ""
+    this.HOME_CHANNEL = ''
     this.level = serverOption.defaultQuotaIndex;
     this.quota = quotaTable[this.level];
     this.isAdmin = false;
@@ -51,7 +49,8 @@ export class RemoteCore {
   setState(state) {
     this.state = state
     if (serverOption.debug.showAuthInfo) {
-      this.stateLog.push(state)
+      // let s = state + ":" + CLIENT_STATE[ state] 
+      this.stateLog.push( state  )
       console.log(this.stateLog.join('>'))
     }
   }
@@ -66,7 +65,7 @@ export class RemoteCore {
 
 
   showMessageLog(message, isBinary) {
-    let from = this.boho.isAuthorized ? `did: ${this.did} ${this.cid}@` : `${this.cid}@`
+    let from = this.boho.isAuthorized ? `[FROM]did: ${this.did} cid:${this.cid}` : `[FROM]cid:${this.cid}`
     if (isBinary) {
       let msgTypeName = IOMsg[message[0]]
       if (!msgTypeName) msgTypeName = Boho.BohoMsg[message[0]]
@@ -165,6 +164,7 @@ export class RemoteCore {
         case IOMsg.CID_REQ:
           if (this.state < CLIENT_STATE.SENT_SERVER_READY) {
             // Protocol violation: CID_REQ was sent before receiving the SERVER_READY signal.
+            console.log('CID_REQ before SERVER_READY')
             this.close()
           }
 
@@ -182,22 +182,16 @@ export class RemoteCore {
           this.setState(CLIENT_STATE.CID_READY)
           break;
 
-
-        case IOMsg.ECHO: // TEXT only 
-          try {
-            let msg = decoder.decode(message.subarray(1))
-            this.lastEchoMessage = msg
-          } catch (error) {
-            // console.log('ECHO message is not a text')
+        case IOMsg.ECHO:
+          if( message.byteLength < 30) {      
+            this.send(message, isBinary)
           }
-          this.send(message, isBinary)
           break;
 
         case IOMsg.IAM:
-          if (message.byteLength > 1) {
-            let iamInfo = message.subarray(1)
-            this.nick = decoder.decode(iamInfo)
-            console.log('iam nick reset', this.nick)
+          if (message.byteLength > 1 && message.byteLength < 30) {            
+              // if iam request has a text message then reset the nick property.
+              this.nick = decoder.decode(message.subarray(1))
           }
           this.iamResponse()
           break;
@@ -218,7 +212,7 @@ export class RemoteCore {
 
         case IOMsg.UNSUBSCRIBE:
           if (message.byteLength == 2) {
-            this.manager.unsubscribe([""], this)
+            this.manager.unsubscribe([''], this)
           } else if (message.byteLength >= 3) {
             let tagLen = message.readUInt8(1)
 
@@ -292,7 +286,7 @@ export class RemoteCore {
         case Boho.BohoMsg.AUTH_REQ:
           if (!this.manager.authManager) return
           if (this.state < CLIENT_STATE.SENT_SERVER_READY) {
-            // console.log('protocol error. auth_req before server_ready')
+            console.log('protocol error. auth_req before server_ready')
             this.close();
           }
           this.setState(CLIENT_STATE.RECV_AUTH_REQ)
@@ -305,22 +299,23 @@ export class RemoteCore {
         case Boho.BohoMsg.AUTH_HMAC:
           if (!this.manager.authManager) return
           if (this.state < CLIENT_STATE.SENT_SERVER_NONCE) {
-            // console.log('protocol error. auth_hmac before server_nonce')
+            console.log('protocol error. auth_hmac before server_nonce')
             this.close();
           }
           this.setState(CLIENT_STATE.RECV_AUTH_HMAC)
           //async
           this.manager.authManager.verify_auth_hmac(message, this)
             .then(authInfo => {
-              if (authInfo) {
-                this.manager.deligateSignal(remote, '@$name', authInfo.name)
+              if (authInfo?.name) {
+                this.manager.deligateSignal(this, '@$name', authInfo.name)
                 // console.log('device login success authInfo', authInfo)
                 // this.manager.sender('@$name', authInfo.name )
               }
 
+              // console.log('[VERIFY AUTH_HMAC] SubClass of BohoAuth return authInfo:', authInfo )
             })
             .catch(e => {
-
+              console.log('authInfo return fail.', e )
             })
 
           return;
@@ -348,23 +343,19 @@ export class RemoteCore {
   response(msgId, statusCode, body) {
     // console.log('response body', body)
     if (body) {
-
       this.send_enc_mode(MBP.pack(
         MB('#type', '8', IOMsg.RESPONSE_MBP),
         MB('status', '8', statusCode),
         MB('mid', '16', msgId),
         MB('body', body)
       ))
-
     } else {
       this.send_enc_mode(MBP.pack(
         MB('#type', '8', IOMsg.RESPONSE_MBP),
         MB('status', '8', statusCode),
         MB('mid', '16', msgId)
       ))
-
     }
-
   }
 
 
@@ -407,9 +398,9 @@ export class RemoteCore {
 
 
 
-  iamResponse(info = "") {
+  iamResponse(info = '') {
 
-    if (info == "") {
+    if (info == '') {
       let channels = []
       for (let tag of this.channels.keys()) {
         channels.push(tag)
@@ -417,15 +408,17 @@ export class RemoteCore {
 
       info = {
         "ssid": this.ssid,
-        "uid": this.uid,
         "cid": this.cid,
         "did": this.did,
+        "uid": this.uid,
+        "level": this.level,
         "nick": this.nick,
         "ip": this.ip
         , 'tag': channels
       }
     }
 
+    // console.log( 'iam res info', info )
     let pack = MBP.pack(
       MB('#MsgType', '8', IOMsg.IAM_RES),
       MB('#info', info)

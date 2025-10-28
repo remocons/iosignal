@@ -118,8 +118,7 @@ export class Metric {
           ip: remote.ip,
           uptime: Math.trunc((Date.now() - remote.socket.openTime) / 1000),
           nick: remote.nick,
-          ssid: remote.ssid,
-          echo: remote.lastEchoMessage
+          ssid: remote.ssid
         }
       } else if (mode == 3) {
         return {

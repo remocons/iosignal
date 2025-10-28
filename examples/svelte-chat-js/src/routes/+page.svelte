@@ -19,6 +19,11 @@
   };
 
   if (browser) {
+      let wsURL = new URL( document.URL )
+      wsURL.protocol = 'ws'
+      console.log( 'ws url:', wsURL.href)
+
+    // io = new IO(wsURL.href);
     io = new IO(url);
     if (dev)
       console.log("new io:", IO.version, IO.instanceCount, IO.webSocketCount);

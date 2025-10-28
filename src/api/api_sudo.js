@@ -1,7 +1,5 @@
 import { STATUS } from './api_constant.js'
 
-const MIN_LEVEL = 255;
-
 export const commands = [
   'cid', 'remotes', 'clients',
   'channels', 'subscribers',
@@ -11,13 +9,9 @@ export const commands = [
   'adddevice', 'getdevice', 'deldevice'
 ]
 
-
+const MIN_LEVEL = 255;
 export function checkPermission(remote) {
-  if (remote.level >= MIN_LEVEL) {
-    return true
-  } else {
-    return false
-  }
+  return (remote.level >= MIN_LEVEL) ? true : false;
 }
 
 export async function request(remote, req) {
