@@ -1,0 +1,13 @@
+_private
+_private_demo_web
+_private-docs
+_test
+docs
+examples
+node_modules
+private-docs
+test
+test-browser
+test-nodejs
+*.tgz
+

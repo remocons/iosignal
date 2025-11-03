@@ -13,7 +13,7 @@ import require$$2 from 'os';
 import require$$0$1 from 'buffer';
 import { memoryUsage } from 'process';
 
-var version$1 = "3.3.0";
+var version$1 = "4.0.0";
 var pkg = {
 	version: version$1};
 
@@ -1224,7 +1224,6 @@ class IOCore extends EventEmitter {
           if (jsonInfo.nick) { this.nick = jsonInfo.nick; }
           if (jsonInfo.did) { this.did = jsonInfo.did; }
           if (jsonInfo.uid) { this.uid = jsonInfo.uid; }
-          // TIP. cid from [CID_RES], level from [QUOTA_LEVEL]
           this.emit('iam_res', str );
         } catch (error) {
           this.emit('error', new Error('IAM_RES data error'));
@@ -1236,7 +1235,7 @@ class IOCore extends EventEmitter {
         this.cid = cidStr;
 
         // **IMPORTANT** change state before subscribe.
-        this.stateChange('ready', 'cid_ready');
+        this.stateChange('ready', 'cid_ready');  
         this.subscribe_memory_channels();
         break;
 
@@ -1325,8 +1324,11 @@ class IOCore extends EventEmitter {
           switch (payloadType) {
 
             case PAYLOAD_TYPE.EMPTY:
-              if (tag.indexOf('@') === 0) this.emit('@', null, tag);
-              else this.emit(tag, null, tag);
+              if (tag.indexOf('@') === 0) this.emit('@', tag, null);
+              else {
+                this.emit(tag, tag, null);
+                this.emit('message', tag, null );
+              }
               break;
 
             case PAYLOAD_TYPE.TEXT:
@@ -1337,33 +1339,48 @@ class IOCore extends EventEmitter {
                 payloadStringWithoutNull = payloadBuffer.subarray(0, payloadBuffer.byteLength - 1);
               }
               let oneString = decoder$4.decode(payloadStringWithoutNull);
-              if (tag.indexOf('@') === 0) this.emit('@', oneString, tag);
-              if (tag !== '@') this.emit(tag, oneString, tag);
+              if (tag.indexOf('@') === 0) this.emit('@', tag, oneString);
+              if (tag !== '@'){
+                this.emit(tag, tag, oneString);
+                this.emit('message', tag, oneString);
+              }
               break;
 
             case PAYLOAD_TYPE.BINARY:
-              if (tag.indexOf('@') === 0) this.emit('@', payloadBuffer, tag);
-              if (tag !== '@') this.emit(tag, payloadBuffer, tag);
+              if (tag.indexOf('@') === 0) this.emit('@', tag, payloadBuffer);
+              if (tag !== '@'){
+                this.emit(tag, tag, payloadBuffer);
+                this.emit('message', tag, payloadBuffer);
+              } 
               break;
 
             case PAYLOAD_TYPE.OBJECT:
               let oneObjectBuffer = decoder$4.decode(payloadBuffer);
               let oneJSONObject = JSON.parse(oneObjectBuffer);
-              if (tag.indexOf('@') === 0) this.emit('@', oneJSONObject, tag);
-              if (tag !== '@') this.emit(tag, oneJSONObject, tag);
+              if (tag.indexOf('@') === 0) this.emit('@', tag, oneJSONObject);
+              if (tag !== '@'){
+                this.emit(tag, tag, oneJSONObject);
+                this.emit('message', tag, oneJSONObject);
+              } 
               break;
 
             case PAYLOAD_TYPE.MJSON:
               let mjsonBuffer = decoder$4.decode(payloadBuffer);
               let mjson = JSON.parse(mjsonBuffer);
-              if (tag.indexOf('@') === 0) this.emit('@', ...mjson, tag);
-              if (tag !== '@') this.emit(tag, ...mjson, tag);
+              if (tag.indexOf('@') === 0) this.emit('@', tag, ...mjson);
+              if (tag !== '@'){
+                this.emit(tag, tag, ...mjson);
+                this.emit('message', tag, ...mjson);
+              } 
               break;
 
             case PAYLOAD_TYPE.MBA:
               let mbaObject = M$1.unpack(payloadBuffer);
-              if (tag.indexOf('@') === 0) this.emit('@', ...mbaObject.args, tag);
-              if (tag !== '@') this.emit(tag, ...mbaObject.args, tag);
+              if (tag.indexOf('@') === 0) this.emit('@', tag, ...mbaObject.args);
+              if (tag !== '@'){
+                this.emit(tag, tag, ...mbaObject.args);
+                this.emit('message', tag, ...mbaObject.args );
+              } 
               break;
 
             default:
@@ -1712,21 +1729,24 @@ class IOCore extends EventEmitter {
    */
   subscribe(tag) {
     if (typeof tag !== 'string') throw TypeError('tag should be string.')
+      if (tag.length > SIZE_LIMIT.TAG_LEN1) throw TypeError('please check tag string length limit:' + SIZE_LIMIT.TAG_LEN1)
     if (this.state !== STATES.READY) return
 
-    let tagList = tag.split(',');
-    tagList.forEach(tag => {
-      this.channels.add(tag);
-    });
+    // subscribe 사용시,  사용 'ready' 이벤트시 메뉴얼 등록되므로 여기에 등록하면 2중 호출된다.
+    // 즉, channels 등록은 listen 같은 자동화 구독시만 사용. 
+    // let tagList = tag.split(',')
+    // tagList.forEach(tag => {
+    //   this.channels.add(tag)
+    // })
 
-    let tagEncoded = encoder$1.encode(tag);
-    if (tagEncoded.byteLength > SIZE_LIMIT.TAG_LEN1) throw TypeError('please use tag string bytelength below:' + SIZE_LIMIT.TAG_LEN1)
-
-    this.send_enc_mode(
-      Buffer$1.concat([
-        M$1.NB('8', IOMsg.SUBSCRIBE),
-        M$1.NB('8', tagEncoded.byteLength),
-        tagEncoded]));
+    try {  
+      let tagEncoded = encoder$1.encode(tag);
+      this.send_enc_mode(
+        Buffer$1.concat([
+          M$1.NB('8', IOMsg.SUBSCRIBE),
+          M$1.NB('8', tagEncoded.byteLength),
+          tagEncoded]));
+    } catch (error) { }
   }
 
   /**
@@ -1737,20 +1757,22 @@ class IOCore extends EventEmitter {
    */
   subscribe_promise(tag) {
     if (typeof tag !== 'string') throw TypeError('tag should be string.')
+    if (tag.length > SIZE_LIMIT.TAG_LEN2) throw TypeError('please check tag string length limit:' + SIZE_LIMIT.TAG_LEN2)
+
     if (this.state !== STATES.READY) {
       return Promise.reject('subscribe_promise:: connection is not ready')
     }
 
-    let tagEncoded = encoder$1.encode(tag);
-    if (tagEncoded.byteLength > SIZE_LIMIT.TAG_LEN2) throw TypeError('please use tag string bytelength: ' + SIZE_LIMIT.TAG_LEN2)
-
-    this.send_enc_mode(
-      Buffer$1.concat([
-        M$1.NB('8', IOMsg.SUBSCRIBE_REQ),
-        M$1.NB('16', ++this.mid),
-        M$1.NB('16', tagEncoded.byteLength),
-        tagEncoded]));
-    return this.setMsgPromise(this.mid)
+    try {
+      let tagEncoded = encoder$1.encode(tag);      
+      this.send_enc_mode(
+        Buffer$1.concat([
+          M$1.NB('8', IOMsg.SUBSCRIBE_REQ),
+          M$1.NB('16', ++this.mid),
+          M$1.NB('16', tagEncoded.byteLength),
+          tagEncoded]));
+      return this.setMsgPromise(this.mid)
+    } catch (error) { }
   }
 
   /**
@@ -1947,15 +1969,23 @@ class IOCore extends EventEmitter {
    * Changes the connection state and emits events.
    * @param {string} state - The new state name (e.g., 'ready', 'closed').
    * @param {string} [emitEventAndMessage] - Optional message to emit with the state change event.
+   * 
+   * 주의. 
+   * 1. 상태가 변경 될 때만 'change' 이벤트 호출된다.
+   * 2. emitEventAndMessage 옵션 값이 지정되야 해당 이벤트 이름이 호출된다.
+   *   보통 이벤트 이름과 동일하게 적거나 이벤트 상황 안내문을 넣는다.
    */
   stateChange(state, emitEventAndMessage) {
-    // STATES constant name : string upperCase
-    // eventName, .stateName : string lowerCase
-    // .state : number
+    // STATES constant name <string> upperCase
+    // eventName and .stateName <string> lowerCase
+    // .state <number>
     // console.log('### stateChange reason:', emitEventAndMessage )
     let eventName = state.toLowerCase();
     this.state = STATES[state.toUpperCase()]; // state: number
-    if (emitEventAndMessage) this.emit(eventName, emitEventAndMessage);
+
+    if (emitEventAndMessage){
+      this.emit(eventName, emitEventAndMessage);
+    }
 
     if (this.stateName !== eventName) {
       this.stateName = eventName;
@@ -8655,8 +8685,8 @@ class Manager {
   serverSignalTo(tag, ...args) {
     let cid = tag.split('@')[0];
     let topic = tag.split('@')[1];
-    let sigPack = getSignalPack('@' + topic, ...args);
     if (cid && this.cid2remote.has(cid)) {
+      let sigPack = getSignalPack('@' + topic, ...args);
       let targetRemote = this.cid2remote.get(cid);
       console.log('target', targetRemote.state, targetRemote.cid);
       targetRemote.send_enc_mode(sigPack);
@@ -8753,13 +8783,18 @@ class Manager {
             // console.log('## null remote' )
             break;
           }
-          if (c !== remote) {
+          // change: from v4.x allow receiveSelfMessages.
+          // if (c !== remote) { 
             c.send_enc_mode(message);
             sentCounter++;
-          }
+          // }
         }
 
-        if (serverOption.useQuota.publishCounter) ;
+        // if (serverOption.useQuota.publishCounter) {
+        //   // console.log(`pub >> [${tag}] sent: ${sentCounter} [use quota limit: ${remote.quota.publishCounter }] total: ${remotes.size} subscribers. ` )
+        // } else {
+        //   // console.log(`pub >> [${tag}] sent: ${sentCounter} [no quota limit] total: ${remotes.size} subscribers. ` )
+        // }
         return ['ok', sentCounter]
       }
     }

@@ -395,6 +395,11 @@ export class IOCore extends EventEmitter<string | symbol, any> {
      * Changes the connection state and emits events.
      * @param {string} state - The new state name (e.g., 'ready', 'closed').
      * @param {string} [emitEventAndMessage] - Optional message to emit with the state change event.
+     *
+     * 주의.
+     * 1. 상태가 변경 될 때만 'change' 이벤트 호출된다.
+     * 2. emitEventAndMessage 옵션 값이 지정되야 해당 이벤트 이름이 호출된다.
+     *   보통 이벤트 이름과 동일하게 적거나 이벤트 상황 안내문을 넣는다.
      */
     stateChange(state: string, emitEventAndMessage?: string): void;
 }

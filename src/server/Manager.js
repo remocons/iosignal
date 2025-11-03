@@ -181,8 +181,8 @@ export class Manager {
   serverSignalTo(tag, ...args) {
     let cid = tag.split('@')[0]
     let topic = tag.split('@')[1]
-    let sigPack = getSignalPack('@' + topic, ...args)
     if (cid && this.cid2remote.has(cid)) {
+      let sigPack = getSignalPack('@' + topic, ...args)
       let targetRemote = this.cid2remote.get(cid)
       console.log('target', targetRemote.state, targetRemote.cid)
       targetRemote.send_enc_mode(sigPack)
@@ -284,17 +284,18 @@ export class Manager {
             // console.log('## null remote' )
             break;
           }
-          if (c !== remote) {
+          // change: from v4.x allow receiveSelfMessages.
+          // if (c !== remote) { 
             c.send_enc_mode(message);
             sentCounter++;
-          }
+          // }
         }
 
-        if (serverOption.useQuota.publishCounter) {
-          // console.log(`pub >> [${tag}] sent: ${sentCounter} [use quota limit: ${remote.quota.publishCounter }] total: ${remotes.size} subscribers. ` )
-        } else {
-          // console.log(`pub >> [${tag}] sent: ${sentCounter} [no quota limit] total: ${remotes.size} subscribers. ` )
-        }
+        // if (serverOption.useQuota.publishCounter) {
+        //   // console.log(`pub >> [${tag}] sent: ${sentCounter} [use quota limit: ${remote.quota.publishCounter }] total: ${remotes.size} subscribers. ` )
+        // } else {
+        //   // console.log(`pub >> [${tag}] sent: ${sentCounter} [no quota limit] total: ${remotes.size} subscribers. ` )
+        // }
         return ['ok', sentCounter]
       }
     }

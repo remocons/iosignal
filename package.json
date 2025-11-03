@@ -1,6 +1,6 @@
 {
   "name": "iosignal",
-  "version": "3.3.0",
+  "version": "4.0.0",
   "description": "iosignal",
   "type": "module",
   "exports": {
@@ -18,11 +18,10 @@
   "unpkg": "./dist/io.min.js",
   "scripts": {
     "build": "rollup -c && npm run build:types",
-    "build:types": "tsc --project tsconfig.json",
-    "start": "node ./test-browser/server.js"
+    "build:types": "tsc --project tsconfig.json"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=22.0.0"
   },
   "author": {
     "name": "Taeo Lee",
