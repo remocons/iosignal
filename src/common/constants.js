@@ -1,52 +1,40 @@
 
 /**
- * @typedef {object} STATES
- * @property {number} OPENING
+ * @typedef {object} STATE
+ * @property {number} CONNECTING
  * @property {number} OPEN
+ * @property {number} SERVER_READY
+ * @property {number} AUTH_ACK
+ * @property {number} CLOSING
+ * @property {number} READY
+ * @property {number} AUTH_FAIL
+ * @property {number} AUTH_CLEAR
  * @property {number} CLOSING
  * @property {number} CLOSED
- * @property {number} SERVER_READY
- * @property {number} AUTH_FAIL
- * @property {number} AUTH_READY
- * @property {number} READY
+ * @property {number} STOP
  * @property {number} REDIRECTING
  */
-// Client STATES: name and number
-export const STATES = {
-  OPENING: 0,
-  OPEN: 1,
-  CLOSING: 2,
-  CLOSED: 3,
-  SERVER_READY: 4,
-  AUTH_FAIL: 5,
-  AUTH_READY: 6,
-  READY: 7,
-  REDIRECTING: 8
+// Client STATE: name and number
+export const STATE = {
+  CONNECTING:    0,
+  OPEN:          1,
+  SERVER_READY: 10,
+  AUTH_REQ:     11,
+  AUTH_NONCE:   12,
+  AUTH_HMAC:    13,
+  AUTH_ACK:     14,
+  AUTH_FAIL:    15,
+  AUTH_CLEAR:   16,
+  CID_REQ:      17,
+  CID_RES:      18,
+  READY:        19,
+  CLOSING:       2,
+  CLOSED:        3,
+  STOP:          4,
+  REDIRECTING:   5
 }
-for (let c in STATES) { STATES[STATES[c]] = c }
+for (let c in STATE) { STATE[STATE[c]] = c }
 
-/**
- * @typedef {object} CLIENT_STATE
- * @property {number} INIT
- * @property {number} SENT_SERVER_READY
- * @property {number} RECV_AUTH_REQ
- * @property {number} SENT_SERVER_NONCE
- * @property {number} RECV_AUTH_HMAC
- * @property {number} AUTH_FAIL
- * @property {number} AUTH_READY
- * @property {number} CID_READY
- */
-export const CLIENT_STATE = {
-  INIT: 0,
-  SENT_SERVER_READY: 1,
-  RECV_AUTH_REQ: 2,
-  SENT_SERVER_NONCE: 3,
-  RECV_AUTH_HMAC: 4,
-  AUTH_FAIL: 5,
-  AUTH_READY: 6,
-  CID_READY: 7
-}
-for (let c in CLIENT_STATE) { CLIENT_STATE[CLIENT_STATE[c]] = c }
 
 /**
  * @typedef {object} ENC_MODE
@@ -75,7 +63,7 @@ for (let c in ENC_MODE) { ENC_MODE[ENC_MODE[c]] = c }
 export const SIZE_LIMIT = {
   TAG_LEN1: 255,
   TAG_LEN2: 65535,
-  CONNECTION_CHECKER_PERIOD: 3000,
+  CONNECTION_CHECKER_PERIOD: 30000,
   PROMISE_TIMEOUT: 5000,
   DID: 8,
   CID: 12
@@ -107,7 +95,7 @@ for (let c in PAYLOAD_TYPE) { PAYLOAD_TYPE[PAYLOAD_TYPE[c]] = c }
  * @property {number} CID_REQ
  * @property {number} CID_RES
  * @property {number} QUOTA_LEVEL
- * @property {number} SERVER_CLEAR_AUTH
+ * @property {number} AUTH_CLEAR
  * @property {number} SERVER_REDIRECT
  * @property {number} LOOP
  * @property {number} ECHO
@@ -165,9 +153,8 @@ export let IOMsg = {
   CID_REQ: 0xC1,
   CID_RES: 0xC2,
   QUOTA_LEVEL: 0xC3,
-  SERVER_CLEAR_AUTH: 0xC4,
+  AUTH_CLEAR: 0xC4,
   SERVER_REDIRECT: 0xC5,
-
   // ..
   LOOP: 0xCB,
   ECHO: 0xCC,

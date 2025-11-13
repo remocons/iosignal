@@ -1,7 +1,7 @@
 import MBP from 'meta-buffer-pack'
 import Boho from 'boho'
 import { serverOption } from './serverOption.js';
-import { IOMsg, ENC_MODE, CLIENT_STATE } from '../common/constants.js'
+import { IOMsg, ENC_MODE, STATE } from '../common/constants.js'
 import { quotaTable } from '../common/quotaTable.js'
 
 const decoder = new TextDecoder()
@@ -40,7 +40,7 @@ export class RemoteCore {
 
     this.state;
     this.stateLog = [];
-    this.setState(CLIENT_STATE.INIT)
+    this.setState(STATE.OPEN)
 
   }
 
@@ -49,7 +49,7 @@ export class RemoteCore {
   setState(state) {
     this.state = state
     if (serverOption.debug.showAuthInfo) {
-      // let s = state + ":" + CLIENT_STATE[ state] 
+      state = state + ":" + STATE[ state] 
       this.stateLog.push( state  )
       console.log(this.stateLog.join('>'))
     }
@@ -60,24 +60,30 @@ export class RemoteCore {
   }
 
   getStateName() { // <String>
-    return (CLIENT_STATE[this.state]).toLowerCase()
+    return (STATE[this.state]).toLowerCase()
   }
 
 
   showMessageLog(message, isBinary) {
-    let from = this.boho.isAuthorized ? `[FROM]did: ${this.did} cid:${this.cid}` : `[FROM]cid:${this.cid}`
+    let h = '->S '
+    let from = this.boho.isAuthorized ? ` did: ${this.did} cid: ${this.cid}` : ` cid: ${this.cid}`
+    let prnLimit = 20
     if (isBinary) {
       let msgTypeName = IOMsg[message[0]]
       if (!msgTypeName) msgTypeName = Boho.BohoMsg[message[0]]
-      msgTypeName = ' [' + msgTypeName + ']';
-      if (message.byteLength > 40) {
-        console.log(from + msgTypeName + ' LEN:', message.length);
+
+      msgTypeName = '[' + msgTypeName + ']';
+      let size = message.byteLength;
+      if (size < prnLimit) {
+        console.log( h + msgTypeName + from +` [${size}]`, message);
       } else {
-        console.log(from + msgTypeName, message);
+        let elseLen = size - prnLimit
+        let some = message.subarray(0,prnLimit)
+        console.log( h + msgTypeName + from +` [${size}]` , some , ' ... else: ', elseLen);
       }
 
     } else {
-      console.log(from + ' [TEXT] %s', message);
+      console.log( h + ' [TEXT] %s' + from, message);
     }
   }
 
@@ -162,7 +168,7 @@ export class RemoteCore {
           break;
 
         case IOMsg.CID_REQ:
-          if (this.state < CLIENT_STATE.SENT_SERVER_READY) {
+          if (this.state < STATE.SERVER_READY) {
             // Protocol violation: CID_REQ was sent before receiving the SERVER_READY signal.
             console.log('CID_REQ before SERVER_READY')
             this.close()
@@ -179,7 +185,7 @@ export class RemoteCore {
             MB('#cid', this.cid)
           ))
 
-          this.setState(CLIENT_STATE.CID_READY)
+          this.setState(STATE.CID_RES)
           break;
 
         case IOMsg.ECHO:
@@ -285,24 +291,24 @@ export class RemoteCore {
         // Auth
         case Boho.BohoMsg.AUTH_REQ:
           if (!this.manager.authManager) return
-          if (this.state < CLIENT_STATE.SENT_SERVER_READY) {
+          if (this.state < STATE.SERVER_READY) {
             console.log('protocol error. auth_req before server_ready')
             this.close();
           }
-          this.setState(CLIENT_STATE.RECV_AUTH_REQ)
+          this.setState(STATE.AUTH_REQ)
           let auth_nonce_pack = this.boho.auth_nonce()
           // console.log('## auth_nonce_pack', auth_nonce_pack )
           this.send(auth_nonce_pack)
-          this.setState(CLIENT_STATE.SENT_SERVER_NONCE)
+          this.setState(STATE.AUTH_NONCE)
           break;
 
         case Boho.BohoMsg.AUTH_HMAC:
           if (!this.manager.authManager) return
-          if (this.state < CLIENT_STATE.SENT_SERVER_NONCE) {
+          if (this.state < STATE.AUTH_NONCE) {
             console.log('protocol error. auth_hmac before server_nonce')
             this.close();
           }
-          this.setState(CLIENT_STATE.RECV_AUTH_HMAC)
+          this.setState(STATE.AUTH_HMAC)
           //async
           this.manager.authManager.verify_auth_hmac(message, this)
             .then(authInfo => {

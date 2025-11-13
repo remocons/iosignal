@@ -1,11 +1,9 @@
-import { BohoAuth } from './BohoAuth.js';
 import { readFileSync } from 'fs'
 import Boho from 'boho'
 import path from 'path'
 
-export class Auth_File extends BohoAuth {
+export class FileKeyProvider {
   constructor(_path) {
-    super()
     this.AUTH = new Map();
     let pathObj = path.parse(_path)
     this.path = path.resolve(_path)
@@ -23,20 +21,9 @@ export class Auth_File extends BohoAuth {
     }
   }
 
-
-  async getAuth(id) {
-    return this.AUTH.get(id)
-  }
-
-  async getAuthIdList() {
-    return Array.from(this.AUTH.keys())
-  }
-
   //loaded when server start.
   loadAuthInfoFile_JS(path) {
-
     import(path).then((file) => {
-
       console.log(file.authInfo);
       file.authInfo.forEach(item => {
         this.addAuth(...item)
@@ -45,8 +32,6 @@ export class Auth_File extends BohoAuth {
     }).catch(e => {
       console.log(e)
     })
-
-
   }
 
   loadAuthInfoFile_JSON(path) {
@@ -57,15 +42,18 @@ export class Auth_File extends BohoAuth {
       this.addAuth(...item)
     })
     console.log('total AUTH INFO size: ', this.AUTH.size)
+  }
 
+  async getAuth(id) {
+    return this.AUTH.get(id)
+  }
+
+  async getAuthIdList() {
+    return Array.from(this.AUTH.keys())
   }
 
   addAuth(id, keyStr, cid, level = 0) {
     let Base64hashKey = Buffer.from(Boho.sha256.hash(keyStr)).toString('base64')
     this.AUTH.set(id, { key: Base64hashKey, cid: cid, level: level })
   }
-
-
-
 }
-

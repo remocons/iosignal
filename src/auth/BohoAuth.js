@@ -2,12 +2,17 @@ import MBP from 'meta-buffer-pack'
 import Boho from 'boho'
 import { quotaTable } from '../common/quotaTable.js'
 import { serverOption } from '../server/serverOption.js'
-import { IOMsg, CLIENT_STATE } from '../common/constants.js'
+import { IOMsg, STATE } from '../common/constants.js'
 import { FileLogger } from '../server/FileLogger.js'
 
 const decoder = new TextDecoder()
 export class BohoAuth {
-  constructor() {
+  constructor(keyProvider) {
+    if (!keyProvider) {
+      throw new Error('BohoAuth must be initialized with a keyProvider.');
+    }
+    this.keyProvider = keyProvider;
+
     this.authLogger;
     if (serverOption.fileLogger.auth.use) {
       this.authLogger = new FileLogger(serverOption.fileLogger.auth.path)
@@ -21,11 +26,11 @@ export class BohoAuth {
       this.authLogger.log(peerInfo)
     }
     // console.log('##### AUTH_FAIL reason: ', reason)
-    peer.setState(CLIENT_STATE.AUTH_FAIL)
+    peer.setState(STATE.AUTH_FAIL)
+    peer.send(Buffer.from([Boho.BohoMsg.AUTH_FAIL]))
     // add some delay time.
-    setTimeout(e => {
-      peer.send(Buffer.from([Boho.BohoMsg.AUTH_FAIL]))
-    }, serverOption.auth.delay_auth_fail)
+    // setTimeout(e => {
+    // }, serverOption.auth.delay_auth_fail)
   }
 
   async verify_auth_hmac(auth_hmac, peer) {
@@ -46,7 +51,7 @@ export class BohoAuth {
       }
       
       //2. get key of id from DB
-      let authInfo = await this.getAuth(id)
+      let authInfo = await this.keyProvider.getAuth(id)
 
       if (!authInfo) {
         this.send_auth_fail(peer, 'NO ID:' + id);
@@ -97,9 +102,13 @@ export class BohoAuth {
           console.log('## trying RELOGIN with SAME ID. ignored.')
           return
         }
-        console.log('### clear_auth and close old connection:', old.cid)
-        old.send(Buffer.from([IOMsg.SERVER_CLEAR_AUTH]))
-        old.close()
+        console.log('### DUPLICATE_LOGIN detected.', old.cid)
+        let sigPack = MBP.pack(
+          MBP.MB('#MsgType', '8', IOMsg.AUTH_CLEAR),
+          MBP.MB('#reason', 'duplicate login.')
+        )
+        old.send( sigPack)
+        // old.close()  client will close and stop.
         peer.close()  // auto relogin
         return
       }
@@ -146,7 +155,7 @@ export class BohoAuth {
       // console.log("LOGIN: ", `id: ${ peer.did}(${peer.cid})` )
       //10. send ack.
       peer.send(auth_ack)
-      peer.setState(CLIENT_STATE.AUTH_READY)
+      peer.setState(STATE.AUTH_ACK)
       if (this.authLogger) {
         let peerInfo = `OK #${peer.ssid} cid: ${peer.cid} did:${peer.did}`
         if (peer.isAdmin) peerInfo = "#ADMIN# " + peerInfo
@@ -157,6 +166,34 @@ export class BohoAuth {
       this.send_auth_fail(peer, '[BohoAuth]caught: unknown error:' + error);
     }
 
+  }
+
+  async getAuth(id) {
+    return this.keyProvider.getAuth(id);
+  }
+
+  async getAuthIdList() {
+    if (typeof this.keyProvider.getAuthIdList === 'function') {
+      return this.keyProvider.getAuthIdList();
+    }
+  }
+
+  async addAuth(id, keyStr, cid, level = 0) {
+    if (typeof this.keyProvider.addAuth === 'function') {
+      return this.keyProvider.addAuth(id, keyStr, cid, level);
+    }
+  }
+
+  async delAuth(id) {
+    if (typeof this.keyProvider.delAuth === 'function') {
+      return this.keyProvider.delAuth(id);
+    }
+  }
+
+  async save() {
+    if (typeof this.keyProvider.save === 'function') {
+      return this.keyProvider.save();
+    }
   }
 
 

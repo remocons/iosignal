@@ -9,11 +9,11 @@ import require$$7 from 'url';
 import require$$0 from 'zlib';
 import fs, { readFileSync } from 'fs';
 import path from 'path';
-import require$$2 from 'os';
+import require$$2, { networkInterfaces } from 'os';
 import require$$0$1 from 'buffer';
 import { memoryUsage } from 'process';
 
-var version$1 = "4.0.0";
+var version$1 = "4.5.0";
 var pkg = {
 	version: version$1};
 
@@ -381,53 +381,41 @@ var eventemitter3Exports = requireEventemitter3();
 var EventEmitter = /*@__PURE__*/getDefaultExportFromCjs(eventemitter3Exports);
 
 /**
- * @typedef {object} STATES
- * @property {number} OPENING
+ * @typedef {object} STATE
+ * @property {number} CONNECTING
  * @property {number} OPEN
+ * @property {number} SERVER_READY
+ * @property {number} AUTH_ACK
+ * @property {number} CLOSING
+ * @property {number} READY
+ * @property {number} AUTH_FAIL
+ * @property {number} AUTH_CLEAR
  * @property {number} CLOSING
  * @property {number} CLOSED
- * @property {number} SERVER_READY
- * @property {number} AUTH_FAIL
- * @property {number} AUTH_READY
- * @property {number} READY
+ * @property {number} STOP
  * @property {number} REDIRECTING
  */
-// Client STATES: name and number
-const STATES = {
-  OPENING: 0,
-  OPEN: 1,
-  CLOSING: 2,
-  CLOSED: 3,
-  SERVER_READY: 4,
-  AUTH_FAIL: 5,
-  AUTH_READY: 6,
-  READY: 7,
-  REDIRECTING: 8
+// Client STATE: name and number
+const STATE = {
+  CONNECTING:    0,
+  OPEN:          1,
+  SERVER_READY: 10,
+  AUTH_REQ:     11,
+  AUTH_NONCE:   12,
+  AUTH_HMAC:    13,
+  AUTH_ACK:     14,
+  AUTH_FAIL:    15,
+  AUTH_CLEAR:   16,
+  CID_REQ:      17,
+  CID_RES:      18,
+  READY:        19,
+  CLOSING:       2,
+  CLOSED:        3,
+  STOP:          4,
+  REDIRECTING:   5
 };
-for (let c in STATES) { STATES[STATES[c]] = c; }
+for (let c in STATE) { STATE[STATE[c]] = c; }
 
-/**
- * @typedef {object} CLIENT_STATE
- * @property {number} INIT
- * @property {number} SENT_SERVER_READY
- * @property {number} RECV_AUTH_REQ
- * @property {number} SENT_SERVER_NONCE
- * @property {number} RECV_AUTH_HMAC
- * @property {number} AUTH_FAIL
- * @property {number} AUTH_READY
- * @property {number} CID_READY
- */
-const CLIENT_STATE = {
-  INIT: 0,
-  SENT_SERVER_READY: 1,
-  RECV_AUTH_REQ: 2,
-  SENT_SERVER_NONCE: 3,
-  RECV_AUTH_HMAC: 4,
-  AUTH_FAIL: 5,
-  AUTH_READY: 6,
-  CID_READY: 7
-};
-for (let c in CLIENT_STATE) { CLIENT_STATE[CLIENT_STATE[c]] = c; }
 
 /**
  * @typedef {object} ENC_MODE
@@ -456,7 +444,7 @@ for (let c in ENC_MODE) { ENC_MODE[ENC_MODE[c]] = c; }
 const SIZE_LIMIT = {
   TAG_LEN1: 255,
   TAG_LEN2: 65535,
-  CONNECTION_CHECKER_PERIOD: 3000,
+  CONNECTION_CHECKER_PERIOD: 30000,
   PROMISE_TIMEOUT: 5000,
   DID: 8,
   CID: 12
@@ -488,7 +476,7 @@ for (let c in PAYLOAD_TYPE) { PAYLOAD_TYPE[PAYLOAD_TYPE[c]] = c; }
  * @property {number} CID_REQ
  * @property {number} CID_RES
  * @property {number} QUOTA_LEVEL
- * @property {number} SERVER_CLEAR_AUTH
+ * @property {number} AUTH_CLEAR
  * @property {number} SERVER_REDIRECT
  * @property {number} LOOP
  * @property {number} ECHO
@@ -546,9 +534,8 @@ let IOMsg = {
   CID_REQ: 0xC1,
   CID_RES: 0xC2,
   QUOTA_LEVEL: 0xC3,
-  SERVER_CLEAR_AUTH: 0xC4,
+  AUTH_CLEAR: 0xC4,
   SERVER_REDIRECT: 0xC5,
-
   // ..
   LOOP: 0xCB,
   ECHO: 0xCC,
@@ -789,7 +776,7 @@ const t=new Uint32Array([1116352408,1899447441,3049323471,3921009573,961987163,1
  * @typedef {import('../common/constants.js').PAYLOAD_TYPE} PAYLOAD_TYPE
  * @typedef {import('../common/constants.js').SIZE_LIMIT} SIZE_LIMIT
  * @typedef {import('../common/constants.js').ENC_MODE} ENC_MODE
- * @typedef {import('../common/constants.js').STATES} STATES
+ * @typedef {import('../common/constants.js').STATE} STATE
  * @typedef {import('../common/quotaTable.js').quotaTable} quotaTable
  
  * @typedef {import('boho').Boho} Boho
@@ -843,7 +830,7 @@ class IOCore extends EventEmitter {
      * Current connection state (number).
      * @type {number}
      */
-    this.state = STATES.CLOSED;  // Number type
+    this.state = STATE.CLOSED;  // Number type
     /**
      * Current connection state (string).
      * @type {string}
@@ -985,7 +972,7 @@ class IOCore extends EventEmitter {
   close() {
     if (this._closed) return;
     this._closed = true;
-// console.log('####### IOCOre.js close() called')
+    // console.log('####### IOCOre.js close() called')
     // If auto-reconnect is disabled, we must stop the keep-alive timer.
     if (this.autoReconnect === false) {
       clearInterval(this.connectionCheckerIntervalID);
@@ -1000,7 +987,7 @@ class IOCore extends EventEmitter {
         // To avoid the error, we wait for the connection to open, then immediately close it.
         // We also clear other handlers to prevent any other logic from running.
         const socket = this.socket;
-        socket.onopen = () => { if(socket) socket.close(); };
+        socket.onopen = () => { if (socket) socket.close(); };
         socket.onmessage = null;
         socket.onerror = null;
         socket.onclose = null;
@@ -1008,7 +995,7 @@ class IOCore extends EventEmitter {
         try {
           // For other sockets (like TCP) or other WebSocket states, close directly.
           this.socket.close?.();
-        } catch {}
+        } catch { }
       }
       this.socket = null;
     }
@@ -1016,14 +1003,15 @@ class IOCore extends EventEmitter {
     this.emit('closed');
     this.stateChange('closed');
   }
-
+  
   /**
    * Disables auto-reconnect and closes the current connection.
    * The instance can be re-opened manually later. For complete cleanup, use destroy().
-   */
-  stop() {
-    this.autoReconnect = false;
-    this.close();
+  */
+ stop() {
+   this.autoReconnect = false;
+   this.close();
+   this.stateChange('stop','stop');
   }
 
   /**
@@ -1039,7 +1027,7 @@ class IOCore extends EventEmitter {
 
     // Help GC
     this.boho = null;
-  }  
+  }
 
   /**
    * The core keep-alive logic. It checks if auto-reconnect is enabled.
@@ -1056,8 +1044,8 @@ class IOCore extends EventEmitter {
    * @param {string} url2 - The new URL to redirect to.
    */
   redirect(url2) {
+    this.stateChange('redirecting','redirecting');
     this.close();
-    this.stateChange('redirecting');
     this.createConnection(url2);
   }
 
@@ -1114,29 +1102,27 @@ class IOCore extends EventEmitter {
 
   /**
    * Manually logs in with provided ID and key.
-   * @param {string} id - The user ID.
+   * @param {string} id - The user ID. or 'id.key'
    * @param {string} key - The user key.
-   * @returns {boolean}
+   * @returns {this} 
    */
   login(id, key) {
-    if (!this.auth(id, key)) return false;
-
+    this.auth(id, key);
     this.useAuth = true;
     let auth_pack = this.boho.auth_req();
     this.send(auth_pack);
-    return true
+    return this
   }
 
   /**
    * Sets up authentication for auto-login.
-   * @param {string} id - The user ID.
+   * @param {string} id - The user ID. or 'id.Key'
    * @param {string} key - The user key.
-   * @returns {boolean}
+   * @returns {this} 
    */
   auth(id, key) {
     if (!id && !key) {
       this.emit('error', new Error('auth failed. no id and key.'));
-      return false
     }
 
     if (!key && id.includes('.')) {
@@ -1146,10 +1132,9 @@ class IOCore extends EventEmitter {
       this.boho.set_key(key);
     } else {
       this.emit('error', new Error('auth failed. no id or key.'));
-      return false
     }
     this.useAuth = true;
-    return true
+    return this
   }
 
   /**
@@ -1209,13 +1194,13 @@ class IOCore extends EventEmitter {
       case IOMsg.ECHO:
         try {
           let str = decoder$4.decode(buffer.subarray(1));
-          
+
           this.emit('echo', str);
         } catch (error) {
           this.emit('error', new Error('ECHO data error'));
         }
         break;
-        
+
       case IOMsg.IAM_RES:
         try {
           let str = decoder$4.decode(buffer.subarray(1));
@@ -1224,7 +1209,7 @@ class IOCore extends EventEmitter {
           if (jsonInfo.nick) { this.nick = jsonInfo.nick; }
           if (jsonInfo.did) { this.did = jsonInfo.did; }
           if (jsonInfo.uid) { this.uid = jsonInfo.uid; }
-          this.emit('iam_res', str );
+          this.emit('iam_res', str);
         } catch (error) {
           this.emit('error', new Error('IAM_RES data error'));
         }
@@ -1235,22 +1220,22 @@ class IOCore extends EventEmitter {
         this.cid = cidStr;
 
         // **IMPORTANT** change state before subscribe.
-        this.stateChange('ready', 'cid_ready');  
-        this.subscribe_memory_channels();
+        this.stateChange('ready', 'cid_ready');
+        this.subscribe_memory_channels();  // tags registered by listen() or link().
         break;
 
       case IOMsg.QUOTA_LEVEL:
         let quotaLevel = buffer[1];
         this.level = quotaLevel;
         this.quota = quotaTable[quotaLevel];
-        console.log('[QUOTA_LEVEL]', JSON.stringify(this.quota));
+        // console.log('[QUOTA_LEVEL]', JSON.stringify(this.quota))
         break;
 
-      case IOMsg.SERVER_CLEAR_AUTH:
+      case IOMsg.AUTH_CLEAR:
         this.useAuth = false;
         this.boho.clearAuth();
+        this.stateChange('auth_clear', 'server request auth_clear.');
         this.stop();
-        console.log('[SERVER_CLEAR_AUTH] io stop.');
         break;
 
       case IOMsg.SERVER_REDIRECT:
@@ -1327,7 +1312,7 @@ class IOCore extends EventEmitter {
               if (tag.indexOf('@') === 0) this.emit('@', tag, null);
               else {
                 this.emit(tag, tag, null);
-                this.emit('message', tag, null );
+                this.emit('message', tag, null);
               }
               break;
 
@@ -1340,7 +1325,7 @@ class IOCore extends EventEmitter {
               }
               let oneString = decoder$4.decode(payloadStringWithoutNull);
               if (tag.indexOf('@') === 0) this.emit('@', tag, oneString);
-              if (tag !== '@'){
+              if (tag !== '@') {
                 this.emit(tag, tag, oneString);
                 this.emit('message', tag, oneString);
               }
@@ -1348,39 +1333,39 @@ class IOCore extends EventEmitter {
 
             case PAYLOAD_TYPE.BINARY:
               if (tag.indexOf('@') === 0) this.emit('@', tag, payloadBuffer);
-              if (tag !== '@'){
+              if (tag !== '@') {
                 this.emit(tag, tag, payloadBuffer);
                 this.emit('message', tag, payloadBuffer);
-              } 
+              }
               break;
 
             case PAYLOAD_TYPE.OBJECT:
               let oneObjectBuffer = decoder$4.decode(payloadBuffer);
               let oneJSONObject = JSON.parse(oneObjectBuffer);
               if (tag.indexOf('@') === 0) this.emit('@', tag, oneJSONObject);
-              if (tag !== '@'){
+              if (tag !== '@') {
                 this.emit(tag, tag, oneJSONObject);
                 this.emit('message', tag, oneJSONObject);
-              } 
+              }
               break;
 
             case PAYLOAD_TYPE.MJSON:
               let mjsonBuffer = decoder$4.decode(payloadBuffer);
               let mjson = JSON.parse(mjsonBuffer);
               if (tag.indexOf('@') === 0) this.emit('@', tag, ...mjson);
-              if (tag !== '@'){
+              if (tag !== '@') {
                 this.emit(tag, tag, ...mjson);
                 this.emit('message', tag, ...mjson);
-              } 
+              }
               break;
 
             case PAYLOAD_TYPE.MBA:
               let mbaObject = M$1.unpack(payloadBuffer);
               if (tag.indexOf('@') === 0) this.emit('@', tag, ...mbaObject.args);
-              if (tag !== '@'){
+              if (tag !== '@') {
                 this.emit(tag, tag, ...mbaObject.args);
-                this.emit('message', tag, ...mbaObject.args );
-              } 
+                this.emit('message', tag, ...mbaObject.args);
+              }
               break;
 
             default:
@@ -1388,7 +1373,8 @@ class IOCore extends EventEmitter {
           }
 
         } catch (err) {
-          this.emit('error', new Error('signal parse err'));
+          // this.emit('error', new Error('IOCore IOMsg.SIGNAL parser err', err))
+          console.log('IOCore IOMsg.SIGNAL parser err', err);
         }
         break;
 
@@ -1397,24 +1383,25 @@ class IOCore extends EventEmitter {
         break;
 
       case tt.BohoMsg.AUTH_NONCE:
+        this.stateChange('auth_nonce','server sent auth_nonce.');
         let auth_hmac = this.boho.auth_hmac(buffer);
         if (auth_hmac) {
           this.send(auth_hmac);
         } else {
-          this.stateChange('auth_fail', 'Invalid local auth_hmac.');
+          this.stateChange('auth_fail', 'boho.auth_hmac() invalid auth_nonce.');
         }
         break;
 
       case tt.BohoMsg.AUTH_FAIL:
-        this.stateChange('auth_fail', 'server reject auth.');
+        this.stateChange('auth_fail', 'auth_fail from server.');
         break;
 
       case tt.BohoMsg.AUTH_ACK:
         if (this.boho.check_auth_ack_hmac(buffer)) {
-          this.stateChange('auth_ready', 'server sent auth_ack');
+          this.stateChange('auth_ack', 'server sent auth_ack');
           this.send(Buffer$1.from([IOMsg.CID_REQ]));
         } else {
-          this.stateChange('auth_fail', 'invalid server_hmac');
+          this.stateChange('auth_fail', 'check_auth_ack_hmac() invalid server_hmac');
         }
         break;
 
@@ -1601,13 +1588,14 @@ class IOCore extends EventEmitter {
 
 
   /**
-   * Publishes a signal.
+   * alias of signal()
+   * Sends a signal with a tag and arguments.
+   * @param {string} tag - The signal tag.
    * @param {...any} args - Arguments for the signal.
    */
-  publish(...args) {
-    this.signal(...args);
+  publish(tag, ...args) {
+    this.signal(tag, ...args);
   }
-
 
   /**
    * Sends a signal with a tag and arguments.
@@ -1617,7 +1605,6 @@ class IOCore extends EventEmitter {
    */
   signal(tag, ...args) {
     if (typeof tag !== 'string') throw TypeError('tag should be string.')
-
     let signalPack = getSignalPack(tag, ...args);
     this.send_enc_mode(signalPack);
   }
@@ -1659,7 +1646,6 @@ class IOCore extends EventEmitter {
 
     this.send_enc_mode(signalPack);
   }
-
 
 
   /**
@@ -1729,8 +1715,8 @@ class IOCore extends EventEmitter {
    */
   subscribe(tag) {
     if (typeof tag !== 'string') throw TypeError('tag should be string.')
-      if (tag.length > SIZE_LIMIT.TAG_LEN1) throw TypeError('please check tag string length limit:' + SIZE_LIMIT.TAG_LEN1)
-    if (this.state !== STATES.READY) return
+    if (tag.length > SIZE_LIMIT.TAG_LEN1) throw TypeError('please check tag string length limit:' + SIZE_LIMIT.TAG_LEN1)
+    if (this.state !== STATE.READY) return
 
     // subscribe 사용시,  사용 'ready' 이벤트시 메뉴얼 등록되므로 여기에 등록하면 2중 호출된다.
     // 즉, channels 등록은 listen 같은 자동화 구독시만 사용. 
@@ -1739,7 +1725,7 @@ class IOCore extends EventEmitter {
     //   this.channels.add(tag)
     // })
 
-    try {  
+    try {
       let tagEncoded = encoder$1.encode(tag);
       this.send_enc_mode(
         Buffer$1.concat([
@@ -1759,12 +1745,12 @@ class IOCore extends EventEmitter {
     if (typeof tag !== 'string') throw TypeError('tag should be string.')
     if (tag.length > SIZE_LIMIT.TAG_LEN2) throw TypeError('please check tag string length limit:' + SIZE_LIMIT.TAG_LEN2)
 
-    if (this.state !== STATES.READY) {
+    if (this.state !== STATE.READY) {
       return Promise.reject('subscribe_promise:: connection is not ready')
     }
 
     try {
-      let tagEncoded = encoder$1.encode(tag);      
+      let tagEncoded = encoder$1.encode(tag);
       this.send_enc_mode(
         Buffer$1.concat([
           M$1.NB('8', IOMsg.SUBSCRIBE_REQ),
@@ -1834,7 +1820,7 @@ class IOCore extends EventEmitter {
     }
     this.on(tag, handler);
     // do not subscribe now.
-    // will subscribe when receive CID_RES signal from server.
+    // will subscribe when io state is 'ready'. (receive CID_RES from server)
 
   }
 
@@ -1945,10 +1931,10 @@ class IOCore extends EventEmitter {
    */
   getStateName() {
     //state <number>
-    //value of constant STATES.NAME < number >
-    //type of constant STATES.NAME name < string uppercase >
+    //value of constant STATE.NAME < number >
+    //type of constant STATE.NAME name < string uppercase >
     //stateName,eventName <string lowercase>
-    return (STATES[this.state]).toLowerCase()
+    return (STATE[this.state]).toLowerCase()
   }
 
   /**
@@ -1976,14 +1962,14 @@ class IOCore extends EventEmitter {
    *   보통 이벤트 이름과 동일하게 적거나 이벤트 상황 안내문을 넣는다.
    */
   stateChange(state, emitEventAndMessage) {
-    // STATES constant name <string> upperCase
+    // STATE constant name <string> upperCase
     // eventName and .stateName <string> lowerCase
     // .state <number>
     // console.log('### stateChange reason:', emitEventAndMessage )
     let eventName = state.toLowerCase();
-    this.state = STATES[state.toUpperCase()]; // state: number
+    this.state = STATE[state.toUpperCase()]; // state: number
 
-    if (emitEventAndMessage){
+    if (emitEventAndMessage) {
       this.emit(eventName, emitEventAndMessage);
     }
 
@@ -2163,8 +2149,10 @@ class IOCongSocket extends IOCore {
   keepAlive() {
     if (!this.autoReconnect) return;
     // Reconnect only if the socket is fully destroyed and the state is closed.
-    if ((!this.socket || this.socket.destroyed) && this.state === STATES.CLOSED) {
+    if ((!this.socket || this.socket.destroyed)) {
       this.open();
+    }else {
+      this.ping();
     }
   }
 
@@ -2176,7 +2164,7 @@ class IOCongSocket extends IOCore {
       urlObj = new URL('cong://' + url);
     }
     this.socket = net.createConnection(urlObj.port, urlObj.hostname);
-    this.stateChange('opening');
+    this.stateChange('connecting','connecting');
 
     this.socket.on('connect', () => {
       this.congRx = new CongRx();
@@ -7590,15 +7578,17 @@ class IOWS extends IOCore {
   keepAlive() {
     if (!this.autoReconnect) return;
     // Reconnect only if the socket is closed and the state reflects that.
-    if ((!this.socket || this.socket.readyState === WebSocket.CLOSED) && this.state === STATES.CLOSED) {
+    if ((!this.socket || this.socket.readyState === WebSocket.CLOSED) ) {
       this.open();
+    }else {
+      this.ping();
     }
   }
 
   createConnection(url) {
     // node WebSocket
     this.socket = new WebSocket(url);
-    this.stateChange('opening');
+    this.stateChange('connecting','connecting');
 
     this.socket.onopen = () => {
       this.socket.on('message', this.onWebSocketMessage.bind(this));
@@ -7724,7 +7714,7 @@ class RemoteCore {
 
     this.state;
     this.stateLog = [];
-    this.setState(CLIENT_STATE.INIT);
+    this.setState(STATE.OPEN);
 
   }
 
@@ -7733,7 +7723,7 @@ class RemoteCore {
   setState(state) {
     this.state = state;
     if (serverOption.debug.showAuthInfo) {
-      // let s = state + ":" + CLIENT_STATE[ state] 
+      state = state + ":" + STATE[ state]; 
       this.stateLog.push( state  );
       console.log(this.stateLog.join('>'));
     }
@@ -7744,24 +7734,30 @@ class RemoteCore {
   }
 
   getStateName() { // <String>
-    return (CLIENT_STATE[this.state]).toLowerCase()
+    return (STATE[this.state]).toLowerCase()
   }
 
 
   showMessageLog(message, isBinary) {
-    let from = this.boho.isAuthorized ? `[FROM]did: ${this.did} cid:${this.cid}` : `[FROM]cid:${this.cid}`;
+    let h = '->S ';
+    let from = this.boho.isAuthorized ? ` did: ${this.did} cid: ${this.cid}` : ` cid: ${this.cid}`;
+    let prnLimit = 20;
     if (isBinary) {
       let msgTypeName = IOMsg[message[0]];
       if (!msgTypeName) msgTypeName = tt.BohoMsg[message[0]];
-      msgTypeName = ' [' + msgTypeName + ']';
-      if (message.byteLength > 40) {
-        console.log(from + msgTypeName + ' LEN:', message.length);
+
+      msgTypeName = '[' + msgTypeName + ']';
+      let size = message.byteLength;
+      if (size < prnLimit) {
+        console.log( h + msgTypeName + from +` [${size}]`, message);
       } else {
-        console.log(from + msgTypeName, message);
+        let elseLen = size - prnLimit;
+        let some = message.subarray(0,prnLimit);
+        console.log( h + msgTypeName + from +` [${size}]` , some , ' ... else: ', elseLen);
       }
 
     } else {
-      console.log(from + ' [TEXT] %s', message);
+      console.log( h + ' [TEXT] %s' + from, message);
     }
   }
 
@@ -7844,7 +7840,7 @@ class RemoteCore {
           break;
 
         case IOMsg.CID_REQ:
-          if (this.state < CLIENT_STATE.SENT_SERVER_READY) {
+          if (this.state < STATE.SERVER_READY) {
             // Protocol violation: CID_REQ was sent before receiving the SERVER_READY signal.
             console.log('CID_REQ before SERVER_READY');
             this.close();
@@ -7861,7 +7857,7 @@ class RemoteCore {
             MB('#cid', this.cid)
           ));
 
-          this.setState(CLIENT_STATE.CID_READY);
+          this.setState(STATE.CID_RES);
           break;
 
         case IOMsg.ECHO:
@@ -7967,24 +7963,24 @@ class RemoteCore {
         // Auth
         case tt.BohoMsg.AUTH_REQ:
           if (!this.manager.authManager) return
-          if (this.state < CLIENT_STATE.SENT_SERVER_READY) {
+          if (this.state < STATE.SERVER_READY) {
             console.log('protocol error. auth_req before server_ready');
             this.close();
           }
-          this.setState(CLIENT_STATE.RECV_AUTH_REQ);
+          this.setState(STATE.AUTH_REQ);
           let auth_nonce_pack = this.boho.auth_nonce();
           // console.log('## auth_nonce_pack', auth_nonce_pack )
           this.send(auth_nonce_pack);
-          this.setState(CLIENT_STATE.SENT_SERVER_NONCE);
+          this.setState(STATE.AUTH_NONCE);
           break;
 
         case tt.BohoMsg.AUTH_HMAC:
           if (!this.manager.authManager) return
-          if (this.state < CLIENT_STATE.SENT_SERVER_NONCE) {
+          if (this.state < STATE.AUTH_NONCE) {
             console.log('protocol error. auth_hmac before server_nonce');
             this.close();
           }
-          this.setState(CLIENT_STATE.RECV_AUTH_HMAC);
+          this.setState(STATE.AUTH_HMAC);
           //async
           this.manager.authManager.verify_auth_hmac(message, this)
             .then(authInfo => {
@@ -8134,10 +8130,41 @@ function isPrivateIP(ip) {
   return false
 }
 
+function numberWithCommas(x) {
+  return x.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',')
+}
+
 function getIPv4HexString(ipStr) {
   let ipv4 = ipStr.split('.');
   return Buffer.from(ipv4).toString('hex')
 }
+
+function getLocalAddress() {
+  const nets = networkInterfaces();
+  // console.log(nets)
+  const results = Object.create(null); // Or just '{}', an empty object
+  let localAddress = '';
+  for (const name of Object.keys(nets)) {
+    for (const net of nets[name]) {
+      // Skip over non-IPv4 and internal (i.e. 127.0.0.1) addresses
+      // 'IPv4' is in Node <= 17, from 18 it's a number 4 or 6
+      const familyV4Value = typeof net.family === 'string' ? 'IPv4' : 4;
+      if (net.family === familyV4Value && !net.internal) {
+        if (!results[name]) {
+          results[name] = [];
+        }
+        results[name].push(net.address);
+        localAddress = net.address;
+      }
+    }
+  }
+
+  // console.log('localAddress:', localAddress)
+  return localAddress
+}
+
+
+const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 const decoder$2 = new TextDecoder();
 
@@ -8310,6 +8337,7 @@ class Remote extends RemoteCore {
     }
   }
 
+  // node.js server side remote.
   send(message, isBinary) {
     this.manager.txBytes += message.byteLength;
     this.socket.txCounter++;
@@ -8321,13 +8349,15 @@ class Remote extends RemoteCore {
           this.socket.send(message);
         }
       } else {
+        console.log('server(ws)Remote.send() called. not open state. current readyState:', this.socket.readyState );
         this.close(true);
       }
-
+      
     } else { //CongSocket
       if (this.socket.readyState == 'open') {
         this.socket.write(pack(message));
       } else {
+        console.log('server(cong)Remote.send() called. not open state. current readyState:', this.socket.readyState );
         this.close(true);
       }
     }
@@ -8583,7 +8613,7 @@ class Manager {
     let remote = new Remote(socket, req, this);
     this.remotes.add(remote);
     remote.send(Buffer.from([IOMsg.SERVER_READY]));
-    remote.setState(CLIENT_STATE.SENT_SERVER_READY);
+    remote.setState(STATE.SERVER_READY);
     this.lastSSID = remote.ssid;
     let connectionInfo = `+ IP:${remote.ip} #${remote.ssid} ${socket.socketType === 'websocket' ? "WS" : "CS"} `;
     // console.log( connectionInfo)
@@ -8698,8 +8728,8 @@ class Manager {
 
   sender(tag, remote, message) {
     if (serverOption.membersOnly && !remote.boho.isAuthorized) {
-      console.log("[membersOnly] unAuthorized remote.",tag  );
-      remote.send(Buffer.from([IOMsg.SERVER_CLEAR_AUTH]));
+      // console.log("### server reject client signal reason: [membersOnly]" ,tag, remote.cid  )
+      remote.send(Buffer.from([IOMsg.AUTH_CLEAR]));
       remote.close();
       return ['err', 'unAuthorized']
     }
@@ -9027,7 +9057,7 @@ class Server extends require$$0$3 {
 
     this.wss.once('listening', () => {
       this.port = this.wss.address().port;
-      console.log('wss server bound port:',  this.port );
+      // console.log('wss server bound port:',  this.port );
       this.listeningServerCount++;
       if (this.listeningServerCount === this.serverCountToListen) {
         this.emit('ready');
@@ -9043,7 +9073,7 @@ class Server extends require$$0$3 {
     });
 
     this.wss.on('close', () => {
-      console.log('### WS server is closed.');
+      // console.log('### WS server is closed.')
     });
 
     this.wss.on('connection', (ws, req) => {
@@ -9064,10 +9094,10 @@ class Server extends require$$0$3 {
           process.exit();
         }
       }).on('close', () => {
-        console.log('### congsocket server is closed.');
+        // console.log('### congsocket server is closed.')
       }).listen(this.congPort, () => {
         this.congPort = this.congServer.address().port;
-        console.log('congsocket server bound port:', this.congPort );
+        // console.log('congsocket server bound port:', this.congPort );
         this.listeningServerCount++;
         if (this.listeningServerCount === this.serverCountToListen) {
           this.emit('ready');
@@ -9102,7 +9132,7 @@ class Server extends require$$0$3 {
             return
           }
           if( api.commands.includes( req.topic )){
-            console.log('server api req', req );
+            // console.log('server api req', req )
             await api.request(remote, req);
           }else {
             remote.response(req.mid, STATUS.ERROR, "UNKNOWN_COMMAND");
@@ -9132,7 +9162,7 @@ class Server extends require$$0$3 {
       });
     }
     this.apiNames.add(target);
-    console.log(`[API registed: ${target} ] accept commands: ${api.commands}`);
+    // console.log(`[API registed: ${target} ] accept commands: ${api.commands}`)
     return this
   }
 
@@ -9172,7 +9202,7 @@ class Server extends require$$0$3 {
 
     if (this.congServer) {
       this.congServer.close((err) => {
-        if (err) console.error('congServer close error', err);
+        // if (err) console.error('congServer close error', err)
         // console.log('cong server closed.')
         onClosed();
       });
@@ -9183,7 +9213,12 @@ class Server extends require$$0$3 {
 
 const decoder = new TextDecoder();
 class BohoAuth {
-  constructor() {
+  constructor(keyProvider) {
+    if (!keyProvider) {
+      throw new Error('BohoAuth must be initialized with a keyProvider.');
+    }
+    this.keyProvider = keyProvider;
+
     this.authLogger;
     if (serverOption.fileLogger.auth.use) {
       this.authLogger = new FileLogger(serverOption.fileLogger.auth.path);
@@ -9197,11 +9232,11 @@ class BohoAuth {
       this.authLogger.log(peerInfo);
     }
     // console.log('##### AUTH_FAIL reason: ', reason)
-    peer.setState(CLIENT_STATE.AUTH_FAIL);
+    peer.setState(STATE.AUTH_FAIL);
+    peer.send(Buffer.from([tt.BohoMsg.AUTH_FAIL]));
     // add some delay time.
-    setTimeout(e => {
-      peer.send(Buffer.from([tt.BohoMsg.AUTH_FAIL]));
-    }, serverOption.auth.delay_auth_fail);
+    // setTimeout(e => {
+    // }, serverOption.auth.delay_auth_fail)
   }
 
   async verify_auth_hmac(auth_hmac, peer) {
@@ -9222,7 +9257,7 @@ class BohoAuth {
       }
       
       //2. get key of id from DB
-      let authInfo = await this.getAuth(id);
+      let authInfo = await this.keyProvider.getAuth(id);
 
       if (!authInfo) {
         this.send_auth_fail(peer, 'NO ID:' + id);
@@ -9273,9 +9308,13 @@ class BohoAuth {
           console.log('## trying RELOGIN with SAME ID. ignored.');
           return
         }
-        console.log('### clear_auth and close old connection:', old.cid);
-        old.send(Buffer.from([IOMsg.SERVER_CLEAR_AUTH]));
-        old.close();
+        console.log('### DUPLICATE_LOGIN detected.', old.cid);
+        let sigPack = M$1.pack(
+          M$1.MB('#MsgType', '8', IOMsg.AUTH_CLEAR),
+          M$1.MB('#reason', 'duplicate login.')
+        );
+        old.send( sigPack);
+        // old.close()  client will close and stop.
         peer.close();  // auto relogin
         return
       }
@@ -9322,7 +9361,7 @@ class BohoAuth {
       // console.log("LOGIN: ", `id: ${ peer.did}(${peer.cid})` )
       //10. send ack.
       peer.send(auth_ack);
-      peer.setState(CLIENT_STATE.AUTH_READY);
+      peer.setState(STATE.AUTH_ACK);
       if (this.authLogger) {
         let peerInfo = `OK #${peer.ssid} cid: ${peer.cid} did:${peer.did}`;
         if (peer.isAdmin) peerInfo = "#ADMIN# " + peerInfo;
@@ -9335,12 +9374,39 @@ class BohoAuth {
 
   }
 
+  async getAuth(id) {
+    return this.keyProvider.getAuth(id);
+  }
+
+  async getAuthIdList() {
+    if (typeof this.keyProvider.getAuthIdList === 'function') {
+      return this.keyProvider.getAuthIdList();
+    }
+  }
+
+  async addAuth(id, keyStr, cid, level = 0) {
+    if (typeof this.keyProvider.addAuth === 'function') {
+      return this.keyProvider.addAuth(id, keyStr, cid, level);
+    }
+  }
+
+  async delAuth(id) {
+    if (typeof this.keyProvider.delAuth === 'function') {
+      return this.keyProvider.delAuth(id);
+    }
+  }
+
+  async save() {
+    if (typeof this.keyProvider.save === 'function') {
+      return this.keyProvider.save();
+    }
+  }
+
 
 }
 
-class Auth_File extends BohoAuth {
+class FileKeyProvider {
   constructor(_path) {
-    super();
     this.AUTH = new Map();
     let pathObj = path.parse(_path);
     this.path = path.resolve(_path);
@@ -9358,20 +9424,9 @@ class Auth_File extends BohoAuth {
     }
   }
 
-
-  async getAuth(id) {
-    return this.AUTH.get(id)
-  }
-
-  async getAuthIdList() {
-    return Array.from(this.AUTH.keys())
-  }
-
   //loaded when server start.
   loadAuthInfoFile_JS(path) {
-
     import(path).then((file) => {
-
       console.log(file.authInfo);
       file.authInfo.forEach(item => {
         this.addAuth(...item);
@@ -9380,8 +9435,6 @@ class Auth_File extends BohoAuth {
     }).catch(e => {
       console.log(e);
     });
-
-
   }
 
   loadAuthInfoFile_JSON(path) {
@@ -9392,81 +9445,12 @@ class Auth_File extends BohoAuth {
       this.addAuth(...item);
     });
     console.log('total AUTH INFO size: ', this.AUTH.size);
-
-  }
-
-  addAuth(id, keyStr, cid, level = 0) {
-    let Base64hashKey = Buffer.from(tt.sha256.hash(keyStr)).toString('base64');
-    this.AUTH.set(id, { key: Base64hashKey, cid: cid, level: level });
-  }
-
-
-
-}
-
-/**
- * Auth_Env.js
- * 
- * You can use environment variable BOHO_AUTH.
- * 
- *  BOHO_AUTH=id1.key1.level,id2:key2.level 
- * 
- *  or constructor parameter.
- * 
- * 
- * [ authInfo ]
- *  id: <String> max 8chars
- *  key: <String>
- *  level: <Numbrer> range: 0~255
- *  separator: ','
- * 
- * example => process.env.BOHO_AUTH=id1.key1.255,id2.key2.200
- */
-
-
-class Auth_Env extends BohoAuth {
-  constructor(authInfo) {
-    super();
-    let id_keys;
-    if (authInfo) {
-      id_keys = authInfo.split(',');
-    } else if (process.env.BOHO_AUTH) {
-      authInfo = process.env.BOHO_AUTH;
-      id_keys = process.env.BOHO_AUTH.split(',');
-    } else {
-      console.log("Auth_Env: None of process.env.BOHO_AUTH or authInfo");
-      process.exit();
-    }
-
-    this.AUTH = new Map();
-
-    if (id_keys.length >= 1) {
-      id_keys.forEach(v => {
-
-        let did = v.split('.')[0];
-        let key = v.split('.')[1];
-        let level = v.split('.')[2];
-        level = parseInt(level);
-
-        if (did && key && typeof level == 'number') {
-          let cid = did;
-          this.addAuth(did, key, cid, level);
-        } else {
-          console.log("Wrong process.env.BOHO_AUTH authentication value.", id, key, level);
-          process.exit();
-        }
-      });
-
-    } else {
-      console.log("Wrong process.env.BOHO_AUTH authentication value.");
-      process.exit();
-    }
-
   }
 
   async getAuth(id) {
     return this.AUTH.get(id)
   }
+
   async getAuthIdList() {
     return Array.from(this.AUTH.keys())
   }
@@ -9475,16 +9459,14 @@ class Auth_Env extends BohoAuth {
     let Base64hashKey = Buffer.from(tt.sha256.hash(keyStr)).toString('base64');
     this.AUTH.set(id, { key: Base64hashKey, cid: cid, level: level });
   }
-
 }
 
 const DEVICE_PREFIX = "device:";
 
-class Auth_Redis extends BohoAuth {
+class RedisKeyProvider {
   constructor(redisClient) {
-    super();
     if (!redisClient) {
-      throw new Error("AuthRedis constructor: no redisClient")
+      throw new Error("RedisKeyProvider constructor: no redisClient")
     }
     this.redis = redisClient;
   }
@@ -9493,7 +9475,8 @@ class Auth_Redis extends BohoAuth {
   async getAuth(id) {
     try {
       let result = await this.redis.hGetAll(DEVICE_PREFIX + id);
-      if (result.key) return result
+      if (result && result.key) return result
+      else return null;
     } catch (error) {
       console.log('getAuth', error);
     }
@@ -9522,7 +9505,60 @@ class Auth_Redis extends BohoAuth {
   async save(id) {
     return this.redis.save()
   }
+}
 
+/**
+ * StringKeyProvider.js
+ * 
+ * authInfo <String>
+ *  id: max 8chars
+ *  key: ~44 base64 chars recomended
+ *  cid: 
+ *  level: range: 0~255
+ *  separator: ',' for multiple devices.
+ * 
+ * example => authInfo = 'id1.key1.cid1.255,id2.key2.cid2.200'
+ */
+
+
+class StringKeyProvider {
+  constructor(authInfo) {
+
+    if (!authInfo) {
+      throw TypeError("StringKeyProvider constructor() missing authInfo.")
+    }
+
+    let id_keys = authInfo.split(',');
+
+    this.AUTH = new Map();
+
+    if (id_keys.length >= 1) {
+      id_keys.forEach(v => {
+        let [ did, key, cid, level ]  = v.split('.');
+        level = parseInt(level);
+        if (did && key && cid && typeof level == 'number') {
+          this.addAuth(did, key, cid, level);
+        } else {
+          throw TypeError("StringKeyProvider invalid authInfo.")
+        }
+      });
+    } else {
+      throw TypeError("StringKeyProvider invalid authInfo.")
+    }
+
+  }
+
+  async getAuth(id) {
+    return this.AUTH.get(id)
+  }
+  async getAuthIdList() {
+    return Array.from(this.AUTH.keys())
+  }
+
+  addAuth(id, keyStr, cid, level = 0) {
+    let Base64hashKey = Buffer.from(tt.sha256.hash(keyStr)).toString('base64');
+    this.AUTH.set(id, { key: Base64hashKey, cid: cid, level: level });
+  }
 }
 
 const commands$1 = ['echo', 'date', 'unixtime'];
@@ -9707,4 +9743,4 @@ class RedisAPI {
 
 const version = pkg.version;
 
-export { API_TYPE, Auth_Env, Auth_File, Auth_Redis, tt as Boho, BohoAuth, CLIENT_STATE, CongRx, ENC_MODE, FileLogger, IOWS as IO, IOCongSocket, IOMsg, M$1 as MBP, PAYLOAD_TYPE, RedisAPI, SIZE_LIMIT, STATES, STATUS$1 as STATUS, Server, api_reply, api_sudo, getPayloadFromSignalPack, getSignalPack, pack, parsePayload, serverOption, version };
+export { API_TYPE, tt as Boho, BohoAuth, CongRx, ENC_MODE, FileKeyProvider, FileLogger, IOWS as IO, IOCongSocket, IOMsg, M$1 as MBP, PAYLOAD_TYPE, RedisAPI, RedisKeyProvider, SIZE_LIMIT, STATE, STATUS$1 as STATUS, Server, StringKeyProvider, api_reply, api_sudo, delay, getIPv4HexString, getLocalAddress, getPayloadFromSignalPack, getSignalPack, isPrivateIP, numberWithCommas, pack, parsePayload, serverOption, version };

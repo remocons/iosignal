@@ -1,12 +1,10 @@
-import { BohoAuth } from './BohoAuth.js';
 import Boho from 'boho'
 const DEVICE_PREFIX = "device:"
 
-export class Auth_Redis extends BohoAuth {
+export class RedisKeyProvider {
   constructor(redisClient) {
-    super()
     if (!redisClient) {
-      throw new Error("AuthRedis constructor: no redisClient")
+      throw new Error("RedisKeyProvider constructor: no redisClient")
     }
     this.redis = redisClient
   }
@@ -15,7 +13,8 @@ export class Auth_Redis extends BohoAuth {
   async getAuth(id) {
     try {
       let result = await this.redis.hGetAll(DEVICE_PREFIX + id)
-      if (result.key) return result
+      if (result && result.key) return result
+      else return null;
     } catch (error) {
       console.log('getAuth', error)
     }
@@ -44,6 +43,4 @@ export class Auth_Redis extends BohoAuth {
   async save(id) {
     return this.redis.save()
   }
-
 }
-

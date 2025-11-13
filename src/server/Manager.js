@@ -1,7 +1,7 @@
 import MBP from 'meta-buffer-pack'
 import { Remote } from './Remote.js'
 import { serverOption } from './serverOption.js'
-import { IOMsg, CLIENT_STATE } from '../common/constants.js'
+import { IOMsg, STATE } from '../common/constants.js'
 import { getSignalPack } from '../common/payload.js';
 import { FileLogger } from './FileLogger.js'
 import { Metric } from './Metric.js'
@@ -73,7 +73,7 @@ export class Manager {
     let remote = new Remote(socket, req, this)
     this.remotes.add(remote)
     remote.send(Buffer.from([IOMsg.SERVER_READY]))
-    remote.setState(CLIENT_STATE.SENT_SERVER_READY)
+    remote.setState(STATE.SERVER_READY)
     this.lastSSID = remote.ssid;
     let connectionInfo = `+ IP:${remote.ip} #${remote.ssid} ${socket.socketType === 'websocket' ? "WS" : "CS"} `;
     // console.log( connectionInfo)
@@ -194,8 +194,8 @@ export class Manager {
 
   sender(tag, remote, message) {
     if (serverOption.membersOnly && !remote.boho.isAuthorized) {
-      console.log("[membersOnly] unAuthorized remote.",tag  )
-      remote.send(Buffer.from([IOMsg.SERVER_CLEAR_AUTH]))
+      // console.log("### server reject client signal reason: [membersOnly]" ,tag, remote.cid  )
+      remote.send(Buffer.from([IOMsg.AUTH_CLEAR]))
       remote.close()
       return ['err', 'unAuthorized']
     }

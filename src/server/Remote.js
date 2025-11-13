@@ -185,6 +185,7 @@ export class Remote extends RemoteCore {
     }
   }
 
+  // node.js server side remote.
   send(message, isBinary) {
     this.manager.txBytes += message.byteLength;
     this.socket.txCounter++;
@@ -196,13 +197,15 @@ export class Remote extends RemoteCore {
           this.socket.send(message);
         }
       } else {
+        console.log('server(ws)Remote.send() called. not open state. current readyState:', this.socket.readyState )
         this.close(true)
       }
-
+      
     } else { //CongSocket
       if (this.socket.readyState == 'open') {
         this.socket.write(pack(message))
       } else {
+        console.log('server(cong)Remote.send() called. not open state. current readyState:', this.socket.readyState )
         this.close(true)
       }
     }

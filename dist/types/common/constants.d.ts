@@ -1,46 +1,33 @@
-export type STATES = {
-    OPENING: number;
+export type STATE = {
+    CONNECTING: number;
     OPEN: number;
-    CLOSING: number;
-    CLOSED: number;
     SERVER_READY: number;
-    AUTH_FAIL: number;
-    AUTH_READY: number;
+    AUTH_ACK: number;
+    CLOSING: number;
     READY: number;
+    AUTH_FAIL: number;
+    AUTH_CLEAR: number;
+    CLOSED: number;
+    STOP: number;
     REDIRECTING: number;
 };
-export namespace STATES {
-    let OPENING: number;
+export namespace STATE {
+    let CONNECTING: number;
     let OPEN: number;
+    let SERVER_READY: number;
+    let AUTH_REQ: number;
+    let AUTH_NONCE: number;
+    let AUTH_HMAC: number;
+    let AUTH_ACK: number;
+    let AUTH_FAIL: number;
+    let AUTH_CLEAR: number;
+    let CID_REQ: number;
+    let CID_RES: number;
+    let READY: number;
     let CLOSING: number;
     let CLOSED: number;
-    let SERVER_READY: number;
-    let AUTH_FAIL: number;
-    let AUTH_READY: number;
-    let READY: number;
+    let STOP: number;
     let REDIRECTING: number;
-}
-export type CLIENT_STATE = {
-    INIT: number;
-    SENT_SERVER_READY: number;
-    RECV_AUTH_REQ: number;
-    SENT_SERVER_NONCE: number;
-    RECV_AUTH_HMAC: number;
-    AUTH_FAIL: number;
-    AUTH_READY: number;
-    CID_READY: number;
-};
-export namespace CLIENT_STATE {
-    export let INIT: number;
-    export let SENT_SERVER_READY: number;
-    export let RECV_AUTH_REQ: number;
-    export let SENT_SERVER_NONCE: number;
-    export let RECV_AUTH_HMAC: number;
-    let AUTH_FAIL_1: number;
-    export { AUTH_FAIL_1 as AUTH_FAIL };
-    let AUTH_READY_1: number;
-    export { AUTH_READY_1 as AUTH_READY };
-    export let CID_READY: number;
 }
 export type ENC_MODE = {
     NO: number;
@@ -89,7 +76,7 @@ export type IOMsg = {
     CID_REQ: number;
     CID_RES: number;
     QUOTA_LEVEL: number;
-    SERVER_CLEAR_AUTH: number;
+    AUTH_CLEAR: number;
     SERVER_REDIRECT: number;
     LOOP: number;
     ECHO: number;
@@ -120,10 +107,13 @@ export type IOMsg = {
 export namespace IOMsg {
     let SERVER_READY_1: number;
     export { SERVER_READY_1 as SERVER_READY };
-    export let CID_REQ: number;
-    export let CID_RES: number;
+    let CID_REQ_1: number;
+    export { CID_REQ_1 as CID_REQ };
+    let CID_RES_1: number;
+    export { CID_RES_1 as CID_RES };
     export let QUOTA_LEVEL: number;
-    export let SERVER_CLEAR_AUTH: number;
+    let AUTH_CLEAR_1: number;
+    export { AUTH_CLEAR_1 as AUTH_CLEAR };
     export let SERVER_REDIRECT: number;
     export let LOOP: number;
     export let ECHO: number;

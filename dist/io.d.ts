@@ -162,7 +162,7 @@ declare class IOCore extends EventEmitter<string | symbol, any> {
     /**
      * Disables auto-reconnect and closes the current connection.
      * The instance can be re-opened manually later. For complete cleanup, use destroy().
-     */
+    */
     stop(): void;
     /**
      * Permanently destroys the instance, cleaning up all resources.
@@ -194,18 +194,18 @@ declare class IOCore extends EventEmitter<string | symbol, any> {
     onClose(): void;
     /**
      * Manually logs in with provided ID and key.
-     * @param {string} id - The user ID.
+     * @param {string} id - The user ID. or 'id.key'
      * @param {string} key - The user key.
-     * @returns {boolean}
+     * @returns {this}
      */
-    login(id: string, key: string): boolean;
+    login(id: string, key: string): this;
     /**
      * Sets up authentication for auto-login.
-     * @param {string} id - The user ID.
+     * @param {string} id - The user ID. or 'id.Key'
      * @param {string} key - The user key.
-     * @returns {boolean}
+     * @returns {this}
      */
-    auth(id: string, key: string): boolean;
+    auth(id: string, key: string): this;
     /**
      * Handles incoming data from the WebSocket.
      * @param {Buffer} buffer - The incoming data buffer.
@@ -264,10 +264,12 @@ declare class IOCore extends EventEmitter<string | symbol, any> {
      */
     testPromise(buffer: Buffer$1): void;
     /**
-     * Publishes a signal.
+     * alias of signal()
+     * Sends a signal with a tag and arguments.
+     * @param {string} tag - The signal tag.
      * @param {...any} args - Arguments for the signal.
      */
-    publish(...args: any[]): void;
+    publish(tag: string, ...args: any[]): void;
     /**
      * Sends a signal with a tag and arguments.
      * @param {string} tag - The signal tag.

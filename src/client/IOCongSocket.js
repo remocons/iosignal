@@ -1,5 +1,5 @@
 import { IOCore } from "./IOCore.js"
-import { STATES } from "../common/constants.js";
+import { STATE } from "../common/constants.js";
 import { pack, CongRx } from './CongPacket.js'
 import net from 'net'
 
@@ -33,8 +33,10 @@ export class IOCongSocket extends IOCore {
   keepAlive() {
     if (!this.autoReconnect) return;
     // Reconnect only if the socket is fully destroyed and the state is closed.
-    if ((!this.socket || this.socket.destroyed) && this.state === STATES.CLOSED) {
+    if ((!this.socket || this.socket.destroyed)) {
       this.open();
+    }else{
+      this.ping();
     }
   }
 
@@ -46,7 +48,7 @@ export class IOCongSocket extends IOCore {
       urlObj = new URL('cong://' + url)
     }
     this.socket = net.createConnection(urlObj.port, urlObj.hostname)
-    this.stateChange('opening')
+    this.stateChange('connecting','connecting')
 
     this.socket.on('connect', () => {
       this.congRx = new CongRx();

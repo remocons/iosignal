@@ -1,6 +1,6 @@
 import MBP from 'meta-buffer-pack'
 import EventEmitter from "eventemitter3";
-import { IOMsg, PAYLOAD_TYPE, SIZE_LIMIT, ENC_MODE, STATES } from '../common/constants.js'
+import { IOMsg, PAYLOAD_TYPE, SIZE_LIMIT, ENC_MODE, STATE } from '../common/constants.js'
 import { quotaTable } from '../common/quotaTable.js'
 import { getSignalPack } from '../common/payload.js';
 import Boho from "boho";
@@ -11,7 +11,7 @@ import Boho from "boho";
  * @typedef {import('../common/constants.js').PAYLOAD_TYPE} PAYLOAD_TYPE
  * @typedef {import('../common/constants.js').SIZE_LIMIT} SIZE_LIMIT
  * @typedef {import('../common/constants.js').ENC_MODE} ENC_MODE
- * @typedef {import('../common/constants.js').STATES} STATES
+ * @typedef {import('../common/constants.js').STATE} STATE
  * @typedef {import('../common/quotaTable.js').quotaTable} quotaTable
  
  * @typedef {import('boho').Boho} Boho
@@ -65,7 +65,7 @@ export class IOCore extends EventEmitter {
      * Current connection state (number).
      * @type {number}
      */
-    this.state = STATES.CLOSED;  // Number type
+    this.state = STATE.CLOSED;  // Number type
     /**
      * Current connection state (string).
      * @type {string}
@@ -207,7 +207,7 @@ export class IOCore extends EventEmitter {
   close() {
     if (this._closed) return;
     this._closed = true;
-// console.log('####### IOCOre.js close() called')
+    // console.log('####### IOCOre.js close() called')
     // If auto-reconnect is disabled, we must stop the keep-alive timer.
     if (this.autoReconnect === false) {
       clearInterval(this.connectionCheckerIntervalID);
@@ -222,7 +222,7 @@ export class IOCore extends EventEmitter {
         // To avoid the error, we wait for the connection to open, then immediately close it.
         // We also clear other handlers to prevent any other logic from running.
         const socket = this.socket;
-        socket.onopen = () => { if(socket) socket.close(); };
+        socket.onopen = () => { if (socket) socket.close(); };
         socket.onmessage = null;
         socket.onerror = null;
         socket.onclose = null;
@@ -230,7 +230,7 @@ export class IOCore extends EventEmitter {
         try {
           // For other sockets (like TCP) or other WebSocket states, close directly.
           this.socket.close?.();
-        } catch {}
+        } catch { }
       }
       this.socket = null;
     }
@@ -238,14 +238,15 @@ export class IOCore extends EventEmitter {
     this.emit('closed');
     this.stateChange('closed');
   }
-
+  
   /**
    * Disables auto-reconnect and closes the current connection.
    * The instance can be re-opened manually later. For complete cleanup, use destroy().
-   */
-  stop() {
-    this.autoReconnect = false;
-    this.close();
+  */
+ stop() {
+   this.autoReconnect = false;
+   this.close();
+   this.stateChange('stop','stop');
   }
 
   /**
@@ -261,7 +262,7 @@ export class IOCore extends EventEmitter {
 
     // Help GC
     this.boho = null;
-  }  
+  }
 
   /**
    * The core keep-alive logic. It checks if auto-reconnect is enabled.
@@ -278,8 +279,8 @@ export class IOCore extends EventEmitter {
    * @param {string} url2 - The new URL to redirect to.
    */
   redirect(url2) {
+    this.stateChange('redirecting','redirecting')
     this.close()
-    this.stateChange('redirecting')
     this.createConnection(url2)
   }
 
@@ -336,29 +337,27 @@ export class IOCore extends EventEmitter {
 
   /**
    * Manually logs in with provided ID and key.
-   * @param {string} id - The user ID.
+   * @param {string} id - The user ID. or 'id.key'
    * @param {string} key - The user key.
-   * @returns {boolean}
+   * @returns {this} 
    */
   login(id, key) {
-    if (!this.auth(id, key)) return false;
-
+    this.auth(id, key)
     this.useAuth = true
     let auth_pack = this.boho.auth_req()
     this.send(auth_pack)
-    return true
+    return this
   }
 
   /**
    * Sets up authentication for auto-login.
-   * @param {string} id - The user ID.
+   * @param {string} id - The user ID. or 'id.Key'
    * @param {string} key - The user key.
-   * @returns {boolean}
+   * @returns {this} 
    */
   auth(id, key) {
     if (!id && !key) {
       this.emit('error', new Error('auth failed. no id and key.'))
-      return false
     }
 
     if (!key && id.includes('.')) {
@@ -368,10 +367,9 @@ export class IOCore extends EventEmitter {
       this.boho.set_key(key)
     } else {
       this.emit('error', new Error('auth failed. no id or key.'))
-      return false
     }
     this.useAuth = true
-    return true
+    return this
   }
 
   /**
@@ -433,13 +431,13 @@ export class IOCore extends EventEmitter {
       case IOMsg.ECHO:
         try {
           let str = decoder.decode(buffer.subarray(1))
-          
+
           this.emit('echo', str)
         } catch (error) {
           this.emit('error', new Error('ECHO data error'))
         }
         break;
-        
+
       case IOMsg.IAM_RES:
         try {
           let str = decoder.decode(buffer.subarray(1))
@@ -448,7 +446,7 @@ export class IOCore extends EventEmitter {
           if (jsonInfo.nick) { this.nick = jsonInfo.nick; }
           if (jsonInfo.did) { this.did = jsonInfo.did; }
           if (jsonInfo.uid) { this.uid = jsonInfo.uid; }
-          this.emit('iam_res', str )
+          this.emit('iam_res', str)
         } catch (error) {
           this.emit('error', new Error('IAM_RES data error'))
         }
@@ -459,22 +457,22 @@ export class IOCore extends EventEmitter {
         this.cid = cidStr;
 
         // **IMPORTANT** change state before subscribe.
-        this.stateChange('ready', 'cid_ready')  
-        this.subscribe_memory_channels()
+        this.stateChange('ready', 'cid_ready')
+        this.subscribe_memory_channels()  // tags registered by listen() or link().
         break;
 
       case IOMsg.QUOTA_LEVEL:
         let quotaLevel = buffer[1]
         this.level = quotaLevel;
         this.quota = quotaTable[quotaLevel];
-        console.log('[QUOTA_LEVEL]', JSON.stringify(this.quota))
+        // console.log('[QUOTA_LEVEL]', JSON.stringify(this.quota))
         break;
 
-      case IOMsg.SERVER_CLEAR_AUTH:
+      case IOMsg.AUTH_CLEAR:
         this.useAuth = false;
         this.boho.clearAuth();
+        this.stateChange('auth_clear', 'server request auth_clear.')
         this.stop();
-        console.log('[SERVER_CLEAR_AUTH] io stop.')
         break;
 
       case IOMsg.SERVER_REDIRECT:
@@ -554,7 +552,7 @@ export class IOCore extends EventEmitter {
               if (tag.indexOf('@') === 0) this.emit('@', tag, null)
               else {
                 this.emit(tag, tag, null)
-                this.emit('message', tag, null )
+                this.emit('message', tag, null)
               }
               break;
 
@@ -567,7 +565,7 @@ export class IOCore extends EventEmitter {
               }
               let oneString = decoder.decode(payloadStringWithoutNull)
               if (tag.indexOf('@') === 0) this.emit('@', tag, oneString)
-              if (tag !== '@'){
+              if (tag !== '@') {
                 this.emit(tag, tag, oneString)
                 this.emit('message', tag, oneString)
               }
@@ -575,39 +573,39 @@ export class IOCore extends EventEmitter {
 
             case PAYLOAD_TYPE.BINARY:
               if (tag.indexOf('@') === 0) this.emit('@', tag, payloadBuffer)
-              if (tag !== '@'){
+              if (tag !== '@') {
                 this.emit(tag, tag, payloadBuffer)
                 this.emit('message', tag, payloadBuffer)
-              } 
+              }
               break;
 
             case PAYLOAD_TYPE.OBJECT:
               let oneObjectBuffer = decoder.decode(payloadBuffer)
               let oneJSONObject = JSON.parse(oneObjectBuffer)
               if (tag.indexOf('@') === 0) this.emit('@', tag, oneJSONObject)
-              if (tag !== '@'){
+              if (tag !== '@') {
                 this.emit(tag, tag, oneJSONObject)
                 this.emit('message', tag, oneJSONObject)
-              } 
+              }
               break;
 
             case PAYLOAD_TYPE.MJSON:
               let mjsonBuffer = decoder.decode(payloadBuffer)
               let mjson = JSON.parse(mjsonBuffer)
               if (tag.indexOf('@') === 0) this.emit('@', tag, ...mjson)
-              if (tag !== '@'){
+              if (tag !== '@') {
                 this.emit(tag, tag, ...mjson)
                 this.emit('message', tag, ...mjson)
-              } 
+              }
               break;
 
             case PAYLOAD_TYPE.MBA:
               let mbaObject = MBP.unpack(payloadBuffer)
               if (tag.indexOf('@') === 0) this.emit('@', tag, ...mbaObject.args)
-              if (tag !== '@'){
+              if (tag !== '@') {
                 this.emit(tag, tag, ...mbaObject.args)
-                this.emit('message', tag, ...mbaObject.args )
-              } 
+                this.emit('message', tag, ...mbaObject.args)
+              }
               break;
 
             default:
@@ -615,7 +613,8 @@ export class IOCore extends EventEmitter {
           }
 
         } catch (err) {
-          this.emit('error', new Error('signal parse err'))
+          // this.emit('error', new Error('IOCore IOMsg.SIGNAL parser err', err))
+          console.log('IOCore IOMsg.SIGNAL parser err', err)
         }
         break;
 
@@ -624,24 +623,25 @@ export class IOCore extends EventEmitter {
         break;
 
       case Boho.BohoMsg.AUTH_NONCE:
+        this.stateChange('auth_nonce','server sent auth_nonce.')
         let auth_hmac = this.boho.auth_hmac(buffer)
         if (auth_hmac) {
           this.send(auth_hmac)
         } else {
-          this.stateChange('auth_fail', 'Invalid local auth_hmac.')
+          this.stateChange('auth_fail', 'boho.auth_hmac() invalid auth_nonce.')
         }
         break;
 
       case Boho.BohoMsg.AUTH_FAIL:
-        this.stateChange('auth_fail', 'server reject auth.')
+        this.stateChange('auth_fail', 'auth_fail from server.')
         break;
 
       case Boho.BohoMsg.AUTH_ACK:
         if (this.boho.check_auth_ack_hmac(buffer)) {
-          this.stateChange('auth_ready', 'server sent auth_ack')
+          this.stateChange('auth_ack', 'server sent auth_ack')
           this.send(Buffer.from([IOMsg.CID_REQ]))
         } else {
-          this.stateChange('auth_fail', 'invalid server_hmac')
+          this.stateChange('auth_fail', 'check_auth_ack_hmac() invalid server_hmac')
         }
         break;
 
@@ -828,13 +828,14 @@ export class IOCore extends EventEmitter {
 
 
   /**
-   * Publishes a signal.
+   * alias of signal()
+   * Sends a signal with a tag and arguments.
+   * @param {string} tag - The signal tag.
    * @param {...any} args - Arguments for the signal.
    */
-  publish(...args) {
-    this.signal(...args)
+  publish(tag, ...args) {
+    this.signal(tag, ...args)
   }
-
 
   /**
    * Sends a signal with a tag and arguments.
@@ -844,7 +845,6 @@ export class IOCore extends EventEmitter {
    */
   signal(tag, ...args) {
     if (typeof tag !== 'string') throw TypeError('tag should be string.')
-
     let signalPack = getSignalPack(tag, ...args)
     this.send_enc_mode(signalPack)
   }
@@ -886,7 +886,6 @@ export class IOCore extends EventEmitter {
 
     this.send_enc_mode(signalPack)
   }
-
 
 
   /**
@@ -956,8 +955,8 @@ export class IOCore extends EventEmitter {
    */
   subscribe(tag) {
     if (typeof tag !== 'string') throw TypeError('tag should be string.')
-      if (tag.length > SIZE_LIMIT.TAG_LEN1) throw TypeError('please check tag string length limit:' + SIZE_LIMIT.TAG_LEN1)
-    if (this.state !== STATES.READY) return
+    if (tag.length > SIZE_LIMIT.TAG_LEN1) throw TypeError('please check tag string length limit:' + SIZE_LIMIT.TAG_LEN1)
+    if (this.state !== STATE.READY) return
 
     // subscribe 사용시,  사용 'ready' 이벤트시 메뉴얼 등록되므로 여기에 등록하면 2중 호출된다.
     // 즉, channels 등록은 listen 같은 자동화 구독시만 사용. 
@@ -966,7 +965,7 @@ export class IOCore extends EventEmitter {
     //   this.channels.add(tag)
     // })
 
-    try {  
+    try {
       let tagEncoded = encoder.encode(tag)
       this.send_enc_mode(
         Buffer.concat([
@@ -986,12 +985,12 @@ export class IOCore extends EventEmitter {
     if (typeof tag !== 'string') throw TypeError('tag should be string.')
     if (tag.length > SIZE_LIMIT.TAG_LEN2) throw TypeError('please check tag string length limit:' + SIZE_LIMIT.TAG_LEN2)
 
-    if (this.state !== STATES.READY) {
+    if (this.state !== STATE.READY) {
       return Promise.reject('subscribe_promise:: connection is not ready')
     }
 
     try {
-      let tagEncoded = encoder.encode(tag)      
+      let tagEncoded = encoder.encode(tag)
       this.send_enc_mode(
         Buffer.concat([
           MBP.NB('8', IOMsg.SUBSCRIBE_REQ),
@@ -1061,7 +1060,7 @@ export class IOCore extends EventEmitter {
     }
     this.on(tag, handler)
     // do not subscribe now.
-    // will subscribe when receive CID_RES signal from server.
+    // will subscribe when io state is 'ready'. (receive CID_RES from server)
 
   }
 
@@ -1172,10 +1171,10 @@ export class IOCore extends EventEmitter {
    */
   getStateName() {
     //state <number>
-    //value of constant STATES.NAME < number >
-    //type of constant STATES.NAME name < string uppercase >
+    //value of constant STATE.NAME < number >
+    //type of constant STATE.NAME name < string uppercase >
     //stateName,eventName <string lowercase>
-    return (STATES[this.state]).toLowerCase()
+    return (STATE[this.state]).toLowerCase()
   }
 
   /**
@@ -1203,14 +1202,14 @@ export class IOCore extends EventEmitter {
    *   보통 이벤트 이름과 동일하게 적거나 이벤트 상황 안내문을 넣는다.
    */
   stateChange(state, emitEventAndMessage) {
-    // STATES constant name <string> upperCase
+    // STATE constant name <string> upperCase
     // eventName and .stateName <string> lowerCase
     // .state <number>
     // console.log('### stateChange reason:', emitEventAndMessage )
     let eventName = state.toLowerCase()
-    this.state = STATES[state.toUpperCase()] // state: number
+    this.state = STATE[state.toUpperCase()] // state: number
 
-    if (emitEventAndMessage){
+    if (emitEventAndMessage) {
       this.emit(eventName, emitEventAndMessage)
     }
 

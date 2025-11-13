@@ -81,7 +81,7 @@ export class Server extends EventEmitter {
 
     this.wss.once('listening', () => {
       this.port = this.wss.address().port;
-      console.log('wss server bound port:',  this.port );
+      // console.log('wss server bound port:',  this.port );
       this.listeningServerCount++;
       if (this.listeningServerCount === this.serverCountToListen) {
         this.emit('ready');
@@ -97,7 +97,7 @@ export class Server extends EventEmitter {
     })
 
     this.wss.on('close', () => {
-      console.log('### WS server is closed.')
+      // console.log('### WS server is closed.')
     })
 
     this.wss.on('connection', (ws, req) => {
@@ -118,10 +118,10 @@ export class Server extends EventEmitter {
           process.exit()
         }
       }).on('close', () => {
-        console.log('### congsocket server is closed.')
+        // console.log('### congsocket server is closed.')
       }).listen(this.congPort, () => {
         this.congPort = this.congServer.address().port;
-        console.log('congsocket server bound port:', this.congPort );
+        // console.log('congsocket server bound port:', this.congPort );
         this.listeningServerCount++;
         if (this.listeningServerCount === this.serverCountToListen) {
           this.emit('ready');
@@ -156,7 +156,7 @@ export class Server extends EventEmitter {
             return
           }
           if( api.commands.includes( req.topic )){
-            console.log('server api req', req )
+            // console.log('server api req', req )
             await api.request(remote, req)
           }else{
             remote.response(req.mid, STATUS.ERROR, "UNKNOWN_COMMAND");
@@ -186,7 +186,7 @@ export class Server extends EventEmitter {
       })
     }
     this.apiNames.add(target)
-    console.log(`[API registed: ${target} ] accept commands: ${api.commands}`)
+    // console.log(`[API registed: ${target} ] accept commands: ${api.commands}`)
     return this
   }
 
@@ -226,7 +226,7 @@ export class Server extends EventEmitter {
 
     if (this.congServer) {
       this.congServer.close((err) => {
-        if (err) console.error('congServer close error', err)
+        // if (err) console.error('congServer close error', err)
         // console.log('cong server closed.')
         onClosed()
       })
