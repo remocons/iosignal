@@ -1,5 +1,5 @@
 import { IOCore } from "./IOCore.js"
-import { STATE } from "../common/constants.js";
+import { SIZE_LIMIT } from "../common/constants.js";
 import { pack, CongRx } from './CongPacket.js'
 import net from 'net'
 
@@ -30,13 +30,11 @@ export class IOCongSocket extends IOCore {
 
 
 
-  keepAlive() {
+  keepConnection() {
     if (!this.autoReconnect) return;
     // Reconnect only if the socket is fully destroyed and the state is closed.
     if ((!this.socket || this.socket.destroyed)) {
       this.open();
-    }else{
-      this.ping();
     }
   }
 

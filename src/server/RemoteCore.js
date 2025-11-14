@@ -49,9 +49,12 @@ export class RemoteCore {
   setState(state) {
     this.state = state
     if (serverOption.debug.showAuthInfo) {
-      state = state + ":" + STATE[ state] 
-      this.stateLog.push( state  )
-      console.log(this.stateLog.join('>'))
+      this.stateLog.push(  state + ":" + STATE[ state]   )
+      if( state == STATE.AUTH_ACK){
+        console.log('[auth success]', this.cid, this.stateLog.join('>'))
+      }else if( state == STATE.AUTH_FAIL){
+        console.log('[auth_fail]',this.stateLog.join('>'))
+      }
     }
   }
 

@@ -265,13 +265,15 @@ export class IOCore extends EventEmitter {
   }
 
   /**
-   * The core keep-alive logic. It checks if auto-reconnect is enabled.
-   * The actual check for the socket's state is implemented in the child classes.
+   * The core keep-alive logic. 
+   * The specific logic for checking the socket's state and reconnecting
+   * is implemented keepConnection() in the child classes (IOWS, IOCongSocket, etc.).
    */
   keepAlive() {
-    if (!this.autoReconnect) return;
-    // The specific logic for checking the socket's state and reconnecting
-    // is implemented in the child classes (IOWS, IOCongSocket, etc.).
+    this.keepConnection();
+    if( Date.now() - this.lastTxRxTime > SIZE_LIMIT.CLIENT_PING_PERIOD ){
+      this.ping();
+    }
   }
 
   /**

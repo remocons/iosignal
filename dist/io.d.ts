@@ -170,8 +170,9 @@ declare class IOCore extends EventEmitter<string | symbol, any> {
      */
     destroy(): void;
     /**
-     * The core keep-alive logic. It checks if auto-reconnect is enabled.
-     * The actual check for the socket's state is implemented in the child classes.
+     * The core keep-alive logic.
+     * The specific logic for checking the socket's state and reconnecting
+     * is implemented keepConnection() in the child classes (IOWS, IOCongSocket, etc.).
      */
     keepAlive(): void;
     /**
@@ -461,6 +462,10 @@ declare class IO extends IOCore {
      * Pings the server when the browser tab becomes visible.
      */
     browserVisiblePing(): void;
+    /**
+     * Keeps the connection alive by re-connecting if closed.
+     */
+    keepConnection(): void;
     /**
      * Creates a new WebSocket connection.
      * @param {string} url - The WebSocket URL to connect to.

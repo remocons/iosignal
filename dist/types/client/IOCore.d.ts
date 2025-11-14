@@ -167,8 +167,9 @@ export class IOCore extends EventEmitter<string | symbol, any> {
      */
     destroy(): void;
     /**
-     * The core keep-alive logic. It checks if auto-reconnect is enabled.
-     * The actual check for the socket's state is implemented in the child classes.
+     * The core keep-alive logic.
+     * The specific logic for checking the socket's state and reconnecting
+     * is implemented keepConnection() in the child classes (IOWS, IOCongSocket, etc.).
      */
     keepAlive(): void;
     /**

@@ -13,7 +13,7 @@ import require$$2, { networkInterfaces } from 'os';
 import require$$0$1 from 'buffer';
 import { memoryUsage } from 'process';
 
-var version$1 = "4.5.0";
+var version$1 = "4.6.0";
 var pkg = {
 	version: version$1};
 
@@ -437,6 +437,7 @@ for (let c in ENC_MODE) { ENC_MODE[ENC_MODE[c]] = c; }
  * @property {number} TAG_LEN1
  * @property {number} TAG_LEN2
  * @property {number} CONNECTION_CHECKER_PERIOD
+ * @property {number} CLIENT_PING_PERIOD
  * @property {number} PROMISE_TIMEOUT
  * @property {number} DID
  * @property {number} CID
@@ -444,7 +445,8 @@ for (let c in ENC_MODE) { ENC_MODE[ENC_MODE[c]] = c; }
 const SIZE_LIMIT = {
   TAG_LEN1: 255,
   TAG_LEN2: 65535,
-  CONNECTION_CHECKER_PERIOD: 30000,
+  CONNECTION_CHECKER_PERIOD: 3000,
+  CLIENT_PING_PERIOD: 40000,
   PROMISE_TIMEOUT: 5000,
   DID: 8,
   CID: 12
@@ -1030,13 +1032,15 @@ class IOCore extends EventEmitter {
   }
 
   /**
-   * The core keep-alive logic. It checks if auto-reconnect is enabled.
-   * The actual check for the socket's state is implemented in the child classes.
+   * The core keep-alive logic. 
+   * The specific logic for checking the socket's state and reconnecting
+   * is implemented keepConnection() in the child classes (IOWS, IOCongSocket, etc.).
    */
   keepAlive() {
-    if (!this.autoReconnect) return;
-    // The specific logic for checking the socket's state and reconnecting
-    // is implemented in the child classes (IOWS, IOCongSocket, etc.).
+    this.keepConnection();
+    if( Date.now() - this.lastTxRxTime > SIZE_LIMIT.CLIENT_PING_PERIOD ){
+      this.ping();
+    }
   }
 
   /**
@@ -2146,13 +2150,11 @@ class IOCongSocket extends IOCore {
 
 
 
-  keepAlive() {
+  keepConnection() {
     if (!this.autoReconnect) return;
     // Reconnect only if the socket is fully destroyed and the state is closed.
     if ((!this.socket || this.socket.destroyed)) {
       this.open();
-    }else {
-      this.ping();
     }
   }
 
@@ -7574,16 +7576,15 @@ class IOWS extends IOCore {
     super.close();
   }
 
-
-  keepAlive() {
+  keepConnection() {
     if (!this.autoReconnect) return;
     // Reconnect only if the socket is closed and the state reflects that.
     if ((!this.socket || this.socket.readyState === WebSocket.CLOSED) ) {
       this.open();
-    }else {
-      this.ping();
     }
   }
+
+
 
   createConnection(url) {
     // node WebSocket
@@ -7723,9 +7724,12 @@ class RemoteCore {
   setState(state) {
     this.state = state;
     if (serverOption.debug.showAuthInfo) {
-      state = state + ":" + STATE[ state]; 
-      this.stateLog.push( state  );
-      console.log(this.stateLog.join('>'));
+      this.stateLog.push(  state + ":" + STATE[ state]   );
+      if( state == STATE.AUTH_ACK){
+        console.log('[auth success]', this.cid, this.stateLog.join('>'));
+      }else if( state == STATE.AUTH_FAIL){
+        console.log('[auth_fail]',this.stateLog.join('>'));
+      }
     }
   }
 

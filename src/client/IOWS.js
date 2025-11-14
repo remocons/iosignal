@@ -1,5 +1,5 @@
 import { IOCore } from "./IOCore.js";
-import { STATE } from "../common/constants.js";
+import { SIZE_LIMIT } from "../common/constants.js";
 import { WebSocket } from "ws";
 
 //  Node.js 'ws' websocket
@@ -24,16 +24,15 @@ export class IOWS extends IOCore {
     super.close();
   }
 
-
-  keepAlive() {
+  keepConnection() {
     if (!this.autoReconnect) return;
     // Reconnect only if the socket is closed and the state reflects that.
     if ((!this.socket || this.socket.readyState === WebSocket.CLOSED) ) {
       this.open();
-    }else{
-      this.ping();
     }
   }
+
+
 
   createConnection(url) {
     // node WebSocket

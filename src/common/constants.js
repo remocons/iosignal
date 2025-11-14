@@ -56,6 +56,7 @@ for (let c in ENC_MODE) { ENC_MODE[ENC_MODE[c]] = c }
  * @property {number} TAG_LEN1
  * @property {number} TAG_LEN2
  * @property {number} CONNECTION_CHECKER_PERIOD
+ * @property {number} CLIENT_PING_PERIOD
  * @property {number} PROMISE_TIMEOUT
  * @property {number} DID
  * @property {number} CID
@@ -63,7 +64,8 @@ for (let c in ENC_MODE) { ENC_MODE[ENC_MODE[c]] = c }
 export const SIZE_LIMIT = {
   TAG_LEN1: 255,
   TAG_LEN2: 65535,
-  CONNECTION_CHECKER_PERIOD: 30000,
+  CONNECTION_CHECKER_PERIOD: 3000,
+  CLIENT_PING_PERIOD: 40000,
   PROMISE_TIMEOUT: 5000,
   DID: 8,
   CID: 12

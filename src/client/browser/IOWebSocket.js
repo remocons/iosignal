@@ -106,13 +106,11 @@ export default class IO extends IOCore {
   /**
    * Keeps the connection alive by re-connecting if closed.
    */
-  keepAlive() {
+  keepConnection() {
     if (!this.autoReconnect) return;
     // Reconnect only if the socket is closed and the state reflects that.
     if ((!this.socket || this.socket.readyState === WebSocket.CLOSED) ) {
       this.open();
-    }else{
-      this.ping();
     }
   }
 

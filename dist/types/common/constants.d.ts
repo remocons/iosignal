@@ -43,6 +43,7 @@ export type SIZE_LIMIT = {
     TAG_LEN1: number;
     TAG_LEN2: number;
     CONNECTION_CHECKER_PERIOD: number;
+    CLIENT_PING_PERIOD: number;
     PROMISE_TIMEOUT: number;
     DID: number;
     CID: number;
@@ -51,6 +52,7 @@ export namespace SIZE_LIMIT {
     let TAG_LEN1: number;
     let TAG_LEN2: number;
     let CONNECTION_CHECKER_PERIOD: number;
+    let CLIENT_PING_PERIOD: number;
     let PROMISE_TIMEOUT: number;
     let DID: number;
     let CID: number;

@@ -49,6 +49,10 @@ export default class IO extends IOCore {
      */
     browserVisiblePing(): void;
     /**
+     * Keeps the connection alive by re-connecting if closed.
+     */
+    keepConnection(): void;
+    /**
      * Creates a new WebSocket connection.
      * @param {string} url - The WebSocket URL to connect to.
      */
