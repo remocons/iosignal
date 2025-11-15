@@ -13,7 +13,7 @@ import require$$2, { networkInterfaces } from 'os';
 import require$$0$1 from 'buffer';
 import { memoryUsage } from 'process';
 
-var version$1 = "4.6.0";
+var version$1 = "4.6.1";
 var pkg = {
 	version: version$1};
 
