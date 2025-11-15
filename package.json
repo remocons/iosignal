@@ -20,9 +20,6 @@
     "build": "rollup -c && npm run build:types",
     "build:types": "tsc --project tsconfig.json"
   },
-  "engines": {
-    "node": ">=22.0.0"
-  },
   "author": {
     "name": "Taeo Lee",
     "email": "sixgen@gmail.com"
