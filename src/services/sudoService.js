@@ -1,4 +1,4 @@
-import { STATUS } from './api_constant.js'
+import { STATUS } from './constant.js'
 
 export const commands = [
   'cid', 'remotes', 'clients',
@@ -14,7 +14,7 @@ export function checkPermission(remote) {
   return (remote.level >= MIN_LEVEL) ? true : false;
 }
 
-export async function request(remote, req) {
+export async function call(remote, req) {
   let result;
   let status = 0;
   try {
@@ -70,7 +70,7 @@ export async function request(remote, req) {
       }
     } else {
       status = STATUS.ERROR;
-      result = "api sudo: no such a cmd: " + cmd
+      result = "service sudo: no such a cmd: " + cmd
     }
 
     remote.response(req.mid, status, result)

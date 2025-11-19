@@ -119,7 +119,7 @@ export class Manager {
     }
 
 
-    if (remote.uid && this.server.apiNames.has('account')) {
+    if (remote.uid && this.server.serviceNames.has('account')) {
       let req = { topic: 'detachUserRemote' }
       req.args = ['caller:manager.removeRemote']
       this.server.emit('account', remote, req)

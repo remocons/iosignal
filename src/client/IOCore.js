@@ -900,7 +900,7 @@ export class IOCore extends EventEmitter {
     if (!storeName || args.length == 0) {
       return Promise.reject(new Error('set need storeName and value)'))
     }
-    return this.req('store', 'set', storeName, ...args)
+    return this.call('store', 'set', storeName, ...args)
   }
 
   /**
@@ -912,26 +912,26 @@ export class IOCore extends EventEmitter {
     if (!storeName) {
       return Promise.reject(new Error('store get need storeName)'))
     }
-    let pack = await this.req('store', 'get', storeName)
+    let pack = await this.call('store', 'get', storeName)
     let { $ } = MBP.unpack(pack.body)
     return $
   }
 
 
   /**
-   * Sends a request to a target and topic.(remote api call)
-   * @param {string} target - The target(api name) of the request.
-   * @param {string} topic - The topic(api function name) of the request.
+   * Sends a request to a target and topic.(remote service call)
+   * @param {string} target - The target(service name) of the request.
+   * @param {string} topic - The topic(service function name) of the request.
    * @param {...any} args - Optional arguments for the request.
    * @returns {Promise<any>}
    */
-  req(target, topic, ...args) {
+  call(target, topic, ...args) {
     if (!target || !topic)
       return Promise.reject(new Error('request need target and topic)'))
     let sigPack;
     if (args.length > 0) {
       sigPack = MBP.pack(
-        MBP.MB('#MsgType', '8', IOMsg.REQUEST),
+        MBP.MB('#MsgType', '8', IOMsg.CALL),
         MBP.MB('mid', '16', ++this.mid),
         MBP.MB('target', target),
         MBP.MB('topic', topic),
@@ -939,7 +939,7 @@ export class IOCore extends EventEmitter {
       )
     } else {
       sigPack = MBP.pack(
-        MBP.MB('#MsgType', '8', IOMsg.REQUEST),
+        MBP.MB('#MsgType', '8', IOMsg.CALL),
         MBP.MB('mid', '16', ++this.mid),
         MBP.MB('target', target),
         MBP.MB('topic', topic)

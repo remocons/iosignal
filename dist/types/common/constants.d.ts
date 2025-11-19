@@ -97,7 +97,7 @@ export type IOMsg = {
     SET: number;
     RESPONSE_CODE: number;
     RESPONSE_MBP: number;
-    REQUEST: number;
+    CALL: number;
     RESPONSE: number;
     FLOW_MODE: number;
     WAIT: number;
@@ -132,24 +132,14 @@ export namespace IOMsg {
     export let IAM: number;
     export let IAM_RES: number;
     export let SET: number;
-    export let RESPONSE_CODE: number;
     export let RESPONSE_MBP: number;
-    export let REQUEST: number;
-    export let RESPONSE: number;
+    export let CALL: number;
     export let FLOW_MODE: number;
     export let WAIT: number;
     export let RESUME: number;
     export let TIME_OUT: number;
     export let OVER_SIZE: number;
     export let OVER_FLOW: number;
-}
-export type API_TYPE = {
-    REQUEST_RESPONSE: string;
-    ONE_WAY: string;
-};
-export namespace API_TYPE {
-    let REQUEST_RESPONSE: string;
-    let ONE_WAY: string;
 }
 export type STATUS = {
     OK: number;

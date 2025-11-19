@@ -3,13 +3,13 @@ import EventEmitter from 'events'
 import { WebSocketServer } from 'ws'
 import { Manager } from './Manager.js'
 import { serverOption } from './serverOption.js'
-import { STATUS } from '../api/api_constant.js'
+import { STATUS } from '../services/constant.js'
 
 export class Server extends EventEmitter {
 
   constructor(options, authManager) {
     super();
-    this.apiNames = new Set()
+    this.serviceNames = new Set()
     this.wss = {};
     this.port = null;
     this.congPort = null;
@@ -130,63 +130,63 @@ export class Server extends EventEmitter {
   }
 
 /**
- * API register.
- * target:  api_name <string>
- * api: api_module <function module|class instance>
+ * RPC service register.
+ * target:  service_name <string>
+ * service: service_module <function module|class instance>
  * return this
  */
-  api(target, api) {
+  attach(target, service_module) {
 
     if( typeof target !== 'string'){
-      throw new Error(`api( target ,api ) target name is not a string.`)
+      throw new Error(`service( target ,service ) target name is not a string.`)
     }
-    if (!api.checkPermission || typeof api.checkPermission != 'function') {
-      throw new Error(`API ${target} : no checkPermission or not a function.`)
+    if (!service_module.checkPermission || typeof service_module.checkPermission != 'function') {
+      throw new Error(`Service ${target} : no checkPermission or not a function.`)
     }
-    if(!api.commands || !Array.isArray(api.commands) ){
-      throw new Error(`API ${target} : no commands or !Array.`)
+    if(!service_module.commands || !Array.isArray(service_module.commands) ){
+      throw new Error(`Service ${target} : no commands or !Array.`)
     }
     
-    // API TYPE 1. single request() function.
-    if ( api.request && typeof api.request == 'function' ) {
+    // Service TYPE 1. single call() function.
+    if ( service_module.call && typeof service_module.call == 'function' ) {
       this.on(target, async (remote, req) => {
         try {
-          if (!api.checkPermission(remote, req)) {
+          if (!service_module.checkPermission(remote, req)) {
             remote.response(req.mid, STATUS.ERROR, "NO_PERMISSION.")
             return
           }
-          if( api.commands.includes( req.topic )){
-            // console.log('server api req', req )
-            await api.request(remote, req)
+          if( service_module.commands.includes( req.topic )){
+            // console.log('server service_module req', req )
+            await service_module.call(remote, req)
           }else{
             remote.response(req.mid, STATUS.ERROR, "UNKNOWN_COMMAND");
           }
         } catch (error) {
-          console.error(`Unhandled API Error in target [${target}]:`, error);
+          console.error(`Unhandled Service Error in target [${target}]:`, error);
           remote.response(req.mid, STATUS.ERROR, "INTERNAL_SERVER_ERROR");
         }
       })
     } else {
-      // API TYPE 2. multiple functions.
+      // Service TYPE 2. multiple functions.
       this.on(target, async (remote, req) => {
         try {
-          if (!api.checkPermission(remote, req)) {
+          if (!service_module.checkPermission(remote, req)) {
             remote.response(req.mid, STATUS.ERROR, "NO_PERMISSION.")
             return
           }
-          if( api.commands.includes( req.topic )){
-            await api[req.topic](remote, req)
+          if( service_module.commands.includes( req.topic )){
+            await service_module[req.topic](remote, req)
           }else{
             remote.response(req.mid, STATUS.ERROR, "UNKNOWN_COMMAND");
           }
         } catch (error) {
-          console.error(`Unhandled API Error in target [${target}]:`, error);
+          console.error(`Unhandled Service Error in target [${target}]:`, error);
           remote.response(req.mid, STATUS.ERROR, "INTERNAL_SERVER_ERROR");
         }
       })
     }
-    this.apiNames.add(target)
-    // console.log(`[API registed: ${target} ] accept commands: ${api.commands}`)
+    this.serviceNames.add(target)
+    // console.log(`[Service attached: ${target} ] accept commands: ${service_module.commands}`)
     return this
   }
 
@@ -196,8 +196,8 @@ export class Server extends EventEmitter {
       this.manager.close()
     }
 
-    this.apiNames.forEach(v => this.removeAllListeners(v))
-    this.apiNames.clear()
+    this.serviceNames.forEach(v => this.removeAllListeners(v))
+    this.serviceNames.clear()
 
     let serverCount = 0;
     if (this.wss) serverCount++;

@@ -116,7 +116,7 @@ for (let c in PAYLOAD_TYPE) { PAYLOAD_TYPE[PAYLOAD_TYPE[c]] = c }
  * @property {number} SET
  * @property {number} RESPONSE_CODE
  * @property {number} RESPONSE_MBP
- * @property {number} REQUEST
+ * @property {number} CALL
  * @property {number} RESPONSE
  * @property {number} FLOW_MODE
  * @property {number} WAIT
@@ -181,11 +181,10 @@ export let IOMsg = {
 
   //.. 
   SET: 0xDB,   //
-  RESPONSE_CODE: 0xDC,
+  // RESPONSE_CODE: 0xDC,
   RESPONSE_MBP: 0xDD,
-
-  REQUEST: 0xDE, //client public
-  RESPONSE: 0xDF,
+  CALL: 0xDE, // rpc call
+  // RESPONSE: 0xDF,
   // ~DF
 
 
@@ -203,22 +202,13 @@ export let IOMsg = {
 for (let c in IOMsg) { IOMsg[IOMsg[c]] = c }
 // console.log( IOMsg );
 
-/**
- * @typedef {object} API_TYPE
- * @property {string} REQUEST_RESPONSE
- * @property {string} ONE_WAY
- */
-export const API_TYPE = {
-  'REQUEST_RESPONSE': 'requet_response',
-  'ONE_WAY': 'one_way'
-}
 
 /**
  * @typedef {object} STATUS
  * @property {number} OK
  * @property {number} ERROR
  */
-// api response status code
+// service response status code
 export const STATUS = {
   OK: 0,
   //0~127: success

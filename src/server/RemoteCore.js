@@ -265,15 +265,15 @@ export class RemoteCore {
           break;
 
 
-        case IOMsg.REQUEST: //api request
+        case IOMsg.CALL: //service request
           try {
             let req = MBP.unpack(message)
             if (req) {
               if (!req.target || !req.topic) return
-              if (this.manager.server.apiNames.has(req.target)) {
+              if (this.manager.server.serviceNames.has(req.target)) {
                 this.manager.server.emit(req.target, this, req)
               } else {
-                // console.log('UnKnown API req: ', req.target)
+                // console.log('UnKnown Service call: ', req.target)
               }
             }
           } catch (e) {

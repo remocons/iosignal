@@ -13,7 +13,7 @@ import require$$2, { networkInterfaces } from 'os';
 import require$$0$1 from 'buffer';
 import { memoryUsage } from 'process';
 
-var version$1 = "4.6.1";
+var version$1 = "4.7.0";
 var pkg = {
 	version: version$1};
 
@@ -497,7 +497,7 @@ for (let c in PAYLOAD_TYPE) { PAYLOAD_TYPE[PAYLOAD_TYPE[c]] = c; }
  * @property {number} SET
  * @property {number} RESPONSE_CODE
  * @property {number} RESPONSE_MBP
- * @property {number} REQUEST
+ * @property {number} CALL
  * @property {number} RESPONSE
  * @property {number} FLOW_MODE
  * @property {number} WAIT
@@ -562,11 +562,10 @@ let IOMsg = {
 
   //.. 
   SET: 0xDB,   //
-  RESPONSE_CODE: 0xDC,
+  // RESPONSE_CODE: 0xDC,
   RESPONSE_MBP: 0xDD,
-
-  REQUEST: 0xDE, //client public
-  RESPONSE: 0xDF,
+  CALL: 0xDE, // rpc call
+  // RESPONSE: 0xDF,
   // ~DF
 
 
@@ -584,22 +583,13 @@ let IOMsg = {
 for (let c in IOMsg) { IOMsg[IOMsg[c]] = c; }
 // console.log( IOMsg );
 
-/**
- * @typedef {object} API_TYPE
- * @property {string} REQUEST_RESPONSE
- * @property {string} ONE_WAY
- */
-const API_TYPE = {
-  'REQUEST_RESPONSE': 'requet_response',
-  'ONE_WAY': 'one_way'
-};
 
 /**
  * @typedef {object} STATUS
  * @property {number} OK
  * @property {number} ERROR
  */
-// api response status code
+// service response status code
 const STATUS$1 = {
   OK: 0,
   //0~127: success
@@ -1662,7 +1652,7 @@ class IOCore extends EventEmitter {
     if (!storeName || args.length == 0) {
       return Promise.reject(new Error('set need storeName and value)'))
     }
-    return this.req('store', 'set', storeName, ...args)
+    return this.call('store', 'set', storeName, ...args)
   }
 
   /**
@@ -1674,26 +1664,26 @@ class IOCore extends EventEmitter {
     if (!storeName) {
       return Promise.reject(new Error('store get need storeName)'))
     }
-    let pack = await this.req('store', 'get', storeName);
+    let pack = await this.call('store', 'get', storeName);
     let { $ } = M$1.unpack(pack.body);
     return $
   }
 
 
   /**
-   * Sends a request to a target and topic.(remote api call)
-   * @param {string} target - The target(api name) of the request.
-   * @param {string} topic - The topic(api function name) of the request.
+   * Sends a request to a target and topic.(remote service call)
+   * @param {string} target - The target(service name) of the request.
+   * @param {string} topic - The topic(service function name) of the request.
    * @param {...any} args - Optional arguments for the request.
    * @returns {Promise<any>}
    */
-  req(target, topic, ...args) {
+  call(target, topic, ...args) {
     if (!target || !topic)
       return Promise.reject(new Error('request need target and topic)'))
     let sigPack;
     if (args.length > 0) {
       sigPack = M$1.pack(
-        M$1.MB('#MsgType', '8', IOMsg.REQUEST),
+        M$1.MB('#MsgType', '8', IOMsg.CALL),
         M$1.MB('mid', '16', ++this.mid),
         M$1.MB('target', target),
         M$1.MB('topic', topic),
@@ -1701,7 +1691,7 @@ class IOCore extends EventEmitter {
       );
     } else {
       sigPack = M$1.pack(
-        M$1.MB('#MsgType', '8', IOMsg.REQUEST),
+        M$1.MB('#MsgType', '8', IOMsg.CALL),
         M$1.MB('mid', '16', ++this.mid),
         M$1.MB('target', target),
         M$1.MB('topic', topic)
@@ -7938,15 +7928,15 @@ class RemoteCore {
           break;
 
 
-        case IOMsg.REQUEST: //api request
+        case IOMsg.CALL: //service request
           try {
             let req = M$1.unpack(message);
             if (req) {
               if (!req.target || !req.topic) return
-              if (this.manager.server.apiNames.has(req.target)) {
+              if (this.manager.server.serviceNames.has(req.target)) {
                 this.manager.server.emit(req.target, this, req);
               } else {
-                // console.log('UnKnown API req: ', req.target)
+                // console.log('UnKnown Service call: ', req.target)
               }
             }
           } catch (e) {
@@ -8657,7 +8647,7 @@ class Manager {
     }
 
 
-    if (remote.uid && this.server.apiNames.has('account')) {
+    if (remote.uid && this.server.serviceNames.has('account')) {
       let req = { topic: 'detachUserRemote' };
       req.args = ['caller:manager.removeRemote'];
       this.server.emit('account', remote, req);
@@ -8989,7 +8979,7 @@ class Server extends require$$0$3 {
 
   constructor(options, authManager) {
     super();
-    this.apiNames = new Set();
+    this.serviceNames = new Set();
     this.wss = {};
     this.port = null;
     this.congPort = null;
@@ -9110,63 +9100,63 @@ class Server extends require$$0$3 {
   }
 
 /**
- * API register.
- * target:  api_name <string>
- * api: api_module <function module|class instance>
+ * RPC service register.
+ * target:  service_name <string>
+ * service: service_module <function module|class instance>
  * return this
  */
-  api(target, api) {
+  attach(target, service_module) {
 
     if( typeof target !== 'string'){
-      throw new Error(`api( target ,api ) target name is not a string.`)
+      throw new Error(`service( target ,service ) target name is not a string.`)
     }
-    if (!api.checkPermission || typeof api.checkPermission != 'function') {
-      throw new Error(`API ${target} : no checkPermission or not a function.`)
+    if (!service_module.checkPermission || typeof service_module.checkPermission != 'function') {
+      throw new Error(`Service ${target} : no checkPermission or not a function.`)
     }
-    if(!api.commands || !Array.isArray(api.commands) ){
-      throw new Error(`API ${target} : no commands or !Array.`)
+    if(!service_module.commands || !Array.isArray(service_module.commands) ){
+      throw new Error(`Service ${target} : no commands or !Array.`)
     }
     
-    // API TYPE 1. single request() function.
-    if ( api.request && typeof api.request == 'function' ) {
+    // Service TYPE 1. single call() function.
+    if ( service_module.call && typeof service_module.call == 'function' ) {
       this.on(target, async (remote, req) => {
         try {
-          if (!api.checkPermission(remote, req)) {
+          if (!service_module.checkPermission(remote, req)) {
             remote.response(req.mid, STATUS.ERROR, "NO_PERMISSION.");
             return
           }
-          if( api.commands.includes( req.topic )){
-            // console.log('server api req', req )
-            await api.request(remote, req);
+          if( service_module.commands.includes( req.topic )){
+            // console.log('server service_module req', req )
+            await service_module.call(remote, req);
           }else {
             remote.response(req.mid, STATUS.ERROR, "UNKNOWN_COMMAND");
           }
         } catch (error) {
-          console.error(`Unhandled API Error in target [${target}]:`, error);
+          console.error(`Unhandled Service Error in target [${target}]:`, error);
           remote.response(req.mid, STATUS.ERROR, "INTERNAL_SERVER_ERROR");
         }
       });
     } else {
-      // API TYPE 2. multiple functions.
+      // Service TYPE 2. multiple functions.
       this.on(target, async (remote, req) => {
         try {
-          if (!api.checkPermission(remote, req)) {
+          if (!service_module.checkPermission(remote, req)) {
             remote.response(req.mid, STATUS.ERROR, "NO_PERMISSION.");
             return
           }
-          if( api.commands.includes( req.topic )){
-            await api[req.topic](remote, req);
+          if( service_module.commands.includes( req.topic )){
+            await service_module[req.topic](remote, req);
           }else {
             remote.response(req.mid, STATUS.ERROR, "UNKNOWN_COMMAND");
           }
         } catch (error) {
-          console.error(`Unhandled API Error in target [${target}]:`, error);
+          console.error(`Unhandled Service Error in target [${target}]:`, error);
           remote.response(req.mid, STATUS.ERROR, "INTERNAL_SERVER_ERROR");
         }
       });
     }
-    this.apiNames.add(target);
-    // console.log(`[API registed: ${target} ] accept commands: ${api.commands}`)
+    this.serviceNames.add(target);
+    // console.log(`[Service attached: ${target} ] accept commands: ${service_module.commands}`)
     return this
   }
 
@@ -9176,8 +9166,8 @@ class Server extends require$$0$3 {
       this.manager.close();
     }
 
-    this.apiNames.forEach(v => this.removeAllListeners(v));
-    this.apiNames.clear();
+    this.serviceNames.forEach(v => this.removeAllListeners(v));
+    this.serviceNames.clear();
 
     let serverCount = 0;
     if (this.wss) serverCount++;
@@ -9486,7 +9476,7 @@ class RedisKeyProvider {
     }
   }
 
-  //api_sudo call
+  //sudoService call
   async getAuthIdList() {
     let result = await this.redis.keys(DEVICE_PREFIX + '*');
     result = result.map(v => {
@@ -9501,7 +9491,7 @@ class RedisKeyProvider {
     return this.redis.hSet(DEVICE_PREFIX + id, { 'key': Base64hashKey, 'cid': cid, 'level': level })
   }
 
-  //api_sudo call
+  //sudoService call
   async delAuth(id) {
     return this.redis.del(DEVICE_PREFIX + id)
   }
@@ -9573,7 +9563,7 @@ function checkPermission$1(remote) {
 }
 
 /**
- * client api call example:  await io.req('reply','echo','hello')
+ * client api call example:  await io.call('reply','echo','hello')
  */
 async function echo(remote, req) {
   if (!req.args)
@@ -9583,7 +9573,7 @@ async function echo(remote, req) {
 }
 
 /**
- * client api call example:  await io.req('reply','date')
+ * client api call example:  await io.call('reply','date')
  */
 async function date(remote, req) {
   let r = new Date().toUTCString();
@@ -9591,14 +9581,14 @@ async function date(remote, req) {
 }
 
 /**
- * client api call example:  await io.req('reply','unixtime')
+ * client api call example:  await io.call('reply','unixtime')
  */
 async function unixtime(remote, req) {
   let r = Math.floor(Date.now() / 1000);
   remote.response(req.mid, STATUS.OK, r);
 }
 
-var api_reply = /*#__PURE__*/Object.freeze({
+var replyService = /*#__PURE__*/Object.freeze({
   __proto__: null,
   checkPermission: checkPermission$1,
   commands: commands$1,
@@ -9621,7 +9611,7 @@ function checkPermission(remote) {
   return (remote.level >= MIN_LEVEL$1) ? true : false;
 }
 
-async function request(remote, req) {
+async function call(remote, req) {
   let result;
   let status = 0;
   try {
@@ -9677,7 +9667,7 @@ async function request(remote, req) {
       }
     } else {
       status = STATUS.ERROR;
-      result = "api sudo: no such a cmd: " + cmd;
+      result = "service sudo: no such a cmd: " + cmd;
     }
 
     remote.response(req.mid, status, result);
@@ -9688,21 +9678,21 @@ async function request(remote, req) {
 
 }
 
-var api_sudo = /*#__PURE__*/Object.freeze({
+var sudoService = /*#__PURE__*/Object.freeze({
   __proto__: null,
+  call: call,
   checkPermission: checkPermission,
-  commands: commands,
-  request: request
+  commands: commands
 });
 
 /**
- * RedisAPI <IOSignal API>
+ * RedisService <IOSignal RPC Service>
  * 
  * iosignal 클라이언트의 redis 질의 요청을 받으면, 
  * redisClient 로 연결된 redis-server 에게 질의 후 결과를 되돌려 준다. 
  * 
  * client ex:  
- * await io.req('redis','hget','user:id' )
+ * await io.call('redis','hget','user:id' )
  * 
  */
 
@@ -9714,10 +9704,10 @@ const COMMANDS = [
   'sMembers', 'exists', 'sRem', 'del', 'keys', 'save'
 ];
 
-class RedisAPI {
+class RedisService {
   constructor(redisClient, _minLevel) {
     if (!redisClient) {
-      throw new Error("RedisAPI constructor: no redisClient")
+      throw new Error("RedisService constructor: no redisClient")
     }
     this.redisClient = redisClient;
     this.minLevel = _minLevel ? _minLevel : MIN_LEVEL;
@@ -9728,7 +9718,7 @@ class RedisAPI {
     return (remote.level >= this.minLevel) ? true : false;
   }
 
-  async request(remote, req) {
+  async call(remote, req) {
     let result;
     try {
       let cmd = req.topic;
@@ -9747,4 +9737,4 @@ class RedisAPI {
 
 const version = pkg.version;
 
-export { API_TYPE, tt as Boho, BohoAuth, CongRx, ENC_MODE, FileKeyProvider, FileLogger, IOWS as IO, IOCongSocket, IOMsg, M$1 as MBP, PAYLOAD_TYPE, RedisAPI, RedisKeyProvider, SIZE_LIMIT, STATE, STATUS$1 as STATUS, Server, StringKeyProvider, api_reply, api_sudo, delay, getIPv4HexString, getLocalAddress, getPayloadFromSignalPack, getSignalPack, isPrivateIP, numberWithCommas, pack, parsePayload, serverOption, version };
+export { tt as Boho, BohoAuth, CongRx, ENC_MODE, FileKeyProvider, FileLogger, IOWS as IO, IOCongSocket, IOMsg, M$1 as MBP, PAYLOAD_TYPE, RedisKeyProvider, RedisService, SIZE_LIMIT, STATE, STATUS$1 as STATUS, Server, StringKeyProvider, delay, getIPv4HexString, getLocalAddress, getPayloadFromSignalPack, getSignalPack, isPrivateIP, numberWithCommas, pack, parsePayload, replyService, serverOption, sudoService, version };

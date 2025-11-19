@@ -1,9 +1,9 @@
 
 /**
- * simple IOSignal API example.
+ * simple IOSignal RPC Service example.
  */
 
-import { STATUS } from './api_constant.js'
+import { STATUS } from './constant.js'
 export const commands = ['echo', 'date', 'unixtime'];
 
 const MIN_LEVEL = 0;
@@ -12,7 +12,7 @@ export function checkPermission(remote) {
 }
 
 /**
- * client api call example:  await io.req('reply','echo','hello')
+ * client api call example:  await io.call('reply','echo','hello')
  */
 export async function echo(remote, req) {
   if (!req.args)
@@ -22,7 +22,7 @@ export async function echo(remote, req) {
 }
 
 /**
- * client api call example:  await io.req('reply','date')
+ * client api call example:  await io.call('reply','date')
  */
 export async function date(remote, req) {
   let r = new Date().toUTCString()
@@ -30,7 +30,7 @@ export async function date(remote, req) {
 }
 
 /**
- * client api call example:  await io.req('reply','unixtime')
+ * client api call example:  await io.call('reply','unixtime')
  */
 export async function unixtime(remote, req) {
   let r = Math.floor(Date.now() / 1000)

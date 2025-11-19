@@ -1,14 +1,14 @@
 /**
- * RedisAPI <IOSignal API>
+ * RedisService <IOSignal RPC Service>
  * 
  * iosignal 클라이언트의 redis 질의 요청을 받으면, 
  * redisClient 로 연결된 redis-server 에게 질의 후 결과를 되돌려 준다. 
  * 
  * client ex:  
- * await io.req('redis','hget','user:id' )
+ * await io.call('redis','hget','user:id' )
  * 
  */
-import { STATUS } from './api_constant.js'
+import { STATUS } from './constant.js'
 
 const MIN_LEVEL = 200;
 const COMMANDS = [
@@ -18,10 +18,10 @@ const COMMANDS = [
   'sMembers', 'exists', 'sRem', 'del', 'keys', 'save'
 ]
 
-export class RedisAPI {
+export class RedisService {
   constructor(redisClient, _minLevel) {
     if (!redisClient) {
-      throw new Error("RedisAPI constructor: no redisClient")
+      throw new Error("RedisService constructor: no redisClient")
     }
     this.redisClient = redisClient
     this.minLevel = _minLevel ? _minLevel : MIN_LEVEL
@@ -32,7 +32,7 @@ export class RedisAPI {
     return (remote.level >= this.minLevel) ? true : false;
   }
 
-  async request(remote, req) {
+  async call(remote, req) {
     let result;
     try {
       let cmd = req.topic

@@ -20,7 +20,7 @@ export { FileKeyProvider } from './src/auth/key_providers/FileKeyProvider.js'
 export { RedisKeyProvider } from './src/auth/key_providers/RedisKeyProvider.js'
 export { StringKeyProvider } from './src/auth/key_providers/StringKeyProvider.js'
 
-// api
-export * as api_reply from './src/api/api_reply.js'
-export * as api_sudo from './src/api/api_sudo.js'
-export { RedisAPI } from './src/api/RedisAPI.js'
+// services
+export * as replyService from './src/services/replyService.js'
+export * as sudoService from './src/services/sudoService.js'
+export { RedisService } from './src/services/RedisService.js'

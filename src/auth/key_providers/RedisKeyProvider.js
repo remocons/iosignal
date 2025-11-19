@@ -20,7 +20,7 @@ export class RedisKeyProvider {
     }
   }
 
-  //api_sudo call
+  //sudoService call
   async getAuthIdList() {
     let result = await this.redis.keys(DEVICE_PREFIX + '*')
     result = result.map(v => {
@@ -35,7 +35,7 @@ export class RedisKeyProvider {
     return this.redis.hSet(DEVICE_PREFIX + id, { 'key': Base64hashKey, 'cid': cid, 'level': level })
   }
 
-  //api_sudo call
+  //sudoService call
   async delAuth(id) {
     return this.redis.del(DEVICE_PREFIX + id)
   }

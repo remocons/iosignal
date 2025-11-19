@@ -307,13 +307,13 @@ declare class IOCore extends EventEmitter<string | symbol, any> {
      */
     get(storeName: string): Promise<any>;
     /**
-     * Sends a request to a target and topic.(remote api call)
-     * @param {string} target - The target(api name) of the request.
-     * @param {string} topic - The topic(api function name) of the request.
+     * Sends a request to a target and topic.(remote service call)
+     * @param {string} target - The target(service name) of the request.
+     * @param {string} topic - The topic(service function name) of the request.
      * @param {...any} args - Optional arguments for the request.
      * @returns {Promise<any>}
      */
-    req(target: string, topic: string, ...args: any[]): Promise<any>;
+    call(target: string, topic: string, ...args: any[]): Promise<any>;
     /**
      * Subscribes to a channel or channels.
      * @param {string} tag - The tag(s) of the channel(s) to subscribe to (comma-separated).
