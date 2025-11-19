@@ -76,6 +76,3 @@ JS iosignal-examples 저장소 [[github](https://github.com/remocons/iosignal-ex
 ## 라이선스
 
 이 코드는 MIT 라이선스에 따라 배포됩니다.
-
-## IOSignal 서버 아키텍처
-![IOSignal](./docs/iosignal_architecture.png)
