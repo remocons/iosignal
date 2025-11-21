@@ -321,16 +321,10 @@ declare class IOCore extends EventEmitter<string | symbol, any> {
      */
     subscribe(tag: string): void;
     /**
-     * Subscribes to a channel or channels with a promise.
-     * @param {string} tag - The tag(s) of the channel(s) to subscribe to (comma-separated).
-     * @returns {Promise<any>}
-     * @throws {TypeError} If tag is not a string or exceeds length limit.
+     * Subscribes stored channels.
+     * called client state become 'ready'
      */
-    subscribe_promise(tag: string): Promise<any>;
-    /**
-     * Subscribes to channels stored in memory (local cache).
-     */
-    subscribe_memory_channels(): void;
+    subscribe_channels(): void;
     /**
      * Unsubscribes from a channel or channels.
      * @param {string} [tag=""] - The tag(s) of the channel(s) to unsubscribe from (comma-separated). If empty, unsubscribes from all.

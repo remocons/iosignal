@@ -187,6 +187,7 @@ export class Remote extends RemoteCore {
 
   // node.js server side remote.
   send(message, isBinary) {
+    // console.log(`<-S [${IOMsg[ message[0]]}]`)
     this.manager.txBytes += message.byteLength;
     this.socket.txCounter++;
     if (this.socketType === 'websocket') {

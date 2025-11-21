@@ -13,7 +13,7 @@ import require$$2, { networkInterfaces } from 'os';
 import require$$0$1 from 'buffer';
 import { memoryUsage } from 'process';
 
-var version$1 = "4.7.0";
+var version$1 = "4.8.0";
 var pkg = {
 	version: version$1};
 
@@ -1215,7 +1215,7 @@ class IOCore extends EventEmitter {
 
         // **IMPORTANT** change state before subscribe.
         this.stateChange('ready', 'cid_ready');
-        this.subscribe_memory_channels();  // tags registered by listen() or link().
+        this.subscribe_channels(); 
         break;
 
       case IOMsg.QUOTA_LEVEL:
@@ -1484,6 +1484,7 @@ class IOCore extends EventEmitter {
       console.log('## your maximum signalSize(bytes) is:', this.quota.signalSize);
       return
     }
+    // console.log(`C->[${IOMsg[ data[0]]}]`)
     this.socket_send(data);
   }
 
@@ -1710,14 +1711,6 @@ class IOCore extends EventEmitter {
   subscribe(tag) {
     if (typeof tag !== 'string') throw TypeError('tag should be string.')
     if (tag.length > SIZE_LIMIT.TAG_LEN1) throw TypeError('please check tag string length limit:' + SIZE_LIMIT.TAG_LEN1)
-    if (this.state !== STATE.READY) return
-
-    // subscribe 사용시,  사용 'ready' 이벤트시 메뉴얼 등록되므로 여기에 등록하면 2중 호출된다.
-    // 즉, channels 등록은 listen 같은 자동화 구독시만 사용. 
-    // let tagList = tag.split(',')
-    // tagList.forEach(tag => {
-    //   this.channels.add(tag)
-    // })
 
     try {
       let tagEncoded = encoder$1.encode(tag);
@@ -1727,47 +1720,27 @@ class IOCore extends EventEmitter {
           M$1.NB('8', tagEncoded.byteLength),
           tagEncoded]));
     } catch (error) { }
+
   }
 
-  /**
-   * Subscribes to a channel or channels with a promise.
-   * @param {string} tag - The tag(s) of the channel(s) to subscribe to (comma-separated).
-   * @returns {Promise<any>}
-   * @throws {TypeError} If tag is not a string or exceeds length limit.
-   */
-  subscribe_promise(tag) {
-    if (typeof tag !== 'string') throw TypeError('tag should be string.')
-    if (tag.length > SIZE_LIMIT.TAG_LEN2) throw TypeError('please check tag string length limit:' + SIZE_LIMIT.TAG_LEN2)
 
-    if (this.state !== STATE.READY) {
-      return Promise.reject('subscribe_promise:: connection is not ready')
-    }
+  /**
+   * Subscribes stored channels.
+   * called client state become 'ready'
+   */
+  subscribe_channels() {
+    if (this.state !== STATE.READY) return
+    if (this.channels.size == 0) return
+    let tag = Array.from(this.channels).join(',');
 
     try {
       let tagEncoded = encoder$1.encode(tag);
       this.send_enc_mode(
         Buffer$1.concat([
-          M$1.NB('8', IOMsg.SUBSCRIBE_REQ),
-          M$1.NB('16', ++this.mid),
-          M$1.NB('16', tagEncoded.byteLength),
+          M$1.NB('8', IOMsg.SUBSCRIBE),
+          M$1.NB('8', tagEncoded.byteLength),
           tagEncoded]));
-      return this.setMsgPromise(this.mid)
     } catch (error) { }
-  }
-
-  /**
-   * Subscribes to channels stored in memory (local cache).
-   */
-  subscribe_memory_channels() { //local cache . auto_resubscribe
-    if (this.channels.size == 0) return
-    let chList = Array.from(this.channels).join(',');
-
-    this.subscribe_promise(chList)
-      .then((res) => {
-        // console.log('>> SUBSCRIBE_REQ result', res ) // return code == map.size
-      }).catch((e) => {
-        console.log('>> SUBSCRIBE FAIL:', e);
-      });
 
   }
 
@@ -8333,6 +8306,7 @@ class Remote extends RemoteCore {
 
   // node.js server side remote.
   send(message, isBinary) {
+    // console.log(`<-S [${IOMsg[ message[0]]}]`)
     this.manager.txBytes += message.byteLength;
     this.socket.txCounter++;
     if (this.socketType === 'websocket') {
