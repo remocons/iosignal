@@ -246,6 +246,7 @@ export class IOCore extends EventEmitter {
  stop() {
    this.autoReconnect = false;
    this.close();
+   this.cid = ''
    this.stateChange('stop','stop');
   }
 
@@ -567,7 +568,7 @@ export class IOCore extends EventEmitter {
               }
               let oneString = decoder.decode(payloadStringWithoutNull)
               if (tag.indexOf('@') === 0) this.emit('@', tag, oneString)
-              if (tag !== '@') {
+              else {
                 this.emit(tag, tag, oneString)
                 this.emit('message', tag, oneString)
               }
@@ -575,7 +576,7 @@ export class IOCore extends EventEmitter {
 
             case PAYLOAD_TYPE.BINARY:
               if (tag.indexOf('@') === 0) this.emit('@', tag, payloadBuffer)
-              if (tag !== '@') {
+              else {
                 this.emit(tag, tag, payloadBuffer)
                 this.emit('message', tag, payloadBuffer)
               }
@@ -585,7 +586,7 @@ export class IOCore extends EventEmitter {
               let oneObjectBuffer = decoder.decode(payloadBuffer)
               let oneJSONObject = JSON.parse(oneObjectBuffer)
               if (tag.indexOf('@') === 0) this.emit('@', tag, oneJSONObject)
-              if (tag !== '@') {
+              else {
                 this.emit(tag, tag, oneJSONObject)
                 this.emit('message', tag, oneJSONObject)
               }
@@ -595,7 +596,7 @@ export class IOCore extends EventEmitter {
               let mjsonBuffer = decoder.decode(payloadBuffer)
               let mjson = JSON.parse(mjsonBuffer)
               if (tag.indexOf('@') === 0) this.emit('@', tag, ...mjson)
-              if (tag !== '@') {
+              else {
                 this.emit(tag, tag, ...mjson)
                 this.emit('message', tag, ...mjson)
               }
@@ -604,7 +605,7 @@ export class IOCore extends EventEmitter {
             case PAYLOAD_TYPE.MBA:
               let mbaObject = MBP.unpack(payloadBuffer)
               if (tag.indexOf('@') === 0) this.emit('@', tag, ...mbaObject.args)
-              if (tag !== '@') {
+              else {
                 this.emit(tag, tag, ...mbaObject.args)
                 this.emit('message', tag, ...mbaObject.args)
               }

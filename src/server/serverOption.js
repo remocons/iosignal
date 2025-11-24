@@ -47,9 +47,8 @@ export let serverOption = {
   },
 
   auth: {
-    delay_auth_fail: 600,
+    delay_auth_fail: 600
   },
-
   membersOnly: false
 
 }

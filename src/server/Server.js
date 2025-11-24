@@ -149,7 +149,7 @@ export class Server extends EventEmitter {
     
     // Service TYPE 1. single call() function.
     if ( service_module.call && typeof service_module.call == 'function' ) {
-      this.on(target, async (remote, req) => {
+      this.on(target, (remote, req) => {
         try {
           if (!service_module.checkPermission(remote, req)) {
             remote.response(req.mid, STATUS.ERROR, "NO_PERMISSION.")
@@ -157,7 +157,7 @@ export class Server extends EventEmitter {
           }
           if( service_module.commands.includes( req.topic )){
             // console.log('server service_module req', req )
-            await service_module.call(remote, req)
+            service_module.call(remote, req)
           }else{
             remote.response(req.mid, STATUS.ERROR, "UNKNOWN_COMMAND");
           }
@@ -168,14 +168,14 @@ export class Server extends EventEmitter {
       })
     } else {
       // Service TYPE 2. multiple functions.
-      this.on(target, async (remote, req) => {
+      this.on(target, (remote, req) => {
         try {
           if (!service_module.checkPermission(remote, req)) {
             remote.response(req.mid, STATUS.ERROR, "NO_PERMISSION.")
             return
           }
           if( service_module.commands.includes( req.topic )){
-            await service_module[req.topic](remote, req)
+            service_module[req.topic](remote, req)
           }else{
             remote.response(req.mid, STATUS.ERROR, "UNKNOWN_COMMAND");
           }
