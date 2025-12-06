@@ -131,25 +131,25 @@ export class Server extends EventEmitter {
 
 /**
  * RPC service register.
- * target:  service_name <string>
- * service: service_module <function module|class instance>
+ * service: service_name <string>
+ * service_module <function module|class instance>
  * return this
  */
-  attach(target, service_module) {
+  attach(service, service_module) {
 
-    if( typeof target !== 'string'){
-      throw new Error(`service( target ,service ) target name is not a string.`)
+    if( typeof service !== 'string'){
+      throw new Error(`attach service name is not a string.`)
     }
     if (!service_module.checkPermission || typeof service_module.checkPermission != 'function') {
-      throw new Error(`Service ${target} : no checkPermission or not a function.`)
+      throw new Error(`Service ${service} : no checkPermission or not a function.`)
     }
     if(!service_module.commands || !Array.isArray(service_module.commands) ){
-      throw new Error(`Service ${target} : no commands or !Array.`)
+      throw new Error(`Service ${service} : no commands or !Array.`)
     }
     
     // Service TYPE 1. single call() function.
     if ( service_module.call && typeof service_module.call == 'function' ) {
-      this.on(target, (remote, req) => {
+      this.on(service, (remote, req) => {
         try {
           if (!service_module.checkPermission(remote, req)) {
             remote.response(req.mid, STATUS.ERROR, "NO_PERMISSION.")
@@ -162,13 +162,13 @@ export class Server extends EventEmitter {
             remote.response(req.mid, STATUS.ERROR, "UNKNOWN_COMMAND");
           }
         } catch (error) {
-          console.error(`Unhandled Service Error in target [${target}]:`, error);
+          console.error(`Unhandled Service Error in service [${service}]:`, error);
           remote.response(req.mid, STATUS.ERROR, "INTERNAL_SERVER_ERROR");
         }
       })
     } else {
       // Service TYPE 2. multiple functions.
-      this.on(target, (remote, req) => {
+      this.on(service, (remote, req) => {
         try {
           if (!service_module.checkPermission(remote, req)) {
             remote.response(req.mid, STATUS.ERROR, "NO_PERMISSION.")
@@ -180,13 +180,13 @@ export class Server extends EventEmitter {
             remote.response(req.mid, STATUS.ERROR, "UNKNOWN_COMMAND");
           }
         } catch (error) {
-          console.error(`Unhandled Service Error in target [${target}]:`, error);
+          console.error(`Unhandled Service Error in service [${service}]:`, error);
           remote.response(req.mid, STATUS.ERROR, "INTERNAL_SERVER_ERROR");
         }
       })
     }
-    this.serviceNames.add(target)
-    // console.log(`[Service attached: ${target} ] accept commands: ${service_module.commands}`)
+    this.serviceNames.add(service)
+    // console.log(`[Service attached: ${service} ] accept commands: ${service_module.commands}`)
     return this
   }
 

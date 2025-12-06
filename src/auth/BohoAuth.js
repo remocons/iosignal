@@ -34,10 +34,10 @@ export class BohoAuth {
   }
 
 
-  async verify_auth_hmac(auth_hmac, peer) {
+  async verify_auth_req(auth_req, peer) {
     try {
       //1. unpack 
-      let infoPack = MBP.unpack(auth_hmac, Boho.Meta.AUTH_HMAC)
+      let infoPack = MBP.unpack(auth_req, Boho.Meta.AUTH_REQ)
       if (!infoPack) {
         this.send_auth_fail(peer, 'unpack auth_pack fail');
         return
@@ -75,8 +75,8 @@ export class BohoAuth {
       }
 
       //3. check hmac
-      let auth_ack = peer.boho.check_auth_hmac(infoPack)
-      if (!auth_ack) {
+      let auth_res = peer.boho.verify_auth_req(infoPack)
+      if (!auth_res) {
         this.send_auth_fail(peer, 'hmac dismatched');
         return
       }
@@ -99,8 +99,12 @@ export class BohoAuth {
         )
         if (this.keepOldConnection) { // default true
           // keep old connection. reject new connection by sending auth_fail signal.
-          this.send_auth_fail(peer, 'duplicate login')
           // peer.send(authClearSignal)
+          if( peer.socketType == 'websocket'){
+            this.send_auth_fail(peer, 'duplicate login')
+          }else{
+            peer.close(); //arduino 
+          }
         } else {
           // accept new connection. stop the old connection by sending auth_clear signal.
           old.send(authClearSignal)
@@ -145,8 +149,8 @@ export class BohoAuth {
       //9. set cid2remote
       peer.manager.cid2remote.set(peer.cid, peer)
       //10. send ack.
-      peer.send(auth_ack)
-      peer.setState(STATE.AUTH_ACK)
+      peer.send(auth_res)
+      peer.setState(STATE.AUTH_RES)
       if (this.authLogger) {
         let peerInfo = `OK #${peer.ssid} cid: ${peer.cid} did:${peer.did}`
         if (peer.isAdmin) peerInfo = "#ADMIN# " + peerInfo
@@ -154,7 +158,7 @@ export class BohoAuth {
       }
       return authInfo
     } catch (error) {
-      console.log('verify_auth_hmac error', error)
+      console.log('verify_auth_req error', error)
       this.send_auth_fail(peer, '[BohoAuth]caught: unknown error:' + error);
     }
   }

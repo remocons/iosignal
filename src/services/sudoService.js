@@ -21,18 +21,18 @@ export async function call(remote, req) {
     let cmd = req.topic;
     cmd = cmd.toLowerCase()
     if (cmd == 'cid') {
-      result = remote.manager.metric.getCIdList()
+      result = remote.manager.metrics.getCIdList()
     } else if (cmd == 'remotes' || cmd == 'clients') {
-      result = remote.manager.metric.getRemotes()
+      result = remote.manager.metrics.getRemotes()
     } else if (cmd == 'channels') {
-      result = remote.manager.metric.getChannelList()
+      result = remote.manager.metrics.getChannelList()
     } else if (cmd == 'subscribers') {
       let ch = req.$[0]
-      if (ch) result = remote.manager.metric.getSubscribers(ch)
+      if (ch) result = remote.manager.metrics.getSubscribers(ch)
     } else if (cmd == 'remote' || cmd == 'client') {
       let cid = req.$[0]
       let mode = req.$[1]
-      if (cid) result = remote.manager.metric.getRemoteByCId(cid, mode)
+      if (cid) result = remote.manager.metrics.getRemoteByCId(cid, mode)
 
     } else if (cmd == 'close') {
       if (req.$[0]) result = remote.manager.closeRemoteByCId(req.$[0])

@@ -4,7 +4,7 @@ import { serverOption } from './serverOption.js'
 import { IOMsg, STATE } from '../common/constants.js'
 import { getSignalPack } from '../common/payload.js';
 import { FileLogger } from './FileLogger.js'
-import { Metric } from './Metric.js'
+import { Metrics } from './Metrics.js'
 
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
@@ -36,7 +36,7 @@ export class Manager {
     this.channel_map = new Map()      // key: channelName -> value: < remote : Set >
     this.CHANNEL_PREFIX = 'CH:'
     this.CID_PREFIX = 'CID:'
-    this.metric = new Metric(this)
+    this.metrics = new Metrics(this)
     this.lastSSID = 0;
 
     this.pingIntervalID = setInterval(e => {
@@ -72,7 +72,7 @@ export class Manager {
     socket.isAlive = true;
     let remote = new Remote(socket, req, this)
     this.remotes.add(remote)
-    remote.send(Buffer.from([IOMsg.SERVER_READY]))
+    remote.send( remote.boho.server_time_nonce() )
     remote.setState(STATE.SERVER_READY)
     this.lastSSID = remote.ssid;
     let connectionInfo = `+ IP:${remote.ip} #${remote.ssid} ${socket.socketType === 'websocket' ? "WS" : "CS"} `;
@@ -402,18 +402,18 @@ export class Manager {
     }
 
     if (serverOption.showChannel > 0) {
-      this.metric.channels(serverOption.showChannel);
+      this.metrics.channels(serverOption.showChannel);
     }
     let mode = parseInt(serverOption.showMetric)
     switch (mode) {
       case 1:
-        this.metric.oneline(true);
+        this.metrics.oneline(true);
         break;
       case 2:
-        this.metric.getRemotes(true);
+        this.metrics.getRemotes(true);
         break;
       case 3:
-        this.metric.getChannelList(true);
+        this.metrics.getChannelList(true);
         break;
       default:
     }

@@ -74,6 +74,6 @@ export default class IO extends IOCore {
     socket_send(data: BufferSource): void;
 }
 export type Boho = import("boho").Boho;
-export type MBP = any;
+export type MBP = typeof import("meta-buffer-pack");
 export type Buffer = import("boho").Buffer;
 import { IOCore } from "../IOCore.js";

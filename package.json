@@ -1,6 +1,6 @@
 {
   "name": "iosignal",
-  "version": "4.10.0",
+  "version": "5.0.0",
   "description": "iosignal",
   "type": "module",
   "exports": {
@@ -37,7 +37,7 @@
     "typescript": "^5.8.3"
   },
   "dependencies": {
-    "boho": "^1.1.1",
+    "boho": "^2.0.0",
     "eventemitter3": "^5.0.1",
     "meta-buffer-pack": "^2.1.0",
     "ws": "^8.18.3"

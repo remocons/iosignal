@@ -114,6 +114,8 @@ export class IOCore extends EventEmitter {
      * @type {Boho}
      */
     this.boho = new Boho()
+
+    this.serverTimeNonce = Buffer.alloc( Boho.MetaSize.SERVER_TIME_NONCE  );
     /**
      * Indicates if the connection is TLS (wss).
      * @type {boolean}
@@ -345,10 +347,13 @@ export class IOCore extends EventEmitter {
    * @returns {this} 
    */
   login(id, key) {
-    this.auth(id, key)
-    this.useAuth = true
-    let auth_pack = this.boho.auth_req()
-    this.send(auth_pack)
+    if( this.serverTimeNonce ){
+      console.log('iosignal.login serverTimeNonce', this.serverTimeNonce)
+      this.auth(id, key)
+      this.useAuth = true
+      let auth_pack = this.boho.auth_req(this.serverTimeNonce )
+      this.send(auth_pack)
+    }
     return this
   }
 
@@ -497,12 +502,15 @@ export class IOCore extends EventEmitter {
         this.redirect(url)
         break;
 
-      case IOMsg.SERVER_READY:
+      case Boho.BohoMsg.SERVER_TIME_NONCE: // SERVER_READY
         this.stateChange('server_ready', 'server_ready')
         if (this.useAuth) {
-          this.send(this.boho.auth_req())
-          // CID_REQ will be called, after auth_ack.
+          this.send(this.boho.auth_req(buffer))
+          this.stateChange('auth_req','auth_req')
+          // CID_REQ will be called, after auth_res.
         } else {
+          // keep server_time_nonce for manual login()
+          buffer.copy( this.serverTimeNonce);
           // CID_REQ here, if not using auth.
           this.send(Buffer.from([IOMsg.CID_REQ]))
         }
@@ -549,6 +557,7 @@ export class IOCore extends EventEmitter {
             > cid_sub message:  tag includes cid and @ both : 'cid@*'
             > ch_sub message:  else.
           */
+        //  console.log('payloadType', payloadType )
           switch (payloadType) {
 
             case PAYLOAD_TYPE.EMPTY:
@@ -625,26 +634,16 @@ export class IOCore extends EventEmitter {
         this.testPromise(buffer)
         break;
 
-      case Boho.BohoMsg.AUTH_NONCE:
-        this.stateChange('auth_nonce','server sent auth_nonce.')
-        let auth_hmac = this.boho.auth_hmac(buffer)
-        if (auth_hmac) {
-          this.send(auth_hmac)
-        } else {
-          this.stateChange('auth_fail', 'boho.auth_hmac() invalid auth_nonce.')
-        }
-        break;
-
       case Boho.BohoMsg.AUTH_FAIL:
         this.stateChange('auth_fail', 'auth_fail from server.')
         break;
 
-      case Boho.BohoMsg.AUTH_ACK:
-        if (this.boho.check_auth_ack_hmac(buffer)) {
-          this.stateChange('auth_ack', 'server sent auth_ack')
+      case Boho.BohoMsg.AUTH_RES:
+        if (this.boho.verify_auth_res(buffer)) {
+          this.stateChange('auth_res', 'server sent auth_res')
           this.send(Buffer.from([IOMsg.CID_REQ]))
         } else {
-          this.stateChange('auth_fail', 'check_auth_ack_hmac() invalid server_hmac')
+          this.stateChange('auth_fail', 'verify_auth_res() invalid server_hmac')
         }
         break;
 
@@ -872,6 +871,7 @@ export class IOCore extends EventEmitter {
    */
   signal_e2e(tag, data, key) {
 
+    if( !this.boho.isAuthorized ) return;
     if (typeof tag !== 'string') throw TypeError('tag should be string.')
     let tagEncoded = encoder.encode(tag)
     let dataPack = MBP.B8(data)

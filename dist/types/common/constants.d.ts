@@ -2,11 +2,14 @@ export type STATE = {
     CONNECTING: number;
     OPEN: number;
     SERVER_READY: number;
-    AUTH_ACK: number;
-    CLOSING: number;
-    READY: number;
+    AUTH_REQ: number;
+    AUTH_RES: number;
     AUTH_FAIL: number;
     AUTH_CLEAR: number;
+    CID_REQ: number;
+    CID_RES: number;
+    READY: number;
+    CLOSING: number;
     CLOSED: number;
     STOP: number;
     REDIRECTING: number;
@@ -16,9 +19,7 @@ export namespace STATE {
     let OPEN: number;
     let SERVER_READY: number;
     let AUTH_REQ: number;
-    let AUTH_NONCE: number;
-    let AUTH_HMAC: number;
-    let AUTH_ACK: number;
+    let AUTH_RES: number;
     let AUTH_FAIL: number;
     let AUTH_CLEAR: number;
     let CID_REQ: number;

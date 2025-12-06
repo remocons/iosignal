@@ -27,7 +27,7 @@ export class RemoteCore {
     this.ssid = RemoteCore.ssid++;  // ordered index number
     this.manager = manager;
 
-    this.cid = ''; // Communication Id
+    this.cid = ''; // Client Id
     this.did = ''; // Device Id
     this.uid = ''; // User Id
     this.nick = ''
@@ -50,7 +50,7 @@ export class RemoteCore {
     this.state = state
     if (serverOption.debug.showAuthInfo) {
       this.stateLog.push(  state + ":" + STATE[ state]   )
-      if( state == STATE.AUTH_ACK){
+      if( state == STATE.AUTH_RES){
         console.log('[auth success]', this.cid, this.stateLog.join('>'))
       }else if( state == STATE.AUTH_FAIL){
         console.log('[auth_fail]',this.stateLog.join('>'))
@@ -291,29 +291,16 @@ export class RemoteCore {
           break;
 
 
-        // Auth
+        // client's auth requst
         case Boho.BohoMsg.AUTH_REQ:
           if (!this.manager.authManager) return
           if (this.state < STATE.SERVER_READY) {
-            console.log('protocol error. auth_req before server_ready')
+            console.log('protocol error. must called auth_req after server_ready')
             this.close();
           }
           this.setState(STATE.AUTH_REQ)
-          let auth_nonce_pack = this.boho.auth_nonce()
-          // console.log('## auth_nonce_pack', auth_nonce_pack )
-          this.send(auth_nonce_pack)
-          this.setState(STATE.AUTH_NONCE)
-          break;
-
-        case Boho.BohoMsg.AUTH_HMAC:
-          if (!this.manager.authManager) return
-          if (this.state < STATE.AUTH_NONCE) {
-            console.log('protocol error. auth_hmac before server_nonce')
-            this.close();
-          }
-          this.setState(STATE.AUTH_HMAC)
           //async
-          this.manager.authManager.verify_auth_hmac(message, this)
+          this.manager.authManager.verify_auth_req(message, this)
             .then(authInfo => {
               if (authInfo?.name) {
                 this.manager.deligateSignal(this, '@$name', authInfo.name)
@@ -321,7 +308,7 @@ export class RemoteCore {
                 // this.manager.sender('@$name', authInfo.name )
               }
 
-              // console.log('[VERIFY AUTH_HMAC] SubClass of BohoAuth return authInfo:', authInfo )
+              // console.log('[VERIFY AUTH_REQ] SubClass of BohoAuth return authInfo:', authInfo )
             })
             .catch(e => {
               console.log('authInfo return fail.', e )

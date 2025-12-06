@@ -4,11 +4,13 @@
  * @property {number} CONNECTING
  * @property {number} OPEN
  * @property {number} SERVER_READY
- * @property {number} AUTH_ACK
- * @property {number} CLOSING
- * @property {number} READY
+ * @property {number} AUTH_REQ
+ * @property {number} AUTH_RES
  * @property {number} AUTH_FAIL
  * @property {number} AUTH_CLEAR
+ * @property {number} CID_REQ
+ * @property {number} CID_RES
+ * @property {number} READY
  * @property {number} CLOSING
  * @property {number} CLOSED
  * @property {number} STOP
@@ -20,11 +22,10 @@ export const STATE = {
   OPEN:          1,
   SERVER_READY: 10,
   AUTH_REQ:     11,
-  AUTH_NONCE:   12,
-  AUTH_HMAC:    13,
-  AUTH_ACK:     14,
-  AUTH_FAIL:    15,
-  AUTH_CLEAR:   16,
+  AUTH_RES:     12,
+  AUTH_FAIL:    13,
+  AUTH_CLEAR:   14,
+
   CID_REQ:      17,
   CID_RES:      18,
   READY:        19,
@@ -139,15 +140,7 @@ export let IOMsg = {
 
   // DO NOT USE: 0xB0~ 0xBF
   // Boho module using this numbers.
-  // AUTH_REQ : 0xB0,  
-  // AUTH_NONCE: 0xB1,
-  // AUTH_HMAC: 0xB2,
-  // AUTH_ACK: 0xB3,
-  // AUTH_FAIL: 0xB4,
-  // AUTH_EXT: 0xB5,
-  // ENC_PACK : 0xB6,  
-  // ENC_E2E : 0xB7,  
-  // ENC_488 : 0xB8
+
   // reserved ~0xBF
 
   // C. IO status contorl.

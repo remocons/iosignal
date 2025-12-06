@@ -77,6 +77,7 @@ export class IOCore extends EventEmitter<string | symbol, any> {
      * @type {Boho}
      */
     boho: Boho;
+    serverTimeNonce: any;
     /**
      * Indicates if the connection is TLS (wss).
      * @type {boolean}
