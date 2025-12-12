@@ -1,0 +1,30 @@
+import resolve from '@rollup/plugin-node-resolve'
+import commonjs from '@rollup/plugin-commonjs'
+import terser from '@rollup/plugin-terser'
+
+export default [
+  {
+    input: './src/index.js',
+    output: [
+      {
+        file: './dist/boho.min.js',
+        format: 'umd',
+        name: 'Boho',
+        sourcemap: true
+      },
+      {
+        file: './dist/boho.js',
+        format: 'es',
+        sourcemap: true
+      }
+    ],
+    plugins: [
+      resolve({
+        preferBuiltins: false
+      }),
+      commonjs()
+      , terser()
+    ]
+  }
+
+]

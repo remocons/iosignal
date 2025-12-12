@@ -1,0 +1,41 @@
+{
+  "name": "iosignal-cli",
+  "version": "5.0.1",
+  "description": "IOSignal server and client CLI program.",
+  "type": "module",
+  "bin": {
+    "iosignal-cli": "./bin/io-client.js",
+    "io-server": "./bin/io-server.js",
+    "io-client": "./bin/io-client.js",
+    "ios": "./bin/io-server.js",
+    "io": "./bin/io-client.js",
+    "ioip": "./bin/ioip.js",
+    "io-keygen": "./bin/io-keygen.js"
+  },
+  "author": {
+    "name": "Taeo Lee",
+    "email": "sixgen@gmail.com"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "boxen": "8.0.1",
+    "chalk": "5.6.2",
+    "commander": "13.1.0",
+    "iosignal": "^5.0.1",
+    "redis": "4.7.1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git://github.com/remocons/iosignal-cli.git"
+  },
+  "keywords": [
+    "websocket",
+    "pubsub",
+    "arduino",
+    "iot",
+    "auth",
+    "signal",
+    "CLI",
+    "remocon"
+  ]
+}

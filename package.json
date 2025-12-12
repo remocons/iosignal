@@ -1,0 +1,12 @@
+{
+  "name": "iosignal-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "packages/meta-buffer-pack",
+    "packages/boho",
+    "packages/iosignal",
+    "packages/iosignal-cli"
+  ]
+
+}

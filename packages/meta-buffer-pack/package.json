@@ -1,0 +1,46 @@
+{
+  "name": "meta-buffer-pack",
+  "version": "2.1.0",
+  "description": "Master Binary Data Serialization & Deserialization with Metadata.",
+  "type": "module",
+  "exports": {
+    "import": "./dist/meta-buffer-pack.js",
+    "require": "./dist/meta-buffer-pack.cjs"
+  },
+  "browser": "./dist/meta-buffer-pack.min.js",
+  "jsdelivr": "./dist/meta-buffer-pack.min.js",
+  "unpkg": "./dist/meta-buffer-pack.min.js",
+  "types": "./dist/meta-buffer-pack.d.ts",
+  "devDependencies": {
+    "@rollup/plugin-commonjs": "^28.0.0",
+    "@rollup/plugin-node-resolve": "^15.3.0",
+    "@rollup/plugin-terser": "^0.4.4",
+    "@types/node": "^24.0.8",
+    "rollup": "^4.36.0",
+    "typescript": "^5.8.3"
+  },
+  "scripts": {
+    "build": "rollup -c",
+    "test": "node --test"
+  },
+  "keywords": [
+    "buffer",
+    "pack",
+    "버퍼",
+    "meta",
+    "serialize"
+  ],
+  "homepage": "https://remocons.github.io/meta-buffer-pack/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/remocons/meta-buffer-pack.git"
+  },
+  "author": {
+    "name": "Taeo Lee",
+    "email": "sixgen@gmail.com"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "buffer": "^6.0.3"
+  }
+}
