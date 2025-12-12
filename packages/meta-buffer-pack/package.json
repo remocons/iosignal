@@ -5,7 +5,7 @@
   "type": "module",
   "exports": {
     "import": "./dist/meta-buffer-pack.js",
-    "require": "./dist/meta-buffer-pack.cjs"
+    "require": null
   },
   "browser": "./dist/meta-buffer-pack.min.js",
   "jsdelivr": "./dist/meta-buffer-pack.min.js",

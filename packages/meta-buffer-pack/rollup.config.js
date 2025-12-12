@@ -6,22 +6,6 @@ export default [
   {
     input: './src/index.js',
     output: [
-      { 
-        file: "./dist/meta-buffer-pack.cjs", 
-        format: 'cjs' 
-      }
-    ],
-    plugins: [
-      resolve({
-        preferBuiltins: true
-      }),
-      commonjs()
-      , terser()
-    ]
-  },
-  {
-    input: './src/index.js',
-    output: [
       {
         file: "./dist/meta-buffer-pack.min.js",
         format: 'umd',
