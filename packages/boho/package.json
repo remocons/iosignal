@@ -19,10 +19,11 @@
     "보호",
     "암호"
   ],
-  "homepage": "https://github.com/remocons/boho#readme",
+  "homepage": "https://github.com/remocons/iosignal/tree/main/packages/boho#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/remocons/boho.git"
+    "url": "https://github.com/remocons/iosignal.git",
+    "directory": "packages/boho"
   },
   "author": {
     "name": "Taeo Lee",

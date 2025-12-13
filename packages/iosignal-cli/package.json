@@ -26,7 +26,8 @@
   },
   "repository": {
     "type": "git",
-    "url": "git://github.com/remocons/iosignal-cli.git"
+    "url": "https://github.com/remocons/iosignal.git",
+    "directory": "packages/iosignal-cli"
   },
   "keywords": [
     "websocket",

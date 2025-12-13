@@ -30,10 +30,11 @@
     "meta",
     "serialize"
   ],
-  "homepage": "https://remocons.github.io/meta-buffer-pack/",
+  "homepage": "https://github.com/remocons/iosignal/tree/main/packages/meta-buffer-pack#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/remocons/meta-buffer-pack.git"
+    "url": "https://github.com/remocons/iosignal.git",
+    "directory": "packages/meta-buffer-pack"
   },
   "author": {
     "name": "Taeo Lee",

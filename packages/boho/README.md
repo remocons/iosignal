@@ -137,7 +137,7 @@ import Boho from 'boho'
 ```
 
 ### Boho를 사용한 인증 및 보안 통신 예제는 `IOSignal`을 참고하세요.
-- `iosignal` ([GitHub](https://github.com/remocons/iosignal/packages/iosignal))
+- `iosignal` ([GitHub](https://github.com/remocons/iosignal/tree/main/packages/iosignal))
 - test/AUTH_process.js
 
 ---

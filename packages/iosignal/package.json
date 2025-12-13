@@ -48,7 +48,8 @@
   },
   "repository": {
     "type": "git",
-    "url": "git://github.com/remocons/iosignal.git"
+    "url": "https://github.com/remocons/iosignal.git",
+    "directory": "packages/iosignal"
   },
   "keywords": [
     "websocket",

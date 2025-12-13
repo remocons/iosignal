@@ -284,12 +284,6 @@ console.log( mboMix.args[1] ) // "a2"
 please check example/ folder. There are commonJS and ES Module example code.
 
 
-### online demo
-You can simply evaluate some test code by online page.  
-
-- [demo link](https://remocons.github.io/meta-buffer-pack/index.html)
-
-
 ### license
 [MIT](LICENSE)
 
