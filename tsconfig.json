@@ -2,23 +2,24 @@
   "compilerOptions": {
     "declaration": true,
     "emitDeclarationOnly": true,
+    "rootDir": "./src",
     "outDir": "./dist/types",
     "allowJs": true,
-    "moduleResolution": "node",
+    "module": "nodenext",    
+    "moduleResolution": "nodenext",
     "target": "es2020",
     "lib": ["es2020", "dom"],
-    "baseUrl": ".",
     "paths": {
-      "@src/*": ["src/*"]
+      "@src/*": ["./src/*"]
     }
   },
   "include": [
     "src/client/browser/IOWebSocket.js",
     "src/client/IOCore.js",
-    "src/common/constants.js",
-    "package.json"
+    "src/common/constants.js"
   ],
   "exclude": [
-    "node_modules"
+    "node_modules",
+    "dist"
   ]
 }

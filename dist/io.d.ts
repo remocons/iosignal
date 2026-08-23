@@ -1,12 +1,11 @@
 import * as meta_buffer_pack from 'meta-buffer-pack';
 import * as boho from 'boho';
-import EventEmitter from 'eventemitter3';
 
 /**
  * Core class for handling WebSocket communication.
  * @augments {EventEmitter}
  */
-declare class IOCore extends EventEmitter<string | symbol, any> {
+declare class IOCore {
     /**
      * @param {string} url - The WebSocket URL to connect to.
      */
@@ -453,7 +452,7 @@ declare class IO extends IOCore {
      * @type {number}
      */
     static webSocketCount: number;
-    boundBrowserVisiblePing: any;
+    boundBrowserVisiblePing: () => void;
     /**
      * Pings the server when the browser tab becomes visible.
      */

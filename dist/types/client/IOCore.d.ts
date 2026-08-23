@@ -2,7 +2,7 @@
  * Core class for handling WebSocket communication.
  * @augments {EventEmitter}
  */
-export class IOCore extends EventEmitter<string | symbol, any> {
+export class IOCore {
     /**
      * @param {string} url - The WebSocket URL to connect to.
      */
@@ -410,4 +410,3 @@ export type STATE = import("../common/constants.js").STATE;
 export type quotaTable = any;
 export type Boho = import("boho").Boho;
 export type Buffer = import("boho").Buffer;
-import EventEmitter from "eventemitter3";

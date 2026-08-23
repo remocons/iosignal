@@ -1,6 +1,6 @@
 {
   "name": "iosignal",
-  "version": "5.1.4",
+  "version": "5.1.5",
   "description": "iosignal",
   "type": "module",
   "exports": {
@@ -12,7 +12,7 @@
     "./io.js": "./dist/io.js",
     "./browser": "./dist/io.js"
   },
-  "types": "./dist/types/src/client/browser/IOWebSocket.d.ts",
+  "types": "./dist/types/client/browser/IOWebSocket.d.ts",
   "browser": "./dist/io.min.js",
   "jsdelivr": "./dist/io.min.js",
   "unpkg": "./dist/io.min.js",
@@ -34,12 +34,12 @@
     "@types/node": "^24.1.0",
     "rollup": "^4.62.4",
     "rollup-plugin-dts": "^6.2.1",
-    "typescript": "^5.8.3"
+    "typescript": "^6.0.3"
   },
   "dependencies": {
     "boho": "^2.1.3",
-    "meta-buffer-pack": "^2.1.3",
     "eventemitter3": "^5.0.4",
+    "meta-buffer-pack": "^2.1.3",
     "ws": "^8.21.3"
   },
   "optionalDependencies": {

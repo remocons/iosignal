@@ -43,7 +43,7 @@ export default class IO extends IOCore {
      * @type {number}
      */
     static webSocketCount: number;
-    boundBrowserVisiblePing: any;
+    boundBrowserVisiblePing: () => void;
     /**
      * Pings the server when the browser tab becomes visible.
      */
