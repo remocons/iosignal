@@ -16,7 +16,7 @@ var require$$0$2 = require('buffer');
 var require$$2$1 = require('util');
 var process$1 = require('process');
 
-var version$1 = "5.1.4";
+var version$1 = "5.1.5";
 var pkg = {
 	version: version$1};
 

@@ -14,7 +14,7 @@ import require$$0$1 from 'buffer';
 import require$$2$1 from 'util';
 import { memoryUsage } from 'process';
 
-var version$1 = "5.1.4";
+var version$1 = "5.1.5";
 var pkg = {
 	version: version$1};
 
