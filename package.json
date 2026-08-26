@@ -1,21 +1,20 @@
 {
   "name": "iosignal",
-  "version": "5.1.5",
+  "version": "5.2.0",
   "description": "iosignal",
   "type": "module",
   "exports": {
     ".": {
-      "import": "./dist/iosignal.js",
-      "require": "./dist/iosignal.cjs"
+      "import": "./dist/node/iosignal.js",
+      "require": "./dist/node/iosignal.cjs"
     },
-    "./io": "./dist/io.js",
-    "./io.js": "./dist/io.js",
-    "./browser": "./dist/io.js"
+    "./io": "./dist/browser/esm/io.js",
+    "./io.js": "./dist/browser/esm/io.js",
+    "./browser/*": "./dist/browser/*"
   },
   "types": "./dist/types/client/browser/IOWebSocket.d.ts",
-  "browser": "./dist/io.min.js",
-  "jsdelivr": "./dist/io.min.js",
-  "unpkg": "./dist/io.min.js",
+  "jsdelivr": "./dist/browser/iife/io.js",
+  "unpkg": "./dist/browser/iife/io.js",
   "scripts": {
     "build": "rollup -c && npm run build:types",
     "build:types": "tsc --project tsconfig.json"

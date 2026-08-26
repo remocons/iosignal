@@ -9,13 +9,13 @@ export default [
     input: './src/client/browser/IOWebSocket.js',
     output: [
       {
-        file: './dist/io.js',
+        file: './dist/browser/esm/io.js',
         format: 'es',
         sourcemap: true,
       },
       {
-        file: './dist/io.min.js',
-        format: 'umd',
+        file: './dist/browser/iife/io.js',
+        format: 'iife',
         name: 'IO',
         sourcemap: true,
       }
@@ -31,7 +31,7 @@ export default [
   },
   {
     input: './src/client/browser/IOWebSocket.js',
-    output: { file: './dist/io.d.ts', format: 'es' },
+    output: { file: './dist/browser/esm/io.d.ts', format: 'es' },
     plugins: [dts()]
   }
 
@@ -39,11 +39,11 @@ export default [
     input: './index.js',
     output: [
       { 
-        file: './dist/iosignal.js',
+        file: './dist/node/iosignal.js',
         format: 'es' 
       },
       {
-        file: "./dist/iosignal.cjs",
+        file: "./dist/node/iosignal.cjs",
         format: 'cjs'
       }
     ],
