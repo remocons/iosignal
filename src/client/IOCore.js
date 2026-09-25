@@ -14,7 +14,6 @@ import Boho from "boho";
  * @typedef {import('../common/constants.js').STATE} STATE
  * @typedef {import('../common/quotaTable.js').quotaTable} quotaTable
  
- * @typedef {import('boho').Boho} Boho
  * @typedef {import('boho').Buffer} Buffer
  */
 

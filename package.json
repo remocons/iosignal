@@ -1,6 +1,6 @@
 {
   "name": "iosignal",
-  "version": "5.2.0",
+  "version": "5.3.0",
   "description": "iosignal",
   "type": "module",
   "exports": {
@@ -17,7 +17,11 @@
   "unpkg": "./dist/browser/iife/io.js",
   "scripts": {
     "build": "rollup -c && npm run build:types",
-    "build:types": "tsc --project tsconfig.json"
+    "build:types": "tsc --project tsconfig.json",
+    "test": "node --test checks/*.test.mjs",
+    "verify": "node scripts/verify.mjs",
+    "prepack": "npm run verify",
+    "prepublishOnly": "npm run verify"
   },
   "author": {
     "name": "Taeo Lee",
@@ -36,7 +40,7 @@
     "typescript": "^6.0.3"
   },
   "dependencies": {
-    "boho": "^2.1.3",
+    "boho": "^2.2.0",
     "eventemitter3": "^5.0.4",
     "meta-buffer-pack": "^2.1.3",
     "ws": "^8.21.3"
@@ -63,5 +67,19 @@
     "iot",
     "arduino",
     "auth"
+  ],
+  "files": [
+    "dist/browser/esm/io.d.ts",
+    "dist/browser/esm/io.js",
+    "dist/browser/esm/io.js.map",
+    "dist/browser/iife/io.js",
+    "dist/browser/iife/io.js.map",
+    "dist/node/iosignal.cjs",
+    "dist/node/iosignal.js",
+    "dist/types/client/IOCore.d.ts",
+    "dist/types/client/browser/IOWebSocket.d.ts",
+    "dist/types/common/constants.d.ts",
+    "dist/types/common/payload.d.ts",
+    "dist/types/common/quotaTable.d.ts"
   ]
 }

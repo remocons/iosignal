@@ -1,5 +1,6 @@
-import * as meta_buffer_pack from 'meta-buffer-pack';
 import * as boho from 'boho';
+import boho__default from 'boho';
+import * as buffer from 'buffer';
 
 /**
  * Core class for handling WebSocket communication.
@@ -79,8 +80,8 @@ declare class IOCore {
      * Boho instance for encryption/decryption.
      * @type {Boho}
      */
-    boho: Boho$1;
-    serverTimeNonce: any;
+    boho: boho__default;
+    serverTimeNonce: buffer.Buffer;
     /**
      * Indicates if the connection is TLS (wss).
      * @type {boolean}
@@ -404,7 +405,6 @@ declare class IOCore {
      */
     stateChange(state: string, emitEventAndMessage?: string): void;
 }
-type Boho$1 = boho.Boho;
 type Buffer$1 = boho.Buffer;
 
 /**
@@ -424,9 +424,9 @@ declare class IO extends IOCore {
     static binaryType: string;
     /**
      * The Boho library instance.
-     * @type {Boho}
+     * @type {typeof Boho}
      */
-    static Boho: Boho;
+    static Boho: typeof boho__default;
     /**
      * The MBP (MessagePack-Boho) instance.
      * @type {MBP}
@@ -482,9 +482,8 @@ declare class IO extends IOCore {
      */
     socket_send(data: BufferSource): void;
 }
-type Boho = boho.Boho;
-type MBP = typeof meta_buffer_pack;
+type MBP = boho.MBP;
 type Buffer = boho.Buffer;
 
 export { IO as default };
-export type { Boho, Buffer, MBP };
+export type { Buffer, MBP };

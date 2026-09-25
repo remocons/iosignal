@@ -1,3 +1,4 @@
+import { publicBoundary } from './scripts/public-policy.mjs'
 import resolve from '@rollup/plugin-node-resolve'
 import commonjs from '@rollup/plugin-commonjs'
 import json from '@rollup/plugin-json'
@@ -6,6 +7,7 @@ import dts from 'rollup-plugin-dts'
 
 export default [
    {
+    preserveSymlinks: true,
     input: './src/client/browser/IOWebSocket.js',
     output: [
       {
@@ -21,6 +23,7 @@ export default [
       }
     ],
     plugins: [
+      publicBoundary(),
       resolve({
         preferBuiltins: false
       }),
@@ -30,12 +33,15 @@ export default [
     ]
   },
   {
+    preserveSymlinks: true,
     input: './src/client/browser/IOWebSocket.js',
     output: { file: './dist/browser/esm/io.d.ts', format: 'es' },
-    plugins: [dts()]
+    plugins: [
+      publicBoundary(),dts()]
   }
 
   ,{
+    preserveSymlinks: true,
     input: './index.js',
     output: [
       { 
@@ -48,6 +54,7 @@ export default [
       }
     ],
     plugins: [
+      publicBoundary(),
       resolve({
         preferBuiltins: true
       }), 

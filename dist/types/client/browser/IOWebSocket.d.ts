@@ -15,9 +15,9 @@ export default class IO extends IOCore {
     static binaryType: string;
     /**
      * The Boho library instance.
-     * @type {Boho}
+     * @type {typeof Boho}
      */
-    static Boho: Boho;
+    static Boho: typeof Boho;
     /**
      * The MBP (MessagePack-Boho) instance.
      * @type {MBP}
@@ -73,7 +73,7 @@ export default class IO extends IOCore {
      */
     socket_send(data: BufferSource): void;
 }
-export type Boho = import("boho").Boho;
-export type MBP = typeof import("meta-buffer-pack");
+export type MBP = import("boho").MBP;
 export type Buffer = import("boho").Buffer;
 import { IOCore } from "../IOCore.js";
+import Boho from 'boho';

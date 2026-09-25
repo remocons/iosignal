@@ -77,7 +77,7 @@ export class IOCore {
      * @type {Boho}
      */
     boho: Boho;
-    serverTimeNonce: any;
+    serverTimeNonce: import("buffer").Buffer;
     /**
      * Indicates if the connection is TLS (wss).
      * @type {boolean}
@@ -408,5 +408,5 @@ export type SIZE_LIMIT = import("../common/constants.js").SIZE_LIMIT;
 export type ENC_MODE = import("../common/constants.js").ENC_MODE;
 export type STATE = import("../common/constants.js").STATE;
 export type quotaTable = any;
-export type Boho = import("boho").Boho;
 export type Buffer = import("boho").Buffer;
+import Boho from "boho";

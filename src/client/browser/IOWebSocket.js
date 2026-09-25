@@ -4,7 +4,6 @@ import Boho from 'boho'
 import * as constants from '../../common/constants.js'
 
 /**
- * @typedef {import("boho").Boho} Boho
  * @typedef {import("boho").MBP} MBP
  * @typedef {import("boho").Buffer} Buffer
  */
@@ -28,7 +27,7 @@ export default class IO extends IOCore {
   static binaryType = "arraybuffer"
   /**
    * The Boho library instance.
-   * @type {Boho}
+   * @type {typeof Boho}
    */
   static Boho = Boho;
   /**
