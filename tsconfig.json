@@ -1,6 +1,7 @@
 {
   "compilerOptions": {
     "declaration": true,
+    "preserveSymlinks": true,
     "emitDeclarationOnly": true,
     "rootDir": "./src",
     "outDir": "./dist/types",
