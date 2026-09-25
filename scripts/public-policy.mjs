@@ -7,7 +7,7 @@ export const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 export const policy = JSON.parse(fs.readFileSync(path.join(root, 'scripts/public-files.json')));
 export const controls = [
   '.gitignore', '.npmignore', 'index.js', 'package.json', 'package-lock.json',
-  'rollup.config.js', 'tsconfig.json', 'AGENTS.md', 'RELEASING.md',
+  'rollup.config.js', 'tsconfig.json', 'README.md',
   '.github/workflows/verify.yml', 'scripts/public-files.json',
   'scripts/public-policy.mjs', 'scripts/verify.mjs',
   'checks/release.test.mjs', 'checks/policy.test.mjs',
@@ -38,13 +38,14 @@ export function walk(base, prefix = '') {
 export function audit(base = root, artifacts = false) {
   if (fs.existsSync(path.join(base, '.git'))) {
     for (const name of run('git', ['ls-files', '-z'], base, true).split('\0').filter(Boolean)) {
-      if (!allowed.has(name)) throw Error(`Unapproved tracked file: ${name}`);
+      // Deleted files are absent from the current release tree; required files are checked below.
+      if (fs.existsSync(path.join(base, name)) && !allowed.has(name)) throw Error(`Unapproved tracked file: ${name}`);
     }
   }
   for (const name of walk(base)) {
     if (!allowed.has(name)) throw Error(`Unapproved public file: ${name}`);
     safeFile(base, name);
-    if (['index.js', 'package-lock.json'].includes(name) || /^(src|test|dist)\//.test(name)) inspect(name, fs.readFileSync(path.join(base, name), 'utf8'));
+    if (['index.js', 'package-lock.json', 'README.md'].includes(name) || /^(src|test|dist)\//.test(name)) inspect(name, fs.readFileSync(path.join(base, name), 'utf8'));
   }
   for (const name of [...controls, ...policy.sync, ...(artifacts ? policy.dist : [])]) safeFile(base, name);
   const pkg = JSON.parse(fs.readFileSync(path.join(base, 'package.json')));

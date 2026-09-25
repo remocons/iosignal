@@ -8467,6 +8467,11 @@ class Metrics {
 
 
 
+  close() {
+    clearInterval(this.tickId);
+    this.tickId = null;
+  }
+
   oneline(prn) {
     let memoryUse = memoryUsage();
     let memoryInfo = [{
@@ -8989,6 +8994,7 @@ class Manager {
   }
 
   close() {
+    this.metrics.close();
     clearInterval(this.pingIntervalID);
     if (this.monitIntervalID) {
       clearInterval(this.monitIntervalID);

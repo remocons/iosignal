@@ -432,6 +432,7 @@ export class Manager {
   }
 
   close() {
+    this.metrics.close();
     clearInterval(this.pingIntervalID);
     if (this.monitIntervalID) {
       clearInterval(this.monitIntervalID);

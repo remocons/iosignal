@@ -43,6 +43,11 @@ export class Metrics {
 
 
 
+  close() {
+    clearInterval(this.tickId);
+    this.tickId = null;
+  }
+
   oneline(prn) {
     let memoryUse = memoryUsage();
     let memoryInfo = [{

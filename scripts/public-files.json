@@ -37,7 +37,8 @@
     "test/subscribe-signal/self-subscribe.js",
     "test/subscribe-signal/signal-MBA.js",
     "test/subscribe-signal/signalPack.js",
-    "test/subscribe-signal/signaling.js"
+    "test/subscribe-signal/signaling.js",
+    "test/integration/communication.test.mjs"
   ],
   "dist": [
     "dist/browser/esm/io.d.ts",
