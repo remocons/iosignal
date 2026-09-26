@@ -43,6 +43,8 @@ export default [
   ,{
     preserveSymlinks: true,
     input: './index.js',
+    // ws loads these optional native addons at runtime.
+    external: ['bufferutil', 'utf-8-validate'],
     output: [
       { 
         file: './dist/node/iosignal.js',
