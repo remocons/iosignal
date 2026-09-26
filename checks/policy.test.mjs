@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { inspect, safeFile, allowed, policy, audit, root } from '../scripts/public-policy.mjs';
 
 test('private references and credentials fail closed', () => {
@@ -35,6 +36,14 @@ test('unapproved files and contaminated artifacts fail audit', () => {
       fs.mkdirSync(path.dirname(path.join(dir, name)), { recursive: true });
       fs.copyFileSync(path.join(root, name), path.join(dir, name));
     }
+    audit(dir, true);
+    fs.mkdirSync(path.join(dir, '.vscode'));
+    fs.writeFileSync(path.join(dir, '.vscode/settings.json'), '{}');
+    audit(dir, true);
+    execFileSync('git', ['init', '--quiet'], { cwd: dir });
+    execFileSync('git', ['add', '-f', '.vscode/settings.json'], { cwd: dir });
+    assert.throws(() => audit(dir, true), /Unapproved tracked file: \.vscode\/settings\.json/);
+    execFileSync('git', ['rm', '--cached', '--quiet', '.vscode/settings.json'], { cwd: dir });
     audit(dir, true);
     const extra = path.join(dir, 'src/services/unapproved.js');
     fs.writeFileSync(extra, 'export const confidential = true;');

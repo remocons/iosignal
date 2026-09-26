@@ -31,6 +31,8 @@ export function walk(base, prefix = '') {
   return fs.readdirSync(path.join(base, prefix), { withFileTypes: true }).flatMap(e => {
     const name = prefix ? `${prefix}/${e.name}` : e.name;
     if (!prefix && ['.git', 'node_modules'].includes(e.name)) return [];
+    // Local editor settings are excluded; audit still rejects unapproved tracked files.
+    if (!prefix && e.name === '.vscode' && e.isDirectory()) return [];
     if (e.isSymbolicLink()) throw Error(`Symlink rejected: ${name}`);
     return e.isDirectory() ? walk(base, name) : [name];
   });
