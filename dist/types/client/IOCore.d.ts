@@ -319,8 +319,8 @@ export class IOCore {
      */
     subscribe(tag: string): void;
     /**
-     * Subscribes stored channels.
-     * called client state become 'ready'
+     * Sends subscriptions stored by listen()/link() on each CID-ready transition,
+     * including reconnection. This automates subscription setup for simple clients.
      */
     subscribe_channels(): void;
     /**
@@ -330,7 +330,13 @@ export class IOCore {
      */
     unsubscribe(tag?: string): void;
     /**
-     * Listens for signals on a specific tag.
+     * Convenience API for simple clients (for example, CLI tools): register a
+     * tag handler once and remember its subscription in channels. Register before
+     * connection readiness; the CID-ready flow subscribes on initial connection
+     * and again after reconnect, without application-level ready/subscribe code.
+     * This does not send a subscription immediately, even if already ready.
+     * For precise subscription/send ordering or dynamic subscriptions, use
+     * on() with subscribe() in a ready handler instead. Direct signals use on('@').
      * @param {string} tag - The tag to listen on.
      * @param {Function} handler - The callback function to handle the signal.
      * @throws {TypeError} If tag is not a string, handler is not a function, or tag length is invalid.

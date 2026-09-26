@@ -1,7 +1,7 @@
 import MBP from 'meta-buffer-pack'
 import { Remote } from './Remote.js'
 import { serverOption } from './serverOption.js'
-import { IOMsg, STATE } from '../common/constants.js'
+import { IOMsg, STATE, SIZE_LIMIT } from '../common/constants.js'
 import { getSignalPack } from '../common/payload.js';
 import { FileLogger } from './FileLogger.js'
 import { Metrics } from './Metrics.js'
@@ -157,6 +157,7 @@ export class Manager {
     let tagLen = buffer.readUint8(1)
     let newTagBuf = encoder.encode(newTag)
     let newTagLen = newTagBuf.byteLength;
+    if (newTagLen > SIZE_LIMIT.TAG_LEN1) return null;
     let payloadCunk = buffer.subarray(2 + tagLen)
     let newBuffer = Buffer.concat([Buffer.from([msgType, newTagLen]), newTagBuf, payloadCunk])
     return newBuffer
@@ -194,6 +195,7 @@ export class Manager {
   }
 
   sender(tag, remote, message) {
+    if (encoder.encode(tag).byteLength > SIZE_LIMIT.TAG_LEN1) return ['err', 'Tag exceeds 255 UTF-8 bytes']
     if (serverOption.membersOnly && !remote.boho.isAuthorized) {
       // console.log("### server reject client signal reason: [membersOnly]" ,tag, remote.cid  )
       remote.send(Buffer.from([IOMsg.AUTH_CLEAR]))
@@ -210,6 +212,7 @@ export class Manager {
       // modify signalpack with cid_appneded tag.
       tag = remote.cid + tag;
       message = this.getNewSignalTagMessage(message, tag)
+      if (!message) return ['err', 'CID-prefixed tag exceeds 255 UTF-8 bytes']
 
     } else if (cidIndex > 0) {
       // uni-cast.  
@@ -219,6 +222,7 @@ export class Manager {
         let ommitCIdTag = '@' + tag.split('@')[1]
         // console.log('uni-cast tag change from', tag, 'to' , ommitCIdTag )
         message = this.getNewSignalTagMessage(message, ommitCIdTag)
+        if (!message) return ['err', 'Tag exceeds 255 UTF-8 bytes']
         // console.log(`origin tag: ${tag} omitTag: ${this.getSignalTag(message)}`)
         this.cid2remote.get(targetCId).send_enc_mode(message)
         return ['ok', 1]

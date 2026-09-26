@@ -81,6 +81,93 @@ async function fixture(t, api, authenticated = false) {
 }
 
 for (const [format, api] of variants) {
+  test(`${format}: tag limits use UTF-8 bytes and reject before mutation`, () => {
+    const io = new api.IO();
+    const sent = [];
+    io.send_enc_mode = packet => sent.push(packet);
+    const boundary = '가'.repeat(85); // 255 bytes, 85 JS characters.
+    const overflow = boundary + 'x';
+    assert.equal(api.getSignalPack(boundary)[1], 255);
+    assert.throws(() => api.getSignalPack(overflow), /255/);
+    assert.throws(() => api.getSignalPack('😀'.repeat(64)), /255/);
+    io.subscribe(boundary);
+    assert.equal(sent[0][1], 255);
+    assert.throws(() => io.subscribe(overflow), /255/);
+    assert.throws(() => io.signal(overflow), /255/);
+    assert.throws(() => io.signal_e2e(overflow, Buffer.from([1]), 'test-key'), /255/);
+    assert.throws(() => io.listen(overflow, () => {}), /255/);
+    assert.throws(() => io.link('local', overflow, () => {}), /255/);
+    assert.equal(io.channels.size, 0);
+    assert.equal(io.linkMap.size, 0);
+    assert.equal(io.listenerCount(overflow), 0);
+    io.channels.add('keep');
+    assert.throws(() => io.unsubscribe('keep,' + overflow), /255/);
+    assert.equal(io.channels.has('keep'), true);
+    io.cid = 'A';
+    io.signal('@' + 'x'.repeat(253)); // 255 bytes after CID prefix.
+    assert.throws(() => io.signal('@' + 'x'.repeat(254)), /255/);
+    assert.throws(() => io.signal_e2e('@' + 'x'.repeat(254), Buffer.from([1]), 'key'), /255/);
+    assert.equal(sent.length, 2);
+    io.channels.add(overflow);
+    io.state = api.STATE.READY;
+    assert.throws(() => io.subscribe_channels(), /255/);
+    assert.equal(sent.length, 2, 'validate all stored tags before sending any batch');
+    io.destroy();
+  });
+
+  test(`${format}: automatic subscriptions split on tag boundaries and reconnect`, { timeout: 10000 }, async t => {
+    const { server, client, connect, url } = await fixture(t, api);
+    const io = client();
+    const tags = ['가'.repeat(85), '😀'.repeat(63), 'tail'];
+    for (const tag of tags) io.listen(tag, () => {});
+    const packets = [];
+    const send = io.send_enc_mode.bind(io);
+    io.send_enc_mode = packet => {
+      if (packet[0] === api.IOMsg.SUBSCRIBE) packets.push(Buffer.from(packet));
+      send(packet);
+    };
+    const sender = await connect();
+    for (let round = 0; round < 2; round++) {
+      const ready = event(io, 'ready', t.signal);
+      io.open(url);
+      await ready;
+      await io.call('reply', 'echo', 'subscriptions processed');
+      const batch = packets.splice(0);
+      assert.ok(batch.length > 1);
+      assert.deepEqual(batch.flatMap(p => {
+        assert.equal(p[1], p.length - 2);
+        assert.ok(p[1] <= 255);
+        return p.subarray(2).toString().split(',');
+      }), tags);
+      for (const tag of tags) {
+        const received = event(io, 'message', t.signal);
+        sender.signal(tag, 'ok');
+        assert.deepEqual(await received, [tag, 'ok']);
+      }
+      const closed = event(server.manager.cid2remote.get(io.cid).socket, 'close', t.signal);
+      io.stop();
+      await closed;
+    }
+  });
+
+  test(`${format}: server rejects oversized CID rewrites without sending`, { timeout: 10000 }, async t => {
+    const { server, connect } = await fixture(t, api);
+    const sender = await connect();
+    const receiver = await connect();
+    const manager = server.manager;
+    const remote = manager.cid2remote.get(sender.cid);
+    const valid = '@' + 'x'.repeat(255 - Buffer.byteLength(sender.cid) - 1);
+    const oversized = valid + 'x'; // Raw tag fits, rewritten tag does not.
+    receiver.subscribe(sender.cid + valid);
+    await receiver.call('reply', 'echo', 'subscribed');
+    assert.deepEqual(manager.sender(oversized, remote, api.getSignalPack(oversized)),
+      ['err', 'CID-prefixed tag exceeds 255 UTF-8 bytes']);
+    assert.equal(manager.getNewSignalTagMessage(api.getSignalPack('@'), '가'.repeat(86)), null);
+    const received = event(receiver, 'message', t.signal);
+    sender.signal(valid, 'valid');
+    assert.deepEqual(await received, [sender.cid + valid, 'valid']);
+  });
+
   test(`${format}: WebSocket handshake, RPC success and errors`, { timeout: 10000 }, async t => {
     const { server, connect } = await fixture(t, api);
     server.attach('denied', { commands: ['echo'], checkPermission: () => false, echo() { throw Error('must not execute'); } });
@@ -120,6 +207,30 @@ for (const [format, api] of variants) {
     publisher.signal('room', 'must not arrive');
     publisher.signal('barrier', 'done');
     assert.deepEqual(await received, ['barrier', 'done']);
+  });
+
+  test(`${format}: EMPTY omits payload arguments while OBJECT null preserves one`, { timeout: 10000 }, async t => {
+    const { connect } = await fixture(t, api);
+    const receiver = await connect();
+    const sender = await connect();
+    const cidTag = `${sender.cid}@value`;
+    receiver.subscribe(`empty-room,${cidTag}`);
+    await receiver.call('reply', 'echo', 'subscribed');
+    for (const [sendTag, receiveTag, events] of [
+      ['empty-room', 'empty-room', ['empty-room', 'message']],
+      ['@value', cidTag, [cidTag, 'message']],
+      [`${receiver.cid}@value`, '@value', ['@']],
+    ]) {
+      for (const payloadArgs of [[], [null]]) {
+        const pending = events.map(name => event(receiver, name, t.signal));
+        sender.signal(sendTag, ...payloadArgs);
+        for (const args of await Promise.all(pending)) {
+          assert.deepEqual(args, [receiveTag, ...payloadArgs]);
+          assert.equal(args.length, payloadArgs.length + 1);
+          assert.equal(args[1], payloadArgs.length ? null : undefined);
+        }
+      }
+    }
   });
 
   test(`${format}: authenticated connection and encrypted RPC`, { timeout: 10000 }, async t => {

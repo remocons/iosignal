@@ -1,11 +1,12 @@
 import MBP from 'meta-buffer-pack'
-import { PAYLOAD_TYPE, IOMsg } from "./constants.js";
+import { PAYLOAD_TYPE, IOMsg, SIZE_LIMIT } from "./constants.js";
 const encoder = new TextEncoder()
 
 
 export function getSignalPack(tag, ...args) {
   if (typeof tag !== 'string') throw TypeError('tag should be string.')
   let tagEncoded = encoder.encode(tag)
+  if (tagEncoded.byteLength > SIZE_LIMIT.TAG_LEN1) throw TypeError('tag UTF-8 byte length exceeds 255')
   let payload = parsePayload(args)
 
   let sigPack;

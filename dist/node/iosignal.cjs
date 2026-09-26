@@ -667,6 +667,7 @@ const encoder$2 = new TextEncoder();
 function getSignalPack(tag, ...args) {
   if (typeof tag !== 'string') throw TypeError('tag should be string.')
   let tagEncoded = encoder$2.encode(tag);
+  if (tagEncoded.byteLength > SIZE_LIMIT.TAG_LEN1) throw TypeError('tag UTF-8 byte length exceeds 255')
   let payload = parsePayload(args);
 
   let sigPack;
@@ -773,6 +774,16 @@ const t=new Uint32Array([1116352408,1899447441,3049323471,3921009573,961987163,1
 const Buffer$1 = $$1.Buffer;
 const encoder$1 = new TextEncoder();
 const decoder$4 = new TextDecoder();
+
+// Wire tag lengths use one byte, regardless of JavaScript string length.
+function encodeTag(tag, allowEmpty = true) {
+  if (typeof tag !== 'string') throw TypeError('tag should be string.')
+  const encoded = encoder$1.encode(tag);
+  if ((!allowEmpty && encoded.byteLength === 0) || encoded.byteLength > SIZE_LIMIT.TAG_LEN1) {
+    throw TypeError('tag UTF-8 byte length must be ' + (allowEmpty ? '0' : '1') + '~255')
+  }
+  return encoded
+}
 
 function byteToUrl(buffer) {
   //ipv4(4bytes) , port(2bytes)
@@ -1308,10 +1319,10 @@ class IOCore extends EventEmitter {
           switch (payloadType) {
 
             case PAYLOAD_TYPE.EMPTY:
-              if (tag.indexOf('@') === 0) this.emit('@', tag, null);
+              if (tag.indexOf('@') === 0) this.emit('@', tag);
               else {
-                this.emit(tag, tag, null);
-                this.emit('message', tag, null);
+                this.emit(tag, tag);
+                this.emit('message', tag);
               }
               break;
 
@@ -1595,6 +1606,7 @@ class IOCore extends EventEmitter {
    */
   signal(tag, ...args) {
     if (typeof tag !== 'string') throw TypeError('tag should be string.')
+    if (tag.startsWith('@') && this.cid) encodeTag(this.cid + tag);
     let signalPack = getSignalPack(tag, ...args);
     this.send_enc_mode(signalPack);
   }
@@ -1618,9 +1630,9 @@ class IOCore extends EventEmitter {
    */
   signal_e2e(tag, data, key) {
 
+    const tagEncoded = encodeTag(tag);
+    if (tag.startsWith('@') && this.cid) encodeTag(this.cid + tag);
     if( !this.boho.isAuthorized ) return;
-    if (typeof tag !== 'string') throw TypeError('tag should be string.')
-    let tagEncoded = encoder$1.encode(tag);
     let dataPack = $$1.B8(data);
 
     //encrypt payload area with key
@@ -1705,39 +1717,37 @@ class IOCore extends EventEmitter {
    * @throws {TypeError} If tag is not a string or exceeds length limit.
    */
   subscribe(tag) {
-    if (typeof tag !== 'string') throw TypeError('tag should be string.')
-    if (tag.length > SIZE_LIMIT.TAG_LEN1) throw TypeError('please check tag string length limit:' + SIZE_LIMIT.TAG_LEN1)
-
-    try {
-      let tagEncoded = encoder$1.encode(tag);
-      this.send_enc_mode(
-        Buffer$1.concat([
-          $$1.NB('8', IOMsg.SUBSCRIBE),
-          $$1.NB('8', tagEncoded.byteLength),
-          tagEncoded]));
-    } catch (error) { }
-
+    const tagEncoded = encodeTag(tag);
+    this.send_enc_mode(Buffer$1.concat([
+      $$1.NB('8', IOMsg.SUBSCRIBE),
+      $$1.NB('8', tagEncoded.byteLength),
+      tagEncoded]));
   }
 
 
   /**
-   * Subscribes stored channels.
-   * called client state become 'ready'
+   * Sends subscriptions stored by listen()/link() on each CID-ready transition,
+   * including reconnection. This automates subscription setup for simple clients.
    */
   subscribe_channels() {
-    if (this.state !== STATE.READY) return
-    if (this.channels.size == 0) return
-    let tag = Array.from(this.channels).join(',');
-
-    try {
-      let tagEncoded = encoder$1.encode(tag);
-      this.send_enc_mode(
-        Buffer$1.concat([
-          $$1.NB('8', IOMsg.SUBSCRIBE),
-          $$1.NB('8', tagEncoded.byteLength),
-          tagEncoded]));
-    } catch (error) { }
-
+    if (this.state !== STATE.READY || this.channels.size === 0) return
+    // Validate the entire list first, then split only at tag boundaries.
+    // Preserve comma-separated entries accepted by existing registration APIs.
+    const tags = Array.from(this.channels).join(',').split(',');
+    const sizes = tags.map(tag => encodeTag(tag).byteLength);
+    const batches = [];
+    let batch = [], bytes = 0;
+    tags.forEach((tag, i) => {
+      if (batch.length && bytes + 1 + sizes[i] > SIZE_LIMIT.TAG_LEN1) {
+        batches.push(batch.join(','));
+        batch = [];
+        bytes = 0;
+      }
+      bytes += (batch.length ? 1 : 0) + sizes[i];
+      batch.push(tag);
+    });
+    if (batch.length) batches.push(batch.join(','));
+    batches.forEach(tag => this.subscribe(tag));
   }
 
   /**
@@ -1746,7 +1756,7 @@ class IOCore extends EventEmitter {
    * @throws {TypeError} If tag is not a string or exceeds length limit.
    */
   unsubscribe(tag = "") {
-    if (typeof tag !== 'string') throw TypeError('tag should be string.')
+    const tagEncoded = encodeTag(tag);
 
     if (tag == "") { // blank tag means unsubscribe all
       this.channels.clear();
@@ -1757,8 +1767,6 @@ class IOCore extends EventEmitter {
       });
     }
 
-    let tagEncoded = encoder$1.encode(tag);
-    if (tagEncoded.byteLength > SIZE_LIMIT.TAG_LEN1) throw TypeError('please use tag string bytelength below:' + SIZE_LIMIT.TAG_LEN1)
 
     this.send_enc_mode(Buffer$1.concat([
       $$1.NB('8', IOMsg.UNSUBSCRIBE),
@@ -1768,22 +1776,28 @@ class IOCore extends EventEmitter {
 
 
   /**
-   * Listens for signals on a specific tag.
+   * Convenience API for simple clients (for example, CLI tools): register a
+   * tag handler once and remember its subscription in channels. Register before
+   * connection readiness; the CID-ready flow subscribes on initial connection
+   * and again after reconnect, without application-level ready/subscribe code.
+   * This does not send a subscription immediately, even if already ready.
+   * For precise subscription/send ordering or dynamic subscriptions, use
+   * on() with subscribe() in a ready handler instead. Direct signals use on('@').
    * @param {string} tag - The tag to listen on.
    * @param {Function} handler - The callback function to handle the signal.
    * @throws {TypeError} If tag is not a string, handler is not a function, or tag length is invalid.
    */
   listen(tag, handler) {
     if (typeof tag !== 'string') throw TypeError('tag should be string.')
-    if (tag.length > 255 || tag.length == 0) throw TypeError('tag string length range: 1~255')
+    encodeTag(tag, false);
     if (typeof handler !== 'function') throw TypeError('handler is not a function.')
 
     if (tag.indexOf('@') !== 0) {
       this.channels.add(tag);
     }
     this.on(tag, handler);
-    // do not subscribe now.
-    // will subscribe when io state is 'ready'. (receive CID_RES from server)
+    // Subscribe from the CID-ready flow, initially and after reconnect.
+    // Keep registration separate from immediate subscription/send ordering.
 
   }
 
@@ -1799,7 +1813,7 @@ class IOCore extends EventEmitter {
   link(to, tag, handler) {
     if (typeof to !== 'string') throw TypeError('to(local link target) is not a string.')
     if (typeof tag !== 'string') throw TypeError('tag is not a string.')
-    if (tag.length > 255 || tag.length == 0) throw TypeError('tag string length range: 1~255')
+    encodeTag(tag, false);
     if (typeof handler !== 'function') throw TypeError('handler is not a function.')
 
     if (tag.indexOf('@') !== 0) {
@@ -1830,7 +1844,7 @@ class IOCore extends EventEmitter {
   unlink(to, tag) {
     if (typeof to !== 'string') throw TypeError('to(local link target) is not a string.')
     if (typeof tag !== 'string') throw TypeError('tag is not a string.')
-    if (tag.length > 255 || tag.length == 0) throw TypeError('tag string length range: 1~255')
+    encodeTag(tag, false);
 
     const linkSet = this.linkMap.get(to);
     if (!linkSet || !linkSet.has(tag)) return;
@@ -8729,6 +8743,7 @@ class Manager {
     let tagLen = buffer.readUint8(1);
     let newTagBuf = encoder.encode(newTag);
     let newTagLen = newTagBuf.byteLength;
+    if (newTagLen > SIZE_LIMIT.TAG_LEN1) return null;
     let payloadCunk = buffer.subarray(2 + tagLen);
     let newBuffer = Buffer.concat([Buffer.from([msgType, newTagLen]), newTagBuf, payloadCunk]);
     return newBuffer
@@ -8766,6 +8781,7 @@ class Manager {
   }
 
   sender(tag, remote, message) {
+    if (encoder.encode(tag).byteLength > SIZE_LIMIT.TAG_LEN1) return ['err', 'Tag exceeds 255 UTF-8 bytes']
     if (serverOption.membersOnly && !remote.boho.isAuthorized) {
       // console.log("### server reject client signal reason: [membersOnly]" ,tag, remote.cid  )
       remote.send(Buffer.from([IOMsg.AUTH_CLEAR]));
@@ -8782,6 +8798,7 @@ class Manager {
       // modify signalpack with cid_appneded tag.
       tag = remote.cid + tag;
       message = this.getNewSignalTagMessage(message, tag);
+      if (!message) return ['err', 'CID-prefixed tag exceeds 255 UTF-8 bytes']
 
     } else if (cidIndex > 0) {
       // uni-cast.  
@@ -8791,6 +8808,7 @@ class Manager {
         let ommitCIdTag = '@' + tag.split('@')[1];
         // console.log('uni-cast tag change from', tag, 'to' , ommitCIdTag )
         message = this.getNewSignalTagMessage(message, ommitCIdTag);
+        if (!message) return ['err', 'Tag exceeds 255 UTF-8 bytes']
         // console.log(`origin tag: ${tag} omitTag: ${this.getSignalTag(message)}`)
         this.cid2remote.get(targetCId).send_enc_mode(message);
         return ['ok', 1]
