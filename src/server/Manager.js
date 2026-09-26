@@ -127,7 +127,7 @@ export class Manager {
     }
 
     this.remotes.delete(remote)
-    this.cid2remote.delete(remote.cid)
+    if (this.cid2remote.get(remote.cid) === remote) this.cid2remote.delete(remote.cid)
     remote = null
 
   }

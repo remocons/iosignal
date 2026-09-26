@@ -77,7 +77,7 @@ async function fixture(t, api, authenticated = false) {
     assert.ok(io.cid, 'server assigned a client ID');
     return io;
   }
-  return { server, url, client, connect };
+  return { server, auth, url, client, connect };
 }
 
 for (const [format, api] of variants) {
@@ -272,5 +272,40 @@ for (const [format, api] of variants) {
     await rejected;
     assert.equal(ready, false);
     assert.equal(io.boho.isAuthorized, false);
+  });
+}
+
+for (const [format, api] of variants) {
+  test(`${format}: duplicate login can replace the old connection without losing the new CID`, { timeout: 10000 }, async t => {
+    const { server, auth, connect } = await fixture(t, api, true);
+    auth.keepOldConnection = false;
+    const old = await connect(['tester', 'fixture-key']);
+    old.autoReconnect = false;
+    const oldRemote = server.manager.cid2remote.get(old.cid);
+    const closed = event(oldRemote.socket, 'close', t.signal);
+    const replacement = await connect(['tester', 'fixture-key']);
+    await closed;
+    const mapped = server.manager.cid2remote.get(replacement.cid);
+    assert.ok(mapped);
+    assert.notEqual(mapped, oldRemote);
+    assert.equal(mapped.boho.isAuthorized, true);
+    assert.equal(old.boho.isAuthorized, false);
+    assert.deepEqual((await replacement.call('reply', 'echo', 'replacement')).body, ['replacement']);
+  });
+
+  test(`${format}: keeping the old login revokes authorization on the rejected peer`, { timeout: 10000 }, async t => {
+    const { server, connect, client, url } = await fixture(t, api, true);
+    const old = await connect(['tester', 'fixture-key']);
+    const remote = server.manager.cid2remote.get(old.cid);
+    const duplicate = client(['tester', 'fixture-key']);
+    duplicate.autoReconnect = false;
+    const rejected = event(duplicate, 'auth_fail', t.signal);
+    duplicate.open(url);
+    await rejected;
+    assert.equal(server.manager.cid2remote.get(old.cid), remote);
+    for (const peer of server.manager.remotes) {
+      if (peer !== remote) assert.equal(peer.boho.isAuthorized, false);
+    }
+    assert.deepEqual((await old.call('reply', 'echo', 'kept')).body, ['kept']);
   });
 }

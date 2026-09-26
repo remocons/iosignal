@@ -21,6 +21,7 @@ export class BohoAuth {
   }
 
   send_auth_fail(peer, reason) {
+    peer.boho.isAuthorized = false;
     if (this.authLogger) {
       let peerInfo = `FAIL #${peer.ssid} reason:${reason} `
       this.authLogger.log(peerInfo)
@@ -98,6 +99,7 @@ export class BohoAuth {
           MBP.MB('#reason', 'duplicate login.')
         )
         if (this.keepOldConnection) { // default true
+          peer.boho.isAuthorized = false;
           // keep old connection. reject new connection by sending auth_fail signal.
           // peer.send(authClearSignal)
           if( peer.socketType == 'websocket'){
@@ -108,9 +110,9 @@ export class BohoAuth {
         } else {
           // accept new connection. stop the old connection by sending auth_clear signal.
           old.send(authClearSignal)
-          peer.close()
+          old.close()
         }
-        return
+        if (this.keepOldConnection) return
       }
 
       //6. delete current (or anonymouse)cid if exist.
