@@ -29,14 +29,14 @@ function event(emitter, name, signal) {
   });
 }
 
-async function fixture(t, api, authenticated = false, tcp = false) {
+async function fixture(t, api, authenticated = false, tcp = false, security = {}) {
   const http = createServer();
   const previousMembersOnly = api.serverOption.membersOnly;
   api.serverOption.membersOnly = authenticated;
   const auth = authenticated
     ? new api.BohoAuth(new api.StringKeyProvider('tester.fixture-key.fixture-client.3'))
     : undefined;
-  const server = new api.Server({ httpServer: http, ...(tcp ? { congPort: 0 } : {}) }, auth);
+  const server = new api.Server({ httpServer: http, security, ...(tcp ? { congPort: 0 } : {}) }, auth);
   const clients = [];
   const errors = [];
   server.attach('reply', api.replyService);
@@ -386,24 +386,28 @@ for (const [format, api] of variants) {
     });
   }
 
-  test(`${format}: manual login and same-session relogin finish on both sides`, { timeout: 10000 }, async t => {
-    const { server, connect } = await fixture(t, api, true);
+  test(`${format}: manual login works; reused challenge closes; reconnect authenticates`, { timeout: 10000 }, async t => {
+    const { server, connect, url } = await fixture(t, api, true);
     const io = await connect();
+    io.autoReconnect = false;
     const remote = server.manager.cid2remote.get(io.cid);
-    for (let attempt = 0; attempt < 2; attempt++) {
-      const changes = [];
-      const observe = name => changes.push(name);
-      io.on('change', observe);
-      const ready = event(io, 'ready', t.signal);
-      io.login('tester', 'fixture-key');
-      await ready;
-      io.off('change', observe);
-      assert.deepEqual(changes, ['auth_req', 'auth_res', 'ready']);
-      assert.equal(io.cid, 'fixture-client');
-      assert.equal(remote.state, api.STATE.CID_RES);
-      assert.equal(server.manager.cid2remote.get(io.cid), remote);
-      assert.deepEqual((await io.call('reply', 'echo', 'relogin')).body, ['relogin']);
-    }
+    const ready = event(io, 'ready', t.signal);
+    io.login('tester', 'fixture-key');
+    await ready;
+    assert.equal(io.cid, 'fixture-client');
+    assert.equal(remote.state, api.STATE.CID_RES);
+    assert.deepEqual((await io.call('reply', 'echo', 'login')).body, ['login']);
+    const closed = event(remote.socket, 'close', t.signal);
+    const clientClosed = event(io, 'close', t.signal);
+    io.login('tester', 'fixture-key');
+    await Promise.all([closed, clientClosed]);
+    assert.equal(remote.securityFailure, 'AUTH_CHALLENGE_REUSED');
+    assert.equal(remote.boho.isAuthorized, false);
+    const reopened = event(io, 'ready', t.signal);
+    io.open(url);
+    await reopened;
+    assert.notEqual(server.manager.cid2remote.get(io.cid), remote);
+    assert.deepEqual((await io.call('reply', 'echo', 'reconnected')).body, ['reconnected']);
   });
 
   test(`${format}: TCP duplicate rejection records failure before close`, { timeout: 10000 }, async t => {
@@ -473,5 +477,203 @@ for (const [format, api] of variants) {
     await pending;
     assert.equal(remote.state, api.STATE.CLOSED);
     assert.equal(server.manager.cid2remote.has('fixture-client'), false);
+  });
+}
+
+// Build correctly authenticated test packets with explicit wire clocks, without
+// changing the process clock or the production JS/Arduino senders.
+function packetWithClock(io, timeMs, counter, plain) {
+  const setClock = io.boho.set_clock_nonce;
+  io.boho.set_clock_nonce = function (nonce) {
+    const salt = Buffer.alloc(12);
+    salt.writeUInt32LE(Math.floor(timeMs / 1000), 0);
+    salt.writeUInt16LE(timeMs % 1000, 4);
+    salt.writeUInt16LE(counter, 6);
+    salt.set(nonce, 8);
+    this.set_salt12(salt);
+  };
+  try { return Buffer.from(io.boho.encrypt_488(plain)); }
+  finally { io.boho.set_clock_nonce = setClock; }
+}
+
+for (const [format, api] of variants) {
+  for (const tcp of [false, true]) {
+    test(`${format}: ${tcp ? 'TCP' : 'WS'} encrypted RPC replay disconnects before a second execution`, { timeout: 10000 }, async t => {
+      const { server, connect } = await fixture(t, api, true, tcp);
+      const io = await connect(['tester', 'fixture-key']);
+      io.autoReconnect = false;
+      const remote = server.manager.cid2remote.get(io.cid);
+      let calls = 0;
+      server.on('reply', () => calls++);
+      let captured;
+      const send = io.socket_send.bind(io);
+      io.socket_send = data => { captured = Buffer.from(data); send(data); };
+      assert.deepEqual((await io.call('reply', 'echo', 'once')).body, ['once']);
+      assert.equal(captured[0], api.Boho.BohoMsg.ENC_488);
+      const closed = event(remote.socket, 'close', t.signal);
+      const failure = event(server, 'security:mismatch', t.signal);
+      io.send(captured);
+      const [failedRemote, reason] = await failure;
+      await closed;
+      assert.equal(failedRemote, remote);
+      assert.equal(reason, 'REPLAY_DETECTED');
+      assert.equal(calls, 1);
+      assert.equal(remote.boho.isAuthorized, false);
+      assert.equal(remote.state, api.STATE.CLOSED);
+    });
+  }
+
+  for (const delta of [-60001, 60001]) {
+    test(`${format}: authentic encrypted timestamp outside window (${delta}) closes`, { timeout: 10000 }, async t => {
+      const { server, connect } = await fixture(t, api, true);
+      const io = await connect(['tester', 'fixture-key']);
+      io.autoReconnect = false;
+      const remote = server.manager.cid2remote.get(io.cid);
+      const now = Date.now();
+      const packet = packetWithClock(io, now + delta, 1, Buffer.from([api.IOMsg.ECHO]));
+      let deliveries = 0;
+      remote.send = packet => { if (packet[0] === api.IOMsg.ECHO) deliveries++; };
+      const closed = event(remote.socket, 'close', t.signal);
+      remote.onSocketMessage(packet, true, now);
+      await closed;
+      assert.equal(remote.securityFailure, 'TIME_MISMATCH');
+      assert.equal(deliveries, 0);
+    });
+  }
+
+  test(`${format}: clock boundaries, counter wrap and backward correction allow unique tuples`, { timeout: 10000 }, async t => {
+    const { server, connect } = await fixture(t, api, true);
+    const io = await connect(['tester', 'fixture-key']);
+    io.autoReconnect = false;
+    const remote = server.manager.cid2remote.get(io.cid);
+    const now = Date.now();
+    let deliveries = 0;
+    remote.send = packet => { if (packet[0] === api.IOMsg.ECHO) deliveries++; };
+    for (const [time, counter] of [[now - 60000, 12], [now + 60000, 12],
+      [now, 65535], [now, 0], [now, 1], [now - 10, 1]]) {
+      remote.onSocketMessage(packetWithClock(io, time, counter, Buffer.from([api.IOMsg.ECHO])), true, now);
+    }
+    assert.equal(deliveries, 6);
+    assert.equal(remote.securityFailure, null);
+    const closed = event(remote.socket, 'close', t.signal);
+    remote.onSocketMessage(packetWithClock(io, now, 0, Buffer.from([api.IOMsg.ECHO, 99])), true, now);
+    await closed;
+    assert.equal(remote.securityFailure, 'REPLAY_DETECTED', 'different payload cannot reuse a tuple');
+    assert.equal(deliveries, 6);
+  });
+
+  test(`${format}: ENC_E2E shares replay history with ENC_488 before routing`, { timeout: 10000 }, async t => {
+    const { server, connect } = await fixture(t, api, true);
+    const io = await connect(['tester', 'fixture-key']);
+    io.autoReconnect = false;
+    const remote = server.manager.cid2remote.get(io.cid);
+    const now = Date.now();
+    const routing = Buffer.from([api.IOMsg.SIGNAL_E2E, 1, 120, api.PAYLOAD_TYPE.BINARY]);
+    const header = packetWithClock(io, now, 77, routing);
+    const wire = Buffer.concat([header, io.boho.encrypt_e2e('opaque-body', 'e2e-fixture-key')]);
+    wire[0] = api.Boho.BohoMsg.ENC_E2E;
+    let routed = 0;
+    server.manager.sender = tag => { if (tag === 'x') routed++; };
+    remote.onSocketMessage(Buffer.from(wire), true, now);
+    assert.equal(routed, 1);
+    assert.equal(remote.securityFailure, null);
+    const closed = event(remote.socket, 'close', t.signal);
+    remote.onSocketMessage(header, true, now);
+    await closed;
+    assert.equal(remote.securityFailure, 'REPLAY_DETECTED');
+    assert.equal(routed, 1);
+  });
+
+  test(`${format}: forged clock fails integrity and never executes`, { timeout: 10000 }, async t => {
+    const { server, connect } = await fixture(t, api, true);
+    const io = await connect(['tester', 'fixture-key']);
+    io.autoReconnect = false;
+    const remote = server.manager.cid2remote.get(io.cid);
+    const packet = packetWithClock(io, Date.now(), 10, Buffer.from([api.IOMsg.ECHO]));
+    packet[5] ^= 1;
+    let deliveries = 0;
+    remote.send = packet => { if (packet[0] === api.IOMsg.ECHO) deliveries++; };
+    const closed = event(remote.socket, 'close', t.signal);
+    remote.onSocketMessage(packet);
+    await closed;
+    assert.equal(remote.securityFailure, 'INVALID_ENCRYPTED_PACKET');
+    assert.equal(deliveries, 0);
+    assert.equal(remote._replayEntries, 0);
+  });
+
+  test(`${format}: expired challenge closes before key lookup`, { timeout: 10000 }, async t => {
+    const { server, connect, auth } = await fixture(t, api, true);
+    const io = await connect();
+    io.autoReconnect = false;
+    const remote = server.manager.cid2remote.get(io.cid);
+    remote._challengeIssuedAt -= server.security.authChallengeMaxAgeMs + 1;
+    let lookups = 0;
+    auth.keyProvider.getAuth = async () => { lookups++; };
+    const closed = event(remote.socket, 'close', t.signal);
+    io.login('tester', 'fixture-key');
+    await closed;
+    assert.equal(remote.securityFailure, 'AUTH_CHALLENGE_EXPIRED');
+    assert.equal(lookups, 0);
+  });
+
+  test(`${format}: challenge expiry during key lookup cannot authorize`, { timeout: 10000 }, async t => {
+    const { server, connect, auth } = await fixture(t, api, true);
+    const io = await connect();
+    io.autoReconnect = false;
+    const remote = server.manager.cid2remote.get(io.cid);
+    const lookup = auth.keyProvider.getAuth.bind(auth.keyProvider);
+    auth.keyProvider.getAuth = async id => {
+      remote._challengeIssuedAt -= server.security.authChallengeMaxAgeMs + 1;
+      return lookup(id);
+    };
+    const closed = event(remote.socket, 'close', t.signal);
+    io.login('tester', 'fixture-key');
+    await closed;
+    assert.equal(remote.securityFailure, 'AUTH_CHALLENGE_EXPIRED');
+    assert.equal(remote.boho.isAuthorized, false);
+    assert.equal(server.manager.cid2remote.has('fixture-client'), false);
+  });
+
+  test(`${format}: replay storage is bounded without evicting valid evidence`, { timeout: 10000 }, async t => {
+    const { server, connect } = await fixture(t, api, true, false, { maxReplayEntries: 2 });
+    const io = await connect(['tester', 'fixture-key']);
+    io.autoReconnect = false;
+    const remote = server.manager.cid2remote.get(io.cid);
+    let deliveries = 0;
+    remote.send = packet => { if (packet[0] === api.IOMsg.ECHO) deliveries++; };
+    const now = Date.now();
+    const closed = event(remote.socket, 'close', t.signal);
+    for (let i = 0; i < 3; i++) {
+      remote.onSocketMessage(packetWithClock(io, now, i, Buffer.from([api.IOMsg.ECHO])), true, now);
+    }
+    await closed;
+    assert.equal(deliveries, 2);
+    assert.equal(remote.securityFailure, 'REPLAY_CAPACITY_EXCEEDED');
+  });
+
+  test(`${format}: expired replay buckets retire; clock rollback cannot reopen them`, { timeout: 10000 }, async t => {
+    const { server, connect } = await fixture(t, api, true, false, { maxReplayEntries: 2, maxClockSkewMs: 1000 });
+    const io = await connect(['tester', 'fixture-key']);
+    io.autoReconnect = false;
+    const remote = server.manager.cid2remote.get(io.cid);
+    remote.send = () => {};
+    const now = Math.floor(Date.now() / 1000) * 1000;
+    const old = packetWithClock(io, now, 1, Buffer.from([api.IOMsg.ECHO]));
+    remote.onSocketMessage(old, true, now);
+    remote.onSocketMessage(packetWithClock(io, now + 3000, 2, Buffer.from([api.IOMsg.ECHO])), true, now + 3000);
+    assert.equal(remote._replayEntries, 1);
+    assert.equal(remote.securityFailure, null);
+    const closed = event(remote.socket, 'close', t.signal);
+    remote.onSocketMessage(old, true, now);
+    await closed;
+    assert.equal(remote.securityFailure, 'TIME_MISMATCH');
+  });
+
+  test(`${format}: invalid security options fail before opening sockets`, () => {
+    for (const name of ['maxClockSkewMs', 'authChallengeMaxAgeMs', 'maxReplayEntries']) {
+      for (const value of [0, -1, NaN, Infinity, 1.5, '60000']) {
+        assert.throws(() => new api.Server({ port: 0, security: { [name]: value } }), RangeError);
+      }
+    }
   });
 }

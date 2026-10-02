@@ -46,6 +46,13 @@ export let serverOption = {
     limitCounter: 1000
   },
 
+  // Applied to each new Server instance; packet layouts remain unchanged.
+  security: {
+    maxClockSkewMs: 60000,
+    authChallengeMaxAgeMs: 60000,
+    maxReplayEntries: 65536
+  },
+
   auth: {
     delay_auth_fail: 600
   },

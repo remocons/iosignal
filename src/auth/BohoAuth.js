@@ -40,6 +40,12 @@ export class BohoAuth {
 
   async verify_auth_req(auth_req, peer) {
     try {
+      if (!peer.checkAuthChallenge()) return;
+      if (!(auth_req instanceof Uint8Array) || auth_req.length !== Boho.MetaSize.AUTH_REQ ||
+          auth_req[0] !== Boho.BohoMsg.AUTH_REQ) {
+        peer.securityMismatch('INVALID_AUTH_PACKET');
+        return;
+      }
       //1. unpack 
       let infoPack = MBP.unpack(auth_req, Boho.Meta.AUTH_REQ)
       if (!infoPack) {
@@ -56,7 +62,7 @@ export class BohoAuth {
 
       //2. get key of id from DB
       let authInfo = await this.keyProvider.getAuth(id)
-      if (peer._closing || peer.state === STATE.CLOSED) return;
+      if (!peer.checkAuthChallenge()) return;
       if (!authInfo) {
         this.send_auth_fail(peer, 'NO ID:' + id);
         return
@@ -85,6 +91,10 @@ export class BohoAuth {
         this.send_auth_fail(peer, 'hmac dismatched');
         return
       }
+
+      // A valid proof consumes this challenge even if account policy rejects it.
+      // Reauthentication requires a new connection, never a replay-state reset.
+      peer._challengeUsed = true;
 
       //4. get info
 

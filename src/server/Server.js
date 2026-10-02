@@ -9,6 +9,13 @@ export class Server extends EventEmitter {
 
   constructor(options, authManager) {
     super();
+    const security = { ...serverOption.security, ...options.security };
+    for (const name of ['maxClockSkewMs', 'authChallengeMaxAgeMs', 'maxReplayEntries']) {
+      if (!Number.isSafeInteger(security[name]) || security[name] <= 0) {
+        throw new RangeError(`security.${name} must be a positive safe integer`);
+      }
+    }
+    this.security = Object.freeze(security);
     this.serviceNames = new Set()
     this.wss = {};
     this.port = null;

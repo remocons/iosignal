@@ -1,3 +1,4 @@
+import { performance } from 'node:perf_hooks'
 import MBP from 'meta-buffer-pack'
 import Boho from 'boho'
 import { serverOption } from './serverOption.js';
@@ -20,6 +21,13 @@ export class RemoteCore {
     socket.openTime = Date.now()
 
     this.boho = new Boho()
+    this.security = manager.server.security;
+    this._challengeIssuedAt = null;
+    this._challengeUsed = false;
+    this._replayBuckets = new Map();
+    this._replayEntries = 0;
+    this._replayExpiredBefore = 0;
+    this.securityFailure = null;
     this.encMode = ENC_MODE.AUTO;
     this.channels = new Set();  //  subscribed tags
     this.retain_signal = new Map();
@@ -108,15 +116,92 @@ export class RemoteCore {
     return true;
   }
 
+  issueAuthChallenge() {
+    const packet = this.boho.server_time_nonce();
+    this._challengeIssuedAt = performance.now();
+    return packet;
+  }
+
+  securityMismatch(reason) {
+    if (this._closing || this.state === STATE.CLOSED) return false;
+    this.securityFailure = reason;
+    this.boho.clearAuth();
+    this.isAdmin = false;
+    this._replayBuckets.clear();
+    this._replayEntries = 0;
+    this.close(true);
+    this.manager.attackLogger?.log(`SECURITY #${this.ssid} reason:${reason}`);
+    this.manager.server.emit('security:mismatch', this, reason);
+    return false;
+  }
+
+  checkAuthChallenge() {
+    if (this._closing || this.state === STATE.CLOSED) return false;
+    if (this._challengeUsed) return this.securityMismatch('AUTH_CHALLENGE_REUSED');
+    if (this._challengeIssuedAt === null ||
+        performance.now() - this._challengeIssuedAt > this.security.authChallengeMaxAgeMs) {
+      return this.securityMismatch('AUTH_CHALLENGE_EXPIRED');
+    }
+    return true;
+  }
+
+  // Called only after Boho has authenticated the packet's clock and payload.
+  acceptEncryptedClock(message, receivedAtMs) {
+    const seconds = message.readUInt32LE(5);
+    const milliseconds = message.readUInt16LE(9);
+    const counter = message.readUInt16LE(11);
+    const packetTime = seconds * 1000 + milliseconds;
+    const earliest = receivedAtMs - this.security.maxClockSkewMs;
+    if (milliseconds >= 1000 || Math.abs(receivedAtMs - packetTime) > this.security.maxClockSkewMs ||
+        packetTime < this._replayExpiredBefore) {
+      return this.securityMismatch('TIME_MISMATCH');
+    }
+    // Never reopen an expired timestamp range after the server clock moves back.
+    this._replayExpiredBefore = Math.max(this._replayExpiredBefore, earliest);
+    for (const [second, values] of this._replayBuckets) {
+      if ((second + 1) * 1000 <= this._replayExpiredBefore) {
+        this._replayEntries -= values.size;
+        this._replayBuckets.delete(second);
+      }
+    }
+    let bucket = this._replayBuckets.get(seconds);
+    const value = milliseconds * 65536 + counter;
+    if (bucket?.has(value)) return this.securityMismatch('REPLAY_DETECTED');
+    // Fail closed instead of evicting still-valid replay evidence under load.
+    if (this._replayEntries >= this.security.maxReplayEntries) {
+      return this.securityMismatch('REPLAY_CAPACITY_EXCEEDED');
+    }
+    if (!bucket) this._replayBuckets.set(seconds, bucket = new Set());
+    bucket.add(value);
+    this._replayEntries++;
+    return true;
+  }
+
+  decryptSessionPacket(message, receivedAtMs) {
+    let decoded;
+    try {
+      decoded = this.boho.decrypt_488(message);
+    } catch {
+      this.securityMismatch('INVALID_ENCRYPTED_PACKET');
+      return;
+    }
+    if (!decoded) {
+      this.securityMismatch('INVALID_ENCRYPTED_PACKET');
+      return;
+    }
+    if (this.acceptEncryptedClock(message, receivedAtMs)) return decoded;
+  }
+
   onTimeDelayMessage(message, isBinary = true) {
+    const receivedAtMs = Date.now();
     setTimeout(() => {
-      this.onSocketMessage(message, isBinary)
+      this.onSocketMessage(message, isBinary, receivedAtMs)
     }
       , serverOption.debug.delay)
   }
 
   // CongSocket or WebSocket
-  onSocketMessage(message, isBinary = true) {
+  onSocketMessage(message, isBinary = true, receivedAtMs = Date.now()) {
 
     if (this._closing || this.state === STATE.CLOSED) return;
 
@@ -132,12 +217,7 @@ export class RemoteCore {
 
       if (msgType === Boho.BohoMsg.ENC_488) {
 
-        try {
-          decoded = this.boho.decrypt_488(message)
-        } catch (err) {
-          console.log('-- E488 DEC_FAIL', err)
-          return
-        }
+        decoded = this.decryptSessionPacket(message, receivedAtMs);
 
         if (decoded) {
           msgType = decoded[0]
@@ -147,12 +227,7 @@ export class RemoteCore {
         }
 
       } else if (msgType === Boho.BohoMsg.ENC_E2E) { // symetric E2EE Signal
-        try {
-          decoded = this.boho.decrypt_488(message)
-        } catch (err) {
-          // console.log('-- E2E DEC_FAIL', err)
-          return
-        }
+        decoded = this.decryptSessionPacket(message, receivedAtMs);
         // console.log('e2e unpack:', decoded )
         if (decoded) {
           msgType = decoded[0]
@@ -299,13 +374,17 @@ export class RemoteCore {
         // client's auth requst
         case Boho.BohoMsg.AUTH_REQ:
           if (!this.manager.authManager) return
-          // Do not start overlapping verification on the same connection.
-          if (this.state === STATE.AUTH_REQ) return;
+          // A second request while verification is pending must not restart auth.
+          if (this.state === STATE.AUTH_REQ) {
+            this.securityMismatch('AUTH_IN_PROGRESS');
+            return;
+          }
           if (![STATE.SERVER_READY, STATE.AUTH_RES, STATE.AUTH_FAIL, STATE.CID_RES].includes(this.state)) {
             console.log('protocol error. must called auth_req after server_ready')
             this.close();
             return;
           }
+          if (!this.checkAuthChallenge()) return;
           this.setState(STATE.AUTH_REQ)
           //async
           this.manager.authManager.verify_auth_req(message, this)

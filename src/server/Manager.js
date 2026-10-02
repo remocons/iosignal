@@ -73,7 +73,7 @@ export class Manager {
     socket.isAlive = true;
     let remote = new Remote(socket, req, this)
     this.remotes.add(remote)
-    remote.send( remote.boho.server_time_nonce() )
+    remote.send(remote.issueAuthChallenge())
     remote.send( Buffer.from([ IOMsg.SERVER_READY]) )
     remote.setState(STATE.SERVER_READY)
     this.lastSSID = remote.ssid;
