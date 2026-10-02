@@ -252,6 +252,41 @@ also applying E2E to message bodies. Modified app code can expose keys and
 plaintext, so E2E still requires trust in the app code provider. Boho does not
 bypass browser mixed content rules.
 
+### Session freshness in 6.2.0
+
+The server now rejects encrypted session packets outside the configured clock
+window or with an already accepted time/counter pair. Both `ENC_488` and the
+`ENC_E2E` routing envelope share this policy. Rejection terminates the connection
+before executing or routing the message. Wire formats remain unchanged.
+
+```js
+const server = new Server({
+  port: 8080,
+  security: {
+    maxClockSkewMs: 60000,
+    authChallengeMaxAgeMs: 60000,
+    maxReplayEntries: 65536
+  }
+}, authManager);
+```
+
+Defaults are a 60-second absolute clock window, a 60-second authentication
+challenge lifetime and at most 65,536 remembered packet tuples per connection.
+The limits must be positive safe integers. Cache exhaustion also terminates the
+connection; still-valid replay evidence is never evicted. The server emits
+`security:mismatch(remote, reason)` and records `remote.securityFailure`.
+
+A successfully verified authentication proof consumes its challenge. Reconnect
+for reauthentication or if manual login occurs after challenge expiry; calling
+`login()` again on an authenticated connection now closes it. AUTH_REQ has no
+current device timestamp, so this stage checks challenge age. Device clock skew
+is checked on encrypted packets. Plaintext/TLS transport policy is unchanged.
+
+JS clients must have a clock within the configured window. Boho Arduino 0.9.0
+adds gradual clock correction from authenticated server envelopes; plain
+PING/PONG provides no time sample. Inner E2E payload freshness remains an
+application concern, separate from the connection envelope.
+
 ### Conditions in the current implementation
 
 - Use sufficiently random keys. A single SHA-256 in `set_key` is not a slow password KDF.
