@@ -88,6 +88,28 @@ process.once('SIGINT', () => io.stop());
 `signal(tag, ...args)`는 문자열, 바이너리, 객체 및 여러 인자를 지원합니다.
 `unsubscribe(tag)`로 구독을 해제할 수 있습니다.
 
+### 시그널 태그 요약
+
+| 통신 방식 | 송신 | 구독 | 수신 tag |
+| --- | --- | --- | --- |
+| 채널 | `room#topic` | `room#topic` | `room#topic` |
+| 홈채널 | `#topic` | `#topic` | `#topic` |
+| B에게 직접 송신 | `B@topic` | 불필요 | `@topic` |
+| A의 CID 발행 | A가 `@topic` 송신 | `A@topic` | `A@topic` |
+
+직접 시그널은 `on('message', ...)`가 아닌 `on('@', ...)`로 받습니다.
+
+```js
+io.on('@', (tag, ...args) => {
+  if (tag === '@topic') console.log(...args);
+});
+```
+
+리테인 발행은 `room#$state`나 `@$state`처럼 `$`를 포함한 태그를 사용합니다.
+보관 정책과 제한은 서버·서비스 설정 및 인증 유형에 따라 달라집니다.
+자세한 내용은 [시그널 태그](https://iosignal.net/docs/core/signal_tags)와
+[시그널 유형](https://iosignal.net/docs/core/signal_types)을 참고하세요.
+
 ## 브라우저
 
 번들러를 사용하는 브라우저 프로젝트에서는 브라우저 전용 진입점을 가져옵니다.

@@ -89,6 +89,28 @@ process.once('SIGINT', () => io.stop());
 `signal(tag, ...args)` supports strings, binary data, objects and multiple
 arguments. Use `unsubscribe(tag)` to unsubscribe.
 
+### Signal tags at a glance
+
+| Communication | Send | Subscribe | Received tag |
+| --- | --- | --- | --- |
+| Channel | `room#topic` | `room#topic` | `room#topic` |
+| Home channel | `#topic` | `#topic` | `#topic` |
+| Direct to B | `B@topic` | Not required | `@topic` |
+| Publication by A | A sends `@topic` | `A@topic` | `A@topic` |
+
+Direct signals arrive on `on('@', ...)`, rather than `on('message', ...)`.
+
+```js
+io.on('@', (tag, ...args) => {
+  if (tag === '@topic') console.log(...args);
+});
+```
+
+For retained publications, use a tag containing `$`, such as `room#$state` or
+`@$state`. Retention policies and limits depend on server/service configuration
+and authentication type. See [signal tags](https://iosignal.net/docs/core/signal_tags)
+and [signal types](https://iosignal.net/docs/core/signal_types) for details.
+
 ## Browsers
 
 For browser projects using a bundler, import the browser-specific entry point.
