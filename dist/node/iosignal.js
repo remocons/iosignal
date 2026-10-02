@@ -14,7 +14,7 @@ import fs, { readFileSync } from 'fs';
 import { memoryUsage } from 'process';
 import path from 'path';
 
-var version$1 = "6.1.0";
+var version$1 = "6.1.1";
 var pkg = {
 	version: version$1};
 
