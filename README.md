@@ -252,7 +252,7 @@ also applying E2E to message bodies. Modified app code can expose keys and
 plaintext, so E2E still requires trust in the app code provider. Boho does not
 bypass browser mixed content rules.
 
-### Session freshness in 6.2.0
+### Session freshness in 7.0.0
 
 The server now rejects encrypted session packets outside the configured clock
 window or with an already accepted time/counter pair. Both `ENC_488` and the
@@ -282,7 +282,7 @@ for reauthentication or if manual login occurs after challenge expiry; calling
 current device timestamp, so this stage checks challenge age. Device clock skew
 is checked on encrypted packets. Plaintext/TLS transport policy is unchanged.
 
-JS clients must have a clock within the configured window. Boho Arduino 0.9.0
+JS clients must have a clock within the configured window. Boho Arduino 1.0.0
 adds gradual clock correction from authenticated server envelopes; plain
 PING/PONG provides no time sample. Inner E2E payload freshness remains an
 application concern, separate from the connection envelope.
