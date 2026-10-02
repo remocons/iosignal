@@ -1,23 +1,25 @@
 # iosignal
 
-Node.js와 브라우저를 위한 실시간 메시징 라이브러리입니다. WebSocket 기반
-클라이언트·서버 통신, 태그 기반 발행/구독, RPC 서비스를 제공합니다.
-Node.js에서는 TCP 기반 `IOCongSocket`도 사용할 수 있습니다.
+[English](README.md) | [한국어](README.ko.md)
 
-## 설치
+A real-time messaging library for Node.js and browsers, providing WebSocket
+client–server communication, tag-based publish/subscribe and RPC services.
+Node.js also supports TCP through `IOCongSocket`.
+
+## Installation
 
 ```bash
 npm install iosignal
 ```
 
-아래 Node.js 예제는 ESM 형식입니다. `.mjs` 파일로 저장하거나 프로젝트의
-`package.json`에 `"type": "module"`을 설정하세요.
+The Node.js examples below use ESM. Save them as `.mjs` files or set
+`"type": "module"` in your project's `package.json`.
 
-## 빠른 시작
+## Quick start
 
-### 서버
+### Server
 
-다음을 `server.mjs`로 저장하고 `node server.mjs`로 실행합니다.
+Save the following as `server.mjs` and run `node server.mjs`.
 
 ```js
 import { Server, replyService } from 'iosignal';
@@ -32,11 +34,12 @@ server.on('ready', () => {
 process.once('SIGINT', () => server.close());
 ```
 
-이 예제는 인증 없는 로컬 개발용 서버입니다.
+This is a local development server without authentication.
 
-### Node.js 클라이언트
+### Node.js client
 
-서버 실행 후 다음을 `client.mjs`로 저장하고 `node client.mjs`로 실행합니다.
+After starting the server, save the following as `client.mjs` and run
+`node client.mjs`.
 
 ```js
 import { IO } from 'iosignal';
@@ -56,16 +59,16 @@ io.on('ready', async () => {
 });
 ```
 
-CommonJS에서도 공개 API를 사용할 수 있습니다.
+The public API is also available from CommonJS.
 
 ```js
 const { IO, Server, replyService } = require('iosignal');
 ```
 
-## 발행과 구독
+## Publish and subscribe
 
-연결이 준비되면 `subscribe()`로 태그를 구독하고 `signal()`로 메시지를 보냅니다.
-다음 클라이언트는 메시지를 계속 수신합니다.
+Once connected, use `subscribe()` to subscribe to a tag and `signal()` to send
+messages. The following client keeps receiving messages.
 
 ```js
 import { IO } from 'iosignal';
@@ -83,12 +86,12 @@ io.on('ready', () => {
 process.once('SIGINT', () => io.stop());
 ```
 
-`signal(tag, ...args)`는 문자열, 바이너리, 객체 및 여러 인자를 지원합니다.
-`unsubscribe(tag)`로 구독을 해제할 수 있습니다.
+`signal(tag, ...args)` supports strings, binary data, objects and multiple
+arguments. Use `unsubscribe(tag)` to unsubscribe.
 
-## 브라우저
+## Browsers
 
-번들러를 사용하는 브라우저 프로젝트에서는 브라우저 전용 진입점을 가져옵니다.
+For browser projects using a bundler, import the browser-specific entry point.
 
 ```js
 import IO from 'iosignal/io';
@@ -102,62 +105,178 @@ io.on('ready', () => {
 });
 ```
 
-브라우저 예제도 위 서버에 연결합니다. HTTPS 페이지에서는 TLS가 구성된
-`wss://` 서버 주소를 사용하세요. 사용이 끝나면 `io.stop()`으로 연결과 자동 재연결을 중단합니다.
+This browser example connects to the same server above. From an HTTPS page,
+use a `wss://` server URL with TLS configured. When finished, call `io.stop()`
+to close the connection and stop automatic reconnection.
 
-## 주요 API
+## Main APIs
 
-| API | 용도 |
+| API | Purpose |
 | --- | --- |
-| `Server` | WebSocket/TCP 서버 생성 |
-| `IO` | Node.js WebSocket 클라이언트; `iosignal/io`에서는 브라우저 클라이언트 |
-| `IOCongSocket` | Node.js TCP 클라이언트 |
-| `server.attach(name, service)` | RPC 서비스 등록 |
-| `io.call(service, command, ...args)` | RPC 요청 |
-| `io.subscribe(tag)` / `io.unsubscribe(tag)` | 태그 구독 / 해제 |
-| `io.signal(tag, ...args)` | 메시지 발행 |
-| `io.stop()` | 자동 재연결 중단 및 연결 정리 |
-| `server.close(callback)` | 서버 종료 |
-| `BohoAuth` | 서버 인증 관리자 |
-| `StringKeyProvider`, `FileKeyProvider`, `RedisKeyProvider` | 인증 키 공급자 |
+| `Server` | Create a WebSocket/TCP server |
+| `IO` | Node.js WebSocket client; the browser client when imported from `iosignal/io` |
+| `IOCongSocket` | Node.js TCP client |
+| `server.attach(name, service)` | Register an RPC service |
+| `io.call(service, command, ...args)` | Make an RPC request |
+| `io.subscribe(tag)` / `io.unsubscribe(tag)` | Subscribe / unsubscribe |
+| `io.signal(tag, ...args)` | Publish a message |
+| `io.stop()` | Stop automatic reconnection and clean up the connection |
+| `server.close(callback)` | Shut down the server |
+| `BohoAuth` | Server authentication manager |
+| `StringKeyProvider`, `FileKeyProvider`, `RedisKeyProvider` | Authentication key providers |
 
-## 소스 빌드 및 검증
+## Authentication and encrypted communication with Boho
 
-이 저장소의 개발·검증 환경은 Node.js 22와 npm 10을 사용합니다.
+IOSignal uses [Boho](https://github.com/remocons/boho) for shared-key authentication
+and message encryption. Boho has an
+[Arduino implementation](https://github.com/remocons/boho-arduino) and a JavaScript
+implementation for Node.js and browsers, allowing DIY devices and web apps to use
+the same approach.
+
+### Why shared-key Boho?
+
+With Arduino devices, your own web apps and servers under common administration,
+you can control both endpoint code and initial key provisioning. Device-specific
+keys can be installed over USB/serial during setup, web app users can enter keys
+obtained through another channel, and servers can distribute keys through
+existing SSH/TLS connections.
+
+When a secure provisioning path already exists, pre-shared symmetric keys can
+support authentication and encrypted communication. You can establish peers
+without a certificate authority; trust rests on the provisioning path and
+endpoint software. Device-specific keys, secure storage, rotation and revocation
+are still necessary. Embedding a common secret in a public JavaScript bundle is
+not secure key distribution.
+
+Boho combines a SHA-256-based keystream, XOR encryption, shared-key authentication
+and binary packets for this environment. Its distinction is **compatible Arduino
+and JavaScript implementations integrated with IOSignal connections and message
+delivery**, rather than novelty in the cryptographic operations themselves.
+
+### XOR and a hash-based “virtual OTP”
+
+XOR is a simple operation that restores the original value when applied twice
+with the same value.
+
+```text
+Encryption: ciphertext = plaintext XOR keystream
+Decryption: plaintext  = ciphertext XOR keystream
+```
+
+A true one-time pad (OTP) uses a uniformly random pad independent of the
+plaintext, as long as the data, kept secret and used only once. This provides
+perfect secrecy, but requires supplying both endpoints with a new 1 MB secret
+pad for every 1 MB of data. Reusing a pad exposes `C1 XOR C2 = P1 XOR P2`, revealing
+a relationship between plaintexts.
+
+Instead of storing a pad as large as the data, Boho generates a SHA-256 keystream
+from a secret key and message-specific values. The usual `set_key` path is:
+
+```text
+K   = SHA256(input key)
+B   = SHA256(K || salt12)
+S_i = SHA256(B || LE32(i))       // i = 1, 2, 3, …
+keystream = S_1 || S_2 || …     // use only the plaintext length
+```
+
+`||` means byte concatenation; `LE32` is a four-byte little-endian integer. Each
+hash output is 32 bytes. `salt12` contains time, counter and nonce values, and
+the receiver reproduces the stream using the same values and key.
+
+“Virtual OTP” describes this pseudorandom stream, not the perfect secrecy of a
+true OTP. **Public random values alone can be hashed by anyone, so a shared secret
+key is required.** Repeating the same key and `salt12` must also be avoided. XOR
+alone does not detect tampering, so Boho data packets include the first eight
+bytes of `SHA256(K || salt12 || plaintext)` as a tag. Despite legacy names in the
+code, this tag is not standard HMAC.
+
+### Understanding the relationship with TLS
+
+Typical certificate-based TLS authenticates peers and establishes keys without a
+previously shared secret, then uses symmetric encryption for application data.
+Even web users who have not logged in can authenticate the server and establish
+an encrypted connection, but this does not provide network anonymity. On embedded
+devices, certificate, trust-root, clock and renewal management, handshake work
+and buffers can be burdensome. Small systems with an existing provisioning path
+may be able to omit some of this machinery.
+
+However, TLS supports **PSK-only and PSK with (EC)DHE**, so it does not always
+require third-party certificates or public-key exchange.
+[TLS 1.3 pre-shared keys](https://www.rfc-editor.org/rfc/rfc8446.html#section-2.2)
+This does not mean Boho is faster or uses less memory than every TLS or standard
+symmetric implementation; actual comparisons require measurement.
+
+### Connection encryption and E2E data keys
+
+```text
+Arduino device ←→ IOSignal server ←→ Browser app
+      └──────── Separate E2E data key ────────┘
+```
+
+Connection credentials establish each client's right to connect to the server.
+To keep a message body confidential from a relay, use `signal_e2e` with a separate
+data key held only by the final endpoints, then verify and decrypt it with
+`decrypt_e2e` at the receiver. Ordinary connection encryption is not automatically
+end-to-end encryption. The server processes routing information for E2E delivery,
+and metadata such as traffic sizes remains visible.
+
+The current JavaScript implementation's `AUTO` mode uses Boho connection
+encryption when TLS is not used and Boho authentication is complete. E2E body
+encryption is separate from connection protection. The unauthenticated local
+quick-start examples above do not enable Boho authentication/encryption.
+
+Normal web deployments can serve app code over HTTPS and connect over WSS while
+also applying E2E to message bodies. Modified app code can expose keys and
+plaintext, so E2E still requires trust in the app code provider. Boho does not
+bypass browser mixed content rules.
+
+### Conditions in the current implementation
+
+- Use sufficiently random keys. A single SHA-256 in `set_key` is not a slow password KDF.
+- JavaScript uses `crypto.getRandomValues()`, but current Arduino standalone-packet nonces and the authentication client nonce use `micros()`. This is not cryptographic randomness; consider repeated key/`salt12` combinations across restarts, devices and communication directions.
+- Boho itself does not enforce replay rejection or challenge expiry. A valid tag alone does not establish freshness or permission to execute a command; check receive policies in the caller and application layer.
+- Boho is a custom SHA-256-based protocol. Do not assume standard AEAD/TLS guarantees or forward secrecy protecting past traffic after a long-term key leak.
+
+## Building and verification
+
+This repository uses Node.js 22 and npm 10 for development and verification.
 
 ```bash
 npm ci
 npm run verify
 ```
 
-`verify`는 공개 파일 정책을 검사하고, `dist`를 삭제한 뒤 번들과 타입 선언을
-재생성합니다. 이어서 자동 테스트와 npm 패키지 포함 파일 검사를 수행합니다.
+`verify` checks the public-file policy, removes `dist` and rebuilds bundles and
+type declarations. It then runs automated tests and checks the npm package file
+list.
 
-빌드만 실행하려면 `npm run build`, 이미 빌드된 결과의 자동 테스트만 실행하려면
-`npm test`를 사용합니다.
+Use `npm run build` to build only, or `npm test` to test an existing build.
 
-### 통신 자동 테스트
+### Automated communication tests
 
 ```bash
 npm run build
 npm run test:integration
 ```
 
-`test/integration/`은 공개 ESM·CommonJS 빌드 각각에 대해 실제 WebSocket 통신을 검사합니다.
-로컬 루프백(`127.0.0.1`)의 임시 포트를 사용하므로 외부 서버, Redis, 실제 인증키가 필요하지 않습니다.
+`test/integration/` tests actual WebSocket communication for both public ESM and
+CommonJS builds. It uses temporary ports on local loopback (`127.0.0.1`), so it
+requires no external server, Redis instance or real authentication credentials.
 
-- 연결과 RPC 응답, 없는 명령 및 권한 거부
-- 두 클라이언트 간 문자열·객체·바이너리 발행/구독과 구독 해제
-- 인증 성공 및 암호화된 RPC 응답, 잘못된 인증 거부
-- 연결 종료 후 클라이언트 재사용과 서버 자원 정리
+- Connections, RPC responses, unknown commands and permission denial
+- String, object and binary publish/subscribe between two clients, including unsubscribe
+- Successful authentication and encrypted RPC responses, plus rejection of invalid authentication
+- Client reuse and server resource cleanup after disconnection
 
-`npm test`와 `npm run verify`에도 통신 검사가 포함됩니다. 테스트별 시간 제한과
-전체 테스트 파일 시간 제한을 두며, 종료 시 서버와 클라이언트를 정리합니다.
-실제 브라우저, TLS, TCP 전송 및 Redis 연동 검증은 이 통신 테스트 범위에 포함되지 않습니다.
+These communication checks are included in `npm test` and `npm run verify`.
+Individual tests and test files have time limits, and connections and servers
+are cleaned up on completion. Actual browsers, TLS, TCP transport and Redis
+integration are outside their scope.
 
-기존 `test/attach-services/`, `test/auth_server_client/`, `test/pubsub-counter/`,
-`test/subscribe-signal/`은 수동 예제입니다. 자동 실행하지 않으며, 일부는 별도 서버나 Redis가 필요합니다.
+Existing `test/attach-services/`, `test/auth_server_client/`,
+`test/pubsub-counter/` and `test/subscribe-signal/` are manual examples. They are
+not run automatically, and some require a separate server or Redis.
 
-## 라이선스
+## License
 
-패키지 라이선스: MIT.
+Package license: MIT.

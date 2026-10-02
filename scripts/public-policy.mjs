@@ -7,7 +7,7 @@ export const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 export const policy = JSON.parse(fs.readFileSync(path.join(root, 'scripts/public-files.json')));
 export const controls = [
   '.gitignore', '.npmignore', 'index.js', 'package.json', 'package-lock.json',
-  'rollup.config.js', 'tsconfig.json', 'README.md',
+  'rollup.config.js', 'tsconfig.json', 'README.md', 'README.ko.md',
   '.github/workflows/verify.yml', 'scripts/public-files.json',
   'scripts/public-policy.mjs', 'scripts/verify.mjs',
   'checks/release.test.mjs', 'checks/policy.test.mjs',
@@ -47,7 +47,7 @@ export function audit(base = root, artifacts = false) {
   for (const name of walk(base)) {
     if (!allowed.has(name)) throw Error(`Unapproved public file: ${name}`);
     safeFile(base, name);
-    if (['index.js', 'package-lock.json', 'README.md'].includes(name) || /^(src|test|dist)\//.test(name)) inspect(name, fs.readFileSync(path.join(base, name), 'utf8'));
+    if (['index.js', 'package-lock.json', 'README.md', 'README.ko.md'].includes(name) || /^(src|test|dist)\//.test(name)) inspect(name, fs.readFileSync(path.join(base, name), 'utf8'));
   }
   for (const name of [...controls, ...policy.sync, ...(artifacts ? policy.dist : [])]) safeFile(base, name);
   const pkg = JSON.parse(fs.readFileSync(path.join(base, 'package.json')));
