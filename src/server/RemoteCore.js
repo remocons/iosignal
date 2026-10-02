@@ -47,7 +47,9 @@ export class RemoteCore {
   static ssid = 1;
 
   setState(state) {
+    const previous = this.state;
     this.state = state
+    if (previous !== state) this.manager.server?.emit('remote:state', this, previous);
     if (serverOption.debug.showAuthInfo) {
       this.stateLog.push(  state + ":" + STATE[ state]   )
       if( state == STATE.AUTH_RES){
@@ -116,6 +118,8 @@ export class RemoteCore {
   // CongSocket or WebSocket
   onSocketMessage(message, isBinary = true) {
 
+    if (this._closing || this.state === STATE.CLOSED) return;
+
     this.receiveMonitor() // rx-data, ping/pong and timeout check
     if (!this.rxQuotaChecker(message)) return
 
@@ -171,10 +175,11 @@ export class RemoteCore {
           break;
 
         case IOMsg.CID_REQ:
-          if (this.state < STATE.SERVER_READY) {
+          if (![STATE.SERVER_READY, STATE.AUTH_RES, STATE.AUTH_FAIL, STATE.CID_RES].includes(this.state)) {
             // Protocol violation: CID_REQ was sent before receiving the SERVER_READY signal.
             console.log('CID_REQ before SERVER_READY')
             this.close()
+            return;
           }
 
           if (!this.cid) {
@@ -294,9 +299,12 @@ export class RemoteCore {
         // client's auth requst
         case Boho.BohoMsg.AUTH_REQ:
           if (!this.manager.authManager) return
-          if (this.state < STATE.SERVER_READY) {
+          // Do not start overlapping verification on the same connection.
+          if (this.state === STATE.AUTH_REQ) return;
+          if (![STATE.SERVER_READY, STATE.AUTH_RES, STATE.AUTH_FAIL, STATE.CID_RES].includes(this.state)) {
             console.log('protocol error. must called auth_req after server_ready')
             this.close();
+            return;
           }
           this.setState(STATE.AUTH_REQ)
           //async
@@ -424,4 +432,3 @@ export class RemoteCore {
 
 
 }
-

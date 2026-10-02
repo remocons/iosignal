@@ -175,6 +175,7 @@ export class Remote extends RemoteCore {
   }
 
   close(terminateNow = false) {
+    this._closing = true;
     this.getTraffic()
     if (this.socketType === 'websocket') {
       if (terminateNow) this.socket.terminate();

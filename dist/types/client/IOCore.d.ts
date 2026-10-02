@@ -37,6 +37,7 @@ export class IOCore {
      * @type {string}
      */
     stateName: string;
+    _stateRevision: number;
     /**
      * Transmitted message counter.
      * @type {number}
@@ -404,8 +405,11 @@ export class IOCore {
      * 1. 상태가 변경 될 때만 'change' 이벤트 호출된다.
      * 2. emitEventAndMessage 옵션 값이 지정되야 해당 이벤트 이름이 호출된다.
      *   보통 이벤트 이름과 동일하게 적거나 이벤트 상황 안내문을 넣는다.
+     * 3. 두 상태값 갱신 후 change, 개별 이벤트 순서로 호출한다.
+     *    콜백에서 다른 상태로 전이하면 이전 상태의 개별 이벤트는 생략한다.
+     * @returns {boolean} Whether this transition is still current after callbacks.
      */
-    stateChange(state: string, emitEventAndMessage?: string): void;
+    stateChange(state: string, emitEventAndMessage?: string): boolean;
 }
 export type MBP = import("meta-buffer-pack").MBP;
 export type IOMsg = import("../common/constants.js").IOMsg;

@@ -4,9 +4,9 @@ import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
 import { readFileSync } from 'node:fs';
 
-// Package self-reference: source ESM in development, built ESM/CJS in a release tree.
+// Private source entry in development; package self-reference for public builds.
 const pkg = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url)));
-const variants = [[pkg.private ? 'source' : 'esm', await import('iosignal')]];
+const variants = [[pkg.private ? 'source' : 'esm', await import(pkg.private ? '../../index.js' : 'iosignal')]];
 if (!pkg.private) variants.push(['cjs', createRequire(import.meta.url)('iosignal')]);
 
 function event(emitter, name, signal) {
@@ -29,14 +29,14 @@ function event(emitter, name, signal) {
   });
 }
 
-async function fixture(t, api, authenticated = false) {
+async function fixture(t, api, authenticated = false, tcp = false) {
   const http = createServer();
   const previousMembersOnly = api.serverOption.membersOnly;
   api.serverOption.membersOnly = authenticated;
   const auth = authenticated
     ? new api.BohoAuth(new api.StringKeyProvider('tester.fixture-key.fixture-client.3'))
     : undefined;
-  const server = new api.Server({ httpServer: http }, auth);
+  const server = new api.Server({ httpServer: http, ...(tcp ? { congPort: 0 } : {}) }, auth);
   const clients = [];
   const errors = [];
   server.attach('reply', api.replyService);
@@ -46,7 +46,8 @@ async function fixture(t, api, authenticated = false) {
     for (const client of clients) {
       const socket = client.socket;
       client.stop();
-      socket?.terminate();
+      socket?.terminate?.();
+      socket?.destroy?.();
     }
     // Also terminate peers on failure so teardown cannot hang on a close handshake.
     for (const peer of server.wss.clients) peer.terminate();
@@ -61,9 +62,9 @@ async function fixture(t, api, authenticated = false) {
   const ready = event(server, 'ready', t.signal);
   http.listen(0, '127.0.0.1');
   await ready;
-  const url = `ws://127.0.0.1:${http.address().port}`;
+  const url = tcp ? `cong://127.0.0.1:${server.congPort}` : `ws://127.0.0.1:${http.address().port}`;
   function client(credentials) {
-    const io = new api.IO();
+    const io = tcp ? new api.IOCongSocket() : new api.IO();
     clients.push(io);
     io.on('error', error => errors.push(error));
     if (credentials) io.auth(...credentials);
@@ -307,5 +308,170 @@ for (const [format, api] of variants) {
       if (peer !== remote) assert.equal(peer.boho.isAuthorized, false);
     }
     assert.deepEqual((await old.call('reply', 'echo', 'kept')).body, ['kept']);
+  });
+}
+
+for (const [format, api] of variants) {
+  test(`${format}: state callbacks see consistent values and can stop reentrantly`, () => {
+    for (const stopEvent of ['ready', 'change']) {
+      const io = new api.IO();
+      const changes = [];
+      let readyEvents = 0;
+      io.on('change', name => {
+        changes.push(name);
+        assert.equal(io.state, api.STATE[name.toUpperCase()]);
+        assert.equal(io.stateName, name);
+        assert.equal(io.getStateName(), name);
+        if (stopEvent === 'change' && name === 'ready') io.stop();
+      });
+      io.on('ready', () => {
+        readyEvents++;
+        assert.equal(io.stateName, 'ready');
+        if (stopEvent === 'ready') io.stop();
+      });
+      io.stateChange('ready', 'cid_ready');
+      assert.equal(io.state, api.STATE.STOP);
+      assert.equal(io.stateName, 'stop');
+      assert.deepEqual(changes, ['ready', 'closed', 'stop']);
+      assert.equal(readyEvents, stopEvent === 'ready' ? 1 : 0);
+      io.destroy();
+    }
+  });
+
+  test(`${format}: stop in server_ready prevents authentication from continuing`, () => {
+    const io = new api.IO();
+    io.auth('tester', 'fixture-key');
+    const sent = [];
+    io.send = bytes => sent.push(bytes);
+    io.on('server_ready', () => io.stop());
+    io.onData(new api.Boho().server_time_nonce());
+    assert.equal(io.stateName, 'stop');
+    assert.deepEqual(sent, []);
+    io.destroy();
+  });
+
+  for (const tcp of [false, true]) {
+    test(`${format}: ${tcp ? 'TCP' : 'WS'} explicit close clears identity before notification and can reconnect`, { timeout: 10000 }, async t => {
+      const { server, connect, url } = await fixture(t, api, true, tcp);
+      const io = await connect(['tester', 'fixture-key']);
+      const oldRemote = server.manager.cid2remote.get(io.cid);
+      const removed = event(oldRemote.socket, 'close', t.signal);
+      let notifications = 0;
+      io.once('closed', () => {
+        notifications++;
+        assert.equal(io.stateName, 'closed');
+        assert.equal(io.cid, '');
+        assert.equal(io.boho.isAuthorized, false);
+      });
+      io.close();
+      assert.equal(notifications, 1);
+      await removed;
+      assert.equal(oldRemote.state, api.STATE.CLOSED);
+      const ready = event(io, 'ready', t.signal);
+      io.open(url);
+      await ready;
+      assert.equal(io.stateName, 'ready');
+      assert.equal(io.boho.isAuthorized, true);
+    });
+
+    test(`${format}: ${tcp ? 'TCP' : 'WS'} stop during connecting leaves no reconnect timer`, { timeout: 10000 }, async t => {
+      const { client, url } = await fixture(t, api, false, tcp);
+      const io = client();
+      io.on('connecting', () => io.stop());
+      io.open(url);
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal(io.socket, null);
+      assert.equal(io.stateName, 'stop');
+      assert.equal(io.connectionCheckerIntervalID, null);
+    });
+  }
+
+  test(`${format}: manual login and same-session relogin finish on both sides`, { timeout: 10000 }, async t => {
+    const { server, connect } = await fixture(t, api, true);
+    const io = await connect();
+    const remote = server.manager.cid2remote.get(io.cid);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const changes = [];
+      const observe = name => changes.push(name);
+      io.on('change', observe);
+      const ready = event(io, 'ready', t.signal);
+      io.login('tester', 'fixture-key');
+      await ready;
+      io.off('change', observe);
+      assert.deepEqual(changes, ['auth_req', 'auth_res', 'ready']);
+      assert.equal(io.cid, 'fixture-client');
+      assert.equal(remote.state, api.STATE.CID_RES);
+      assert.equal(server.manager.cid2remote.get(io.cid), remote);
+      assert.deepEqual((await io.call('reply', 'echo', 'relogin')).body, ['relogin']);
+    }
+  });
+
+  test(`${format}: TCP duplicate rejection records failure before close`, { timeout: 10000 }, async t => {
+    const { server, connect, client, url } = await fixture(t, api, true, true);
+    const old = await connect(['tester', 'fixture-key']);
+    const original = server.manager.cid2remote.get(old.cid);
+    const observed = [];
+    const remove = server.manager.removeRemote.bind(server.manager);
+    server.manager.removeRemote = remote => {
+      if (remote !== original) observed.push(remote.state);
+      remove(remote);
+    };
+    const duplicate = client(['tester', 'fixture-key']);
+    duplicate.autoReconnect = false;
+    const closed = event(duplicate, 'close', t.signal);
+    duplicate.open(url);
+    await closed;
+    // Wait for the server-side FIN completion as well.
+    for (const peer of server.manager.remotes) {
+      if (peer !== original) await event(peer.socket, 'close', t.signal);
+    }
+    assert.deepEqual(observed, [api.STATE.AUTH_FAIL]);
+    assert.equal(server.manager.cid2remote.get(old.cid), original);
+  });
+
+  test(`${format}: invalid protocol state closes without continuing request processing`, { timeout: 10000 }, async t => {
+    const { server, connect, auth } = await fixture(t, api, true);
+    for (const code of [api.IOMsg.CID_REQ, api.Boho.BohoMsg.AUTH_REQ]) {
+      const io = await connect();
+      const remote = server.manager.cid2remote.get(io.cid);
+      remote.setState(api.STATE.OPEN);
+      let sends = 0, authCalls = 0;
+      remote.send_enc_mode = () => sends++;
+      auth.verify_auth_req = async () => { authCalls++; };
+      const closed = event(remote.socket, 'close', t.signal);
+      remote.onSocketMessage(Buffer.from([code]));
+      assert.equal(sends, 0);
+      assert.equal(authCalls, 0);
+      await closed;
+      assert.equal(remote.state, api.STATE.CLOSED);
+    }
+  });
+
+  test(`${format}: delayed credential lookup cannot revive a closed connection`, { timeout: 10000 }, async t => {
+    const { server, connect, auth } = await fixture(t, api, true);
+    const io = await connect();
+    io.autoReconnect = false;
+    const remote = server.manager.cid2remote.get(io.cid);
+    let release;
+    let started;
+    const lookupStarted = new Promise(resolve => { started = resolve; });
+    const getAuth = auth.keyProvider.getAuth.bind(auth.keyProvider);
+    auth.keyProvider.getAuth = async id => {
+      started();
+      await new Promise(resolve => { release = resolve; });
+      return getAuth(id);
+    };
+    const verify = auth.verify_auth_req.bind(auth);
+    let pending;
+    auth.verify_auth_req = (...args) => (pending = verify(...args));
+    io.login('tester', 'fixture-key');
+    await lookupStarted;
+    const closed = event(remote.socket, 'close', t.signal);
+    io.stop();
+    await closed;
+    release();
+    await pending;
+    assert.equal(remote.state, api.STATE.CLOSED);
+    assert.equal(server.manager.cid2remote.has('fixture-client'), false);
   });
 }

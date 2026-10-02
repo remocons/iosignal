@@ -17,6 +17,8 @@ export class IOWS extends IOCore {
   close() {
     if (this.socket) {
       this.socket.removeAllListeners();
+      // Closing a connecting ws can emit an asynchronous error after detachment.
+      this.socket.on('error', () => {});
       if (this.socket.readyState !== WebSocket.CLOSED) {
         this.socket.close();
       }
@@ -36,21 +38,27 @@ export class IOWS extends IOCore {
 
   createConnection(url) {
     // node WebSocket
-    this.socket = new WebSocket(url);
-    this.stateChange('connecting','connecting')
+    const socket = this.socket = new WebSocket(url);
+    this._closed = false;
 
     this.socket.onopen = () => {
-      this.socket.on('message', this.onWebSocketMessage.bind(this));
+      if (this.socket !== socket) return;
+      socket.on('message', data => {
+        if (this.socket === socket) this.onWebSocketMessage(data);
+      });
       this.emit('open');
     };
 
     this.socket.onerror = (e) => {
+      if (this.socket !== socket) return;
       this.emit('error', e)
     }
 
     this.socket.onclose = () => {
+      if (this.socket !== socket) return;
       this.emit('close');
     }
+    this.stateChange('connecting','connecting')
   }
 
   onWebSocketMessage(data) {
@@ -72,7 +80,6 @@ export class IOWS extends IOCore {
   }
 
 }
-
 
 
 

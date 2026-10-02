@@ -80,6 +80,7 @@ export class IOCore extends EventEmitter {
      * @type {string}
      */
     this.stateName = this.getStateName() // String type
+    this._stateRevision = 0;
 
     /**
      * Transmitted message counter.
@@ -216,14 +217,14 @@ export class IOCore extends EventEmitter {
    * If autoReconnect is false, it also clears the keep-alive timer.
    */
   close() {
-    if (this._closed) return;
-    this._closed = true;
     // console.log('####### IOCOre.js close() called')
     // If auto-reconnect is disabled, we must stop the keep-alive timer.
     if (this.autoReconnect === false) {
       clearInterval(this.connectionCheckerIntervalID);
       this.connectionCheckerIntervalID = null;
     }
+    if (this._closed) return;
+    this._closed = true;
 
     // socket clean
     if (this.socket) {
@@ -246,8 +247,11 @@ export class IOCore extends EventEmitter {
       this.socket = null;
     }
     this.promiseMap.clear();
-    this.emit('closed');
-    this.stateChange('closed');
+    this.cid = '';
+    if (this.boho) this.boho.isAuthorized = false;
+    if (this.state !== STATE.STOP && this.stateChange('closed')) {
+      this.emit('closed');
+    }
   }
   
   /**
@@ -320,6 +324,7 @@ export class IOCore extends EventEmitter {
 
     // The actual connection is created here.
     this.createConnection(this.url);
+    if (this._closed) return; // A connecting listener may have stopped the client.
 
     // Ensure the keep-alive timer is running.
     if (!this.connectionCheckerIntervalID) {
@@ -344,9 +349,7 @@ export class IOCore extends EventEmitter {
    * Handles the 'close' event of the WebSocket.
    */
   onClose() {
-    this.boho.isAuthorized = false;
-    this.cid = ""
-    this.stateChange('closed')
+    this.close();
   }
 
   /**
@@ -357,11 +360,11 @@ export class IOCore extends EventEmitter {
    */
   login(id, key) {
     if( this.serverTimeNonce ){
-      console.log('iosignal.login serverTimeNonce', this.serverTimeNonce)
       this.auth(id, key)
       this.useAuth = true
       let auth_pack = this.boho.auth_req(this.serverTimeNonce )
       this.send(auth_pack)
+      this.stateChange('auth_req', 'auth_req')
     }
     return this
   }
@@ -512,14 +515,13 @@ export class IOCore extends EventEmitter {
         break;
 
       case Boho.BohoMsg.SERVER_TIME_NONCE: // SERVER_READY
-        this.stateChange('server_ready', 'server_ready')
+        buffer.copy(this.serverTimeNonce);
+        if (!this.stateChange('server_ready', 'server_ready')) break;
         if (this.useAuth) {
           this.send(this.boho.auth_req(buffer))
           this.stateChange('auth_req','auth_req')
           // CID_REQ will be called, after auth_res.
         } else {
-          // keep server_time_nonce for manual login()
-          buffer.copy( this.serverTimeNonce);
           // CID_REQ here, if not using auth.
           this.send(Buffer.from([IOMsg.CID_REQ]))
         }
@@ -644,14 +646,16 @@ export class IOCore extends EventEmitter {
         break;
 
       case Boho.BohoMsg.AUTH_FAIL:
+        this.boho.isAuthorized = false;
         this.stateChange('auth_fail', 'auth_fail from server.')
         break;
 
       case Boho.BohoMsg.AUTH_RES:
         if (this.boho.verify_auth_res(buffer)) {
-          this.stateChange('auth_res', 'server sent auth_res')
+          if (!this.stateChange('auth_res', 'server sent auth_res')) break;
           this.send(Buffer.from([IOMsg.CID_REQ]))
         } else {
+          this.boho.isAuthorized = false;
           this.stateChange('auth_fail', 'verify_auth_res() invalid server_hmac')
         }
         break;
@@ -1188,6 +1192,9 @@ export class IOCore extends EventEmitter {
    * 1. 상태가 변경 될 때만 'change' 이벤트 호출된다.
    * 2. emitEventAndMessage 옵션 값이 지정되야 해당 이벤트 이름이 호출된다.
    *   보통 이벤트 이름과 동일하게 적거나 이벤트 상황 안내문을 넣는다.
+   * 3. 두 상태값 갱신 후 change, 개별 이벤트 순서로 호출한다.
+   *    콜백에서 다른 상태로 전이하면 이전 상태의 개별 이벤트는 생략한다.
+   * @returns {boolean} Whether this transition is still current after callbacks.
    */
   stateChange(state, emitEventAndMessage) {
     // STATE constant name <string> upperCase
@@ -1195,17 +1202,19 @@ export class IOCore extends EventEmitter {
     // .state <number>
     // console.log('### stateChange reason:', emitEventAndMessage )
     let eventName = state.toLowerCase()
-    this.state = STATE[state.toUpperCase()] // state: number
-
-    if (emitEventAndMessage) {
-      this.emit(eventName, emitEventAndMessage)
-    }
-
-    if (this.stateName !== eventName) {
-      this.stateName = eventName
+    const nextState = STATE[state.toUpperCase()];
+    if (typeof nextState !== 'number') throw new TypeError('Unknown state: ' + state);
+    const changed = this.state !== nextState;
+    this.state = nextState;
+    this.stateName = eventName;
+    if (changed) this._stateRevision++;
+    const revision = this._stateRevision;
+    if (changed) {
       this.emit('change', eventName)
     }
+    if (revision !== this._stateRevision) return false;
+    if (emitEventAndMessage) this.emit(eventName, emitEventAndMessage);
+    return revision === this._stateRevision;
   }
 
 }
-

@@ -45,6 +45,7 @@ export class Manager {
         if (socket.isAlive === false) {
           console.log('## timeout. cid:', remo.cid)
           remo.close();
+          return;
         }
 
         socket.txCounter++;
@@ -83,6 +84,9 @@ export class Manager {
 
 
   removeRemote(remote) {
+
+    remote._closing = true;
+    remote.setState(STATE.CLOSED);
 
     let remoteInfo = `- IP:${remote.ip} #${remote.ssid} cid:${remote.cid} ${remote?.socket.socketType === 'websocket' ? "WS" : "CS"} `
     if (this.connectionLogger) this.connectionLogger.log(remoteInfo)

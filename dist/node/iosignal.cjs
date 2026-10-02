@@ -834,6 +834,7 @@ class IOCore extends EventEmitter {
      * @type {string}
      */
     this.stateName = this.getStateName(); // String type
+    this._stateRevision = 0;
 
     /**
      * Transmitted message counter.
@@ -970,14 +971,14 @@ class IOCore extends EventEmitter {
    * If autoReconnect is false, it also clears the keep-alive timer.
    */
   close() {
-    if (this._closed) return;
-    this._closed = true;
     // console.log('####### IOCOre.js close() called')
     // If auto-reconnect is disabled, we must stop the keep-alive timer.
     if (this.autoReconnect === false) {
       clearInterval(this.connectionCheckerIntervalID);
       this.connectionCheckerIntervalID = null;
     }
+    if (this._closed) return;
+    this._closed = true;
 
     // socket clean
     if (this.socket) {
@@ -1000,8 +1001,11 @@ class IOCore extends EventEmitter {
       this.socket = null;
     }
     this.promiseMap.clear();
-    this.emit('closed');
-    this.stateChange('closed');
+    this.cid = '';
+    if (this.boho) this.boho.isAuthorized = false;
+    if (this.state !== STATE.STOP && this.stateChange('closed')) {
+      this.emit('closed');
+    }
   }
   
   /**
@@ -1074,6 +1078,7 @@ class IOCore extends EventEmitter {
 
     // The actual connection is created here.
     this.createConnection(this.url);
+    if (this._closed) return; // A connecting listener may have stopped the client.
 
     // Ensure the keep-alive timer is running.
     if (!this.connectionCheckerIntervalID) {
@@ -1098,9 +1103,7 @@ class IOCore extends EventEmitter {
    * Handles the 'close' event of the WebSocket.
    */
   onClose() {
-    this.boho.isAuthorized = false;
-    this.cid = "";
-    this.stateChange('closed');
+    this.close();
   }
 
   /**
@@ -1111,11 +1114,11 @@ class IOCore extends EventEmitter {
    */
   login(id, key) {
     if( this.serverTimeNonce ){
-      console.log('iosignal.login serverTimeNonce', this.serverTimeNonce);
       this.auth(id, key);
       this.useAuth = true;
       let auth_pack = this.boho.auth_req(this.serverTimeNonce );
       this.send(auth_pack);
+      this.stateChange('auth_req', 'auth_req');
     }
     return this
   }
@@ -1261,14 +1264,13 @@ class IOCore extends EventEmitter {
         break;
 
       case it.BohoMsg.SERVER_TIME_NONCE: // SERVER_READY
-        this.stateChange('server_ready', 'server_ready');
+        buffer.copy(this.serverTimeNonce);
+        if (!this.stateChange('server_ready', 'server_ready')) break;
         if (this.useAuth) {
           this.send(this.boho.auth_req(buffer));
           this.stateChange('auth_req','auth_req');
           // CID_REQ will be called, after auth_res.
         } else {
-          // keep server_time_nonce for manual login()
-          buffer.copy( this.serverTimeNonce);
           // CID_REQ here, if not using auth.
           this.send(Buffer$1.from([IOMsg.CID_REQ]));
         }
@@ -1393,14 +1395,16 @@ class IOCore extends EventEmitter {
         break;
 
       case it.BohoMsg.AUTH_FAIL:
+        this.boho.isAuthorized = false;
         this.stateChange('auth_fail', 'auth_fail from server.');
         break;
 
       case it.BohoMsg.AUTH_RES:
         if (this.boho.verify_auth_res(buffer)) {
-          this.stateChange('auth_res', 'server sent auth_res');
+          if (!this.stateChange('auth_res', 'server sent auth_res')) break;
           this.send(Buffer$1.from([IOMsg.CID_REQ]));
         } else {
+          this.boho.isAuthorized = false;
           this.stateChange('auth_fail', 'verify_auth_res() invalid server_hmac');
         }
         break;
@@ -1937,6 +1941,9 @@ class IOCore extends EventEmitter {
    * 1. 상태가 변경 될 때만 'change' 이벤트 호출된다.
    * 2. emitEventAndMessage 옵션 값이 지정되야 해당 이벤트 이름이 호출된다.
    *   보통 이벤트 이름과 동일하게 적거나 이벤트 상황 안내문을 넣는다.
+   * 3. 두 상태값 갱신 후 change, 개별 이벤트 순서로 호출한다.
+   *    콜백에서 다른 상태로 전이하면 이전 상태의 개별 이벤트는 생략한다.
+   * @returns {boolean} Whether this transition is still current after callbacks.
    */
   stateChange(state, emitEventAndMessage) {
     // STATE constant name <string> upperCase
@@ -1944,16 +1951,19 @@ class IOCore extends EventEmitter {
     // .state <number>
     // console.log('### stateChange reason:', emitEventAndMessage )
     let eventName = state.toLowerCase();
-    this.state = STATE[state.toUpperCase()]; // state: number
-
-    if (emitEventAndMessage) {
-      this.emit(eventName, emitEventAndMessage);
-    }
-
-    if (this.stateName !== eventName) {
-      this.stateName = eventName;
+    const nextState = STATE[state.toUpperCase()];
+    if (typeof nextState !== 'number') throw new TypeError('Unknown state: ' + state);
+    const changed = this.state !== nextState;
+    this.state = nextState;
+    this.stateName = eventName;
+    if (changed) this._stateRevision++;
+    const revision = this._stateRevision;
+    if (changed) {
       this.emit('change', eventName);
     }
+    if (revision !== this._stateRevision) return false;
+    if (emitEventAndMessage) this.emit(eventName, emitEventAndMessage);
+    return revision === this._stateRevision;
   }
 
 }
@@ -2114,6 +2124,7 @@ class IOCongSocket extends IOCore {
         this.congRx = null;
       }
       this.socket.removeAllListeners();
+      this.socket.on('error', () => {});
       if (!this.socket.destroyed) {
         this.socket.destroy(); // destroy() is sufficient for forceful closing
       }
@@ -2138,23 +2149,29 @@ class IOCongSocket extends IOCore {
     if (urlObj.protocol != "cong:") {
       urlObj = new URL('cong://' + url);
     }
-    this.socket = net.createConnection(urlObj.port, urlObj.hostname);
-    this.stateChange('connecting','connecting');
+    const socket = this.socket = net.createConnection(urlObj.port, urlObj.hostname);
+    this._closed = false;
 
     this.socket.on('connect', () => {
+      if (this.socket !== socket) return;
       this.congRx = new CongRx();
       this.socket.pipe(this.congRx);
-      this.congRx.on("data", this.onTCPSocketMessage.bind(this));
+      this.congRx.on('data', data => {
+        if (this.socket === socket) this.onTCPSocketMessage(data);
+      });
       this.emit('open');
     });
 
     this.socket.on('error', e => {
+      if (this.socket !== socket) return;
       this.emit('error', e);
     });
 
     this.socket.on('close', () => {
+      if (this.socket !== socket) return;
       this.emit('close');
     });
+    this.stateChange('connecting','connecting');
 
   }
 
@@ -7244,6 +7261,8 @@ class IOWS extends IOCore {
   close() {
     if (this.socket) {
       this.socket.removeAllListeners();
+      // Closing a connecting ws can emit an asynchronous error after detachment.
+      this.socket.on('error', () => {});
       if (this.socket.readyState !== WebSocket.CLOSED) {
         this.socket.close();
       }
@@ -7263,21 +7282,27 @@ class IOWS extends IOCore {
 
   createConnection(url) {
     // node WebSocket
-    this.socket = new WebSocket(url);
-    this.stateChange('connecting','connecting');
+    const socket = this.socket = new WebSocket(url);
+    this._closed = false;
 
     this.socket.onopen = () => {
-      this.socket.on('message', this.onWebSocketMessage.bind(this));
+      if (this.socket !== socket) return;
+      socket.on('message', data => {
+        if (this.socket === socket) this.onWebSocketMessage(data);
+      });
       this.emit('open');
     };
 
     this.socket.onerror = (e) => {
+      if (this.socket !== socket) return;
       this.emit('error', e);
     };
 
     this.socket.onclose = () => {
+      if (this.socket !== socket) return;
       this.emit('close');
     };
+    this.stateChange('connecting','connecting');
   }
 
   onWebSocketMessage(data) {
@@ -7396,7 +7421,9 @@ class RemoteCore {
   static ssid = 1;
 
   setState(state) {
+    const previous = this.state;
     this.state = state;
+    if (previous !== state) this.manager.server?.emit('remote:state', this, previous);
     if (serverOption.debug.showAuthInfo) {
       this.stateLog.push(  state + ":" + STATE[ state]   );
       if( state == STATE.AUTH_RES){
@@ -7465,6 +7492,8 @@ class RemoteCore {
   // CongSocket or WebSocket
   onSocketMessage(message, isBinary = true) {
 
+    if (this._closing || this.state === STATE.CLOSED) return;
+
     this.receiveMonitor(); // rx-data, ping/pong and timeout check
     if (!this.rxQuotaChecker(message)) return
 
@@ -7518,10 +7547,11 @@ class RemoteCore {
           break;
 
         case IOMsg.CID_REQ:
-          if (this.state < STATE.SERVER_READY) {
+          if (![STATE.SERVER_READY, STATE.AUTH_RES, STATE.AUTH_FAIL, STATE.CID_RES].includes(this.state)) {
             // Protocol violation: CID_REQ was sent before receiving the SERVER_READY signal.
             console.log('CID_REQ before SERVER_READY');
             this.close();
+            return;
           }
 
           if (!this.cid) {
@@ -7641,9 +7671,12 @@ class RemoteCore {
         // client's auth requst
         case it.BohoMsg.AUTH_REQ:
           if (!this.manager.authManager) return
-          if (this.state < STATE.SERVER_READY) {
+          // Do not start overlapping verification on the same connection.
+          if (this.state === STATE.AUTH_REQ) return;
+          if (![STATE.SERVER_READY, STATE.AUTH_RES, STATE.AUTH_FAIL, STATE.CID_RES].includes(this.state)) {
             console.log('protocol error. must called auth_req after server_ready');
             this.close();
+            return;
           }
           this.setState(STATE.AUTH_REQ);
           //async
@@ -7992,6 +8025,7 @@ class Remote extends RemoteCore {
   }
 
   close(terminateNow = false) {
+    this._closing = true;
     this.getTraffic();
     if (this.socketType === 'websocket') {
       if (terminateNow) this.socket.terminate();
@@ -8257,6 +8291,7 @@ class Manager {
         if (socket.isAlive === false) {
           console.log('## timeout. cid:', remo.cid);
           remo.close();
+          return;
         }
 
         socket.txCounter++;
@@ -8295,6 +8330,9 @@ class Manager {
 
 
   removeRemote(remote) {
+
+    remote._closing = true;
+    remote.setState(STATE.CLOSED);
 
     let remoteInfo = `- IP:${remote.ip} #${remote.ssid} cid:${remote.cid} ${remote?.socket.socketType === 'websocket' ? "WS" : "CS"} `;
     if (this.connectionLogger) this.connectionLogger.log(remoteInfo);
@@ -8905,6 +8943,7 @@ class BohoAuth {
   }
 
   send_auth_fail(peer, reason) {
+    if (peer._closing || peer.state === STATE.CLOSED) return;
     peer.boho.isAuthorized = false;
     if (this.authLogger) {
       let peerInfo = `FAIL #${peer.ssid} reason:${reason} `;
@@ -8914,7 +8953,9 @@ class BohoAuth {
     peer.setState(STATE.AUTH_FAIL);
     // add some delay time.
     setTimeout(e => {
-      peer.send(Buffer.from([it.BohoMsg.AUTH_FAIL]));
+      if (!peer._closing && peer.state === STATE.AUTH_FAIL) {
+        peer.send(Buffer.from([it.BohoMsg.AUTH_FAIL]));
+      }
     }, serverOption.auth.delay_auth_fail);
   }
 
@@ -8937,6 +8978,7 @@ class BohoAuth {
 
       //2. get key of id from DB
       let authInfo = await this.keyProvider.getAuth(id);
+      if (peer._closing || peer.state === STATE.CLOSED) return;
       if (!authInfo) {
         this.send_auth_fail(peer, 'NO ID:' + id);
         return
@@ -8969,14 +9011,10 @@ class BohoAuth {
       //4. get info
 
       //5. check duplicate login.
-      if (peer.manager.cid2remote.has(authInfo.cid)) {
+      if (peer.manager.cid2remote.has(authInfo.cid) && peer.manager.cid2remote.get(authInfo.cid) !== peer) {
         let old = peer.manager.cid2remote.get(authInfo.cid);
         console.log('[WARN]DUPLICATE_LOGIN detected.', old.cid);
         old.ping(); // check the connection.
-        if (old == peer) {
-          console.log('## trying to RELOGIN after login.');
-          return
-        }
 
         let authClearSignal = $$1.pack(
           $$1.MB('#MsgType', '8', IOMsg.AUTH_CLEAR),
@@ -8989,6 +9027,7 @@ class BohoAuth {
           if( peer.socketType == 'websocket'){
             this.send_auth_fail(peer, 'duplicate login');
           }else {
+            peer.setState(STATE.AUTH_FAIL);
             peer.close(); //arduino 
           }
         } else {

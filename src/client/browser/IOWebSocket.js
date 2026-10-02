@@ -122,32 +122,39 @@ export default class IO extends IOCore {
   createConnection(url) {
     // Web Browser WebSocket
     IO.webSocketCount++;
-    this.socket = new WebSocket(url);
+    const socket = this.socket = new WebSocket(url);
+    this._closed = false;
     this.socket.binaryType = IO.binaryType
 
-    this.stateChange('connecting','connecting')
 
     this.socket.onopen = () => {
 
-      if (!this.socket) {
+      if (this.socket !== socket) {
         return;
       }
 
       if (this.socket.binaryType == "arraybuffer") {
-        this.socket.onmessage = this.onWebSocketMessage.bind(this);
+        this.socket.onmessage = e => {
+          if (this.socket === socket) this.onWebSocketMessage(e);
+        };
       } else {  // blob
-        this.socket.onmessage = this.onWebSocketMessageBlob.bind(this);
+        this.socket.onmessage = e => {
+          if (this.socket === socket) this.onWebSocketMessageBlob(e);
+        };
       }
       this.emit('open');
     };
 
     this.socket.onerror = (e) => {
+      if (this.socket !== socket) return;
       this.emit('error', e)
     }
 
     this.socket.onclose = () => {
+      if (this.socket !== socket) return;
       this.emit('close');
     }
+    this.stateChange('connecting','connecting')
   }
 
   /**
@@ -168,6 +175,7 @@ export default class IO extends IOCore {
    * @param {MessageEvent} event - The WebSocket message event.
    */
   async onWebSocketMessageBlob(event) {
+    const socket = this.socket;
     // event.data is Blob or text_message
     this.rxCounter++;
     this.lastTxRxTime = Date.now();
@@ -179,7 +187,7 @@ export default class IO extends IOCore {
       buffer = Buffer.from(event.data)
     }
     this.rxBytes += buffer.byteLength
-    this.emit('socket_data', buffer);
+    if (this.socket === socket) this.emit('socket_data', buffer);
   }
 
   /**

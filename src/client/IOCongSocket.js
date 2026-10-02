@@ -21,6 +21,7 @@ export class IOCongSocket extends IOCore {
         this.congRx = null;
       }
       this.socket.removeAllListeners();
+      this.socket.on('error', () => {});
       if (!this.socket.destroyed) {
         this.socket.destroy(); // destroy() is sufficient for forceful closing
       }
@@ -45,23 +46,29 @@ export class IOCongSocket extends IOCore {
     if (urlObj.protocol != "cong:") {
       urlObj = new URL('cong://' + url)
     }
-    this.socket = net.createConnection(urlObj.port, urlObj.hostname)
-    this.stateChange('connecting','connecting')
+    const socket = this.socket = net.createConnection(urlObj.port, urlObj.hostname)
+    this._closed = false;
 
     this.socket.on('connect', () => {
+      if (this.socket !== socket) return;
       this.congRx = new CongRx();
       this.socket.pipe(this.congRx)
-      this.congRx.on("data", this.onTCPSocketMessage.bind(this));
+      this.congRx.on('data', data => {
+        if (this.socket === socket) this.onTCPSocketMessage(data);
+      });
       this.emit('open')
     })
 
     this.socket.on('error', e => {
+      if (this.socket !== socket) return;
       this.emit('error', e)
     })
 
     this.socket.on('close', () => {
+      if (this.socket !== socket) return;
       this.emit('close');
     })
+    this.stateChange('connecting','connecting')
 
   }
 
@@ -86,7 +93,6 @@ export class IOCongSocket extends IOCore {
   }
 
 }
-
 
 
 

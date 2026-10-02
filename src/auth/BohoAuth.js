@@ -21,6 +21,7 @@ export class BohoAuth {
   }
 
   send_auth_fail(peer, reason) {
+    if (peer._closing || peer.state === STATE.CLOSED) return;
     peer.boho.isAuthorized = false;
     if (this.authLogger) {
       let peerInfo = `FAIL #${peer.ssid} reason:${reason} `
@@ -30,7 +31,9 @@ export class BohoAuth {
     peer.setState(STATE.AUTH_FAIL)
     // add some delay time.
     setTimeout(e => {
-      peer.send(Buffer.from([Boho.BohoMsg.AUTH_FAIL]))
+      if (!peer._closing && peer.state === STATE.AUTH_FAIL) {
+        peer.send(Buffer.from([Boho.BohoMsg.AUTH_FAIL]))
+      }
     }, serverOption.auth.delay_auth_fail)
   }
 
@@ -53,6 +56,7 @@ export class BohoAuth {
 
       //2. get key of id from DB
       let authInfo = await this.keyProvider.getAuth(id)
+      if (peer._closing || peer.state === STATE.CLOSED) return;
       if (!authInfo) {
         this.send_auth_fail(peer, 'NO ID:' + id);
         return
@@ -85,14 +89,10 @@ export class BohoAuth {
       //4. get info
 
       //5. check duplicate login.
-      if (peer.manager.cid2remote.has(authInfo.cid)) {
+      if (peer.manager.cid2remote.has(authInfo.cid) && peer.manager.cid2remote.get(authInfo.cid) !== peer) {
         let old = peer.manager.cid2remote.get(authInfo.cid)
         console.log('[WARN]DUPLICATE_LOGIN detected.', old.cid)
         old.ping(); // check the connection.
-        if (old == peer) {
-          console.log('## trying to RELOGIN after login.')
-          return
-        }
 
         let authClearSignal = MBP.pack(
           MBP.MB('#MsgType', '8', IOMsg.AUTH_CLEAR),
@@ -105,6 +105,7 @@ export class BohoAuth {
           if( peer.socketType == 'websocket'){
             this.send_auth_fail(peer, 'duplicate login')
           }else{
+            peer.setState(STATE.AUTH_FAIL);
             peer.close(); //arduino 
           }
         } else {
@@ -195,4 +196,3 @@ export class BohoAuth {
 
 
 }
-
