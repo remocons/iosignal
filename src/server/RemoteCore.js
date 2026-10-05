@@ -103,6 +103,7 @@ export class RemoteCore {
   rxQuotaChecker(message) {
     let rxBytes = message.byteLength
     this.manager.rxBytes += rxBytes;
+    if (this.manager.telemetry) { this.manager.telemetry.rxBytes += rxBytes; this.manager.telemetry.rxMessages++; }
 
     if (serverOption.useQuota.signalSize && (rxBytes > this.quota.signalSize)) {
       console.log('## quota: size over')

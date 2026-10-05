@@ -82,6 +82,104 @@ async function fixture(t, api, authenticated = false, tcp = false, security = {}
 }
 
 for (const [format, api] of variants) {
+  for (const tcp of [false, true]) {
+    test(`${format}: ${tcp ? 'TCP' : 'WS'} RPC IDs wrap through zero with and without arguments`, async t => {
+      const { server, connect } = await fixture(t, api, false, tcp);
+      server.attach('ids', { commands: ['inspect'], checkPermission: () => true,
+        inspect(remote, req) { remote.response(req.mid, 0, { id: req.mid, args: req.args || [] }); } });
+      const io = await connect();
+      for (const args of [[], ['value']]) {
+        io.mid = 65534;
+        for (const id of [65535, 0, 1]) {
+          const reply = await io.call('ids', 'inspect', ...args);
+          assert.equal(io.mid, id);
+          assert.equal(reply.mid, id);
+          assert.deepEqual(reply.body, { id, args });
+          assert.equal(io.promiseMap.size, 0);
+        }
+      }
+    });
+  }
+
+  for (const tcp of [false, true]) {
+    for (const how of ['stop', 'destroy', 'remote']) {
+      test(`${format}: ${tcp ? 'TCP' : 'WS'} ${how} rejects all pending RPCs and clears timers`, { timeout: 4000 }, async t => {
+        const { server, connect, url } = await fixture(t, api, false, tcp);
+        let received = 0, acknowledge;
+        const arrived = new Promise(resolve => { acknowledge = resolve; });
+        server.attach('pending', { commands: ['wait'], checkPermission: () => true, wait() {
+          if (++received === 3) acknowledge();
+        } });
+        const io = await connect();
+        io.autoReconnect = false;
+        io.promiseTimeOut = 30000; // Closure must settle requests well before their timeout.
+        const requests = Array.from({ length: 3 }, () => assert.rejects(io.call('pending', 'wait'), error => {
+          assert.equal(error.code, 'CONNECTION_CLOSED');
+          assert.equal(error.message, 'Connection closed');
+          return true;
+        }));
+        await arrived; // Close after requests arrive, without a response, avoiding unread TCP data resets.
+        const timers = [...io.promiseMap.values()].map(entry => entry[2]);
+        const clear = t.mock.method(globalThis, 'clearTimeout');
+        if (how === 'remote') {
+          const closed = event(io, 'closed', t.signal);
+          server.manager.cid2remote.get(io.cid).close(true);
+          await closed;
+        } else {
+          io[how]();
+        }
+        await Promise.all(requests);
+        assert.equal(io.promiseMap.size, 0);
+        for (const timer of timers) assert.ok(clear.mock.calls.some(call => call.arguments[0] === timer));
+        io.close(); // Repeated cleanup must be harmless.
+        if (how !== 'destroy') {
+          const ready = event(io, 'ready', t.signal);
+          io.open(url);
+          await ready;
+          assert.deepEqual((await io.call('reply', 'echo', 'new connection')).body, ['new connection']);
+        }
+      });
+    }
+  }
+
+  for (const tcp of [false, true]) {
+    test(`${format}: ${tcp ? 'TCP' : 'WS'} service exceptions respond without disrupting other RPCs`, async t => {
+      const { server, connect } = await fixture(t, api, false, tcp);
+      const first = await connect(), second = await connect();
+      first.promiseTimeOut = 500;
+      let release;
+      const gate = new Promise(resolve => { release = resolve; });
+      t.after(() => release());
+      const methods = {
+        commands: ['syncFail', 'asyncFail', 'delayedFail', 'ok'],
+        checkPermission: () => true,
+        syncFail() { throw Error('private synchronous detail'); },
+        async asyncFail() { await Promise.resolve(); throw Error('private asynchronous detail'); },
+        async delayedFail() { await gate; throw Error('private delayed detail'); },
+        marker: 'receiver preserved',
+        ok(remote, req) { remote.response(req.mid, 0, this.marker); },
+      };
+      server.attach('methods', methods);
+      server.attach('dispatcher', { ...methods, call(remote, req) { return this[req.topic](remote, req); } });
+      for (const service of ['methods', 'dispatcher']) {
+        for (const topic of ['syncFail', 'asyncFail']) {
+          await assert.rejects(first.call(service, topic), error => {
+            assert.equal(error.body, 'INTERNAL_SERVER_ERROR');
+            assert.equal(error.ok, false);
+            return true;
+          });
+          assert.equal((await second.call(service, 'ok')).body, 'receiver preserved');
+        }
+      }
+      const failure = assert.rejects(first.call('methods', 'delayedFail'), error => error.body === 'INTERNAL_SERVER_ERROR');
+      // A pending service must not serialize or block an unrelated client's request.
+      assert.deepEqual((await second.call('reply', 'echo', 'still serving')).body, ['still serving']);
+      release();
+      await failure;
+      assert.deepEqual((await first.call('reply', 'echo', 'after failure')).body, ['after failure']);
+    });
+  }
+
   test(`${format}: tag limits use UTF-8 bytes and reject before mutation`, () => {
     const io = new api.IO();
     const sent = [];

@@ -1,3 +1,4 @@
+import { performance } from 'node:perf_hooks';
 import { pack, CongRx } from '../client/CongPacket.js'
 import { RemoteCore } from './RemoteCore.js';
 import { serverOption } from './serverOption.js';
@@ -9,6 +10,10 @@ const decoder = new TextDecoder()
 export class Remote extends RemoteCore {
   constructor(socket, req, manager) {
     super(socket, manager);
+    this.txQueuePeakBytes = 0;
+    this.txWriteFalseCount = 0;
+    this.txBlockedSince = null;
+    this.txDrainMaxMs = 0;
     this.socketType = socket.socketType
 
     if (this.socketType === 'websocket') {
@@ -45,6 +50,11 @@ export class Remote extends RemoteCore {
         this.manager.removeRemote(this);
       };
     } else { // TCP else
+      socket.on('drain', () => {
+        if (this.txBlockedSince === null) return;
+        this.txDrainMaxMs = Math.max(this.txDrainMaxMs, performance.now() - this.txBlockedSince);
+        this.txBlockedSince = null;
+      });
       this.congRx = new CongRx();
       socket.on('data', data => { this.congRx.write(data) })
 
@@ -122,6 +132,7 @@ export class Remote extends RemoteCore {
   // any type of received messages:  message, ping, pong
   receiveMonitor() {
     this.socket.rxCounter++
+    if (this.socket.isAlive === false) this.manager.heartbeatPending.delete(this);
     this.socket.isAlive = true;
   }
 
@@ -186,10 +197,16 @@ export class Remote extends RemoteCore {
     }
   }
 
+  recordTxQueue() {
+    const queued = this.socket.bufferedAmount ?? this.socket.writableLength ?? 0;
+    if (queued > this.txQueuePeakBytes) this.txQueuePeakBytes = queued;
+  }
+
   // node.js server side remote.
   send(message, isBinary) {
     // console.log(`<-S [${IOMsg[ message[0]]}]`)
     this.manager.txBytes += message.byteLength;
+    if (this.manager.telemetry) { this.manager.telemetry.txBytes += message.byteLength; this.manager.telemetry.txMessages++; }
     this.socket.txCounter++;
     if (this.socketType === 'websocket') {
       if (this.socket.readyState === 1) {
@@ -198,6 +215,7 @@ export class Remote extends RemoteCore {
         } else {
           this.socket.send(message);
         }
+        this.recordTxQueue();
       } else {
         console.log('server(ws)Remote.send() called. not open state. current readyState:', this.socket.readyState )
         this.close(true)
@@ -205,7 +223,12 @@ export class Remote extends RemoteCore {
       
     } else { //CongSocket
       if (this.socket.readyState == 'open') {
-        this.socket.write(pack(message))
+        const writable = this.socket.write(pack(message));
+        this.recordTxQueue();
+        if (!writable) {
+          this.txWriteFalseCount++;
+          if (this.txBlockedSince === null) this.txBlockedSince = performance.now();
+        }
       } else {
         console.log('server(cong)Remote.send() called. not open state. current readyState:', this.socket.readyState )
         this.close(true)

@@ -156,7 +156,7 @@ declare class IOCore {
    */
     private _closed;
     /**
-     * Performs common cleanup for the connection. It clears pending promises,
+     * Performs common cleanup for the connection. It rejects pending RPCs,
      * resets the socket reference, and sets the state to closed.
      * This method is guarded to only run once.
      * If autoReconnect is false, it also clears the keep-alive timer.

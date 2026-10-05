@@ -90,54 +90,43 @@ export class CongRx extends Transform {
 
 
   parse() {
-    let head = this.buffer[0]
-    let headerLen;
-    let payloadSize;
+    while (this.buffer.byteLength > 0) {
+      const head = this.buffer[0];
+      let headerLen;
+      let payloadSize;
 
-    if (head == CongType.TYPE_LEN1) {
-      headerLen = 2;
-      if (this.buffer.byteLength < headerLen) return;
-      payloadSize = this.buffer.readUint8(1)
+      if (head === CongType.TYPE_LEN1) {
+        headerLen = 2;
+        if (this.buffer.byteLength < headerLen) return;
+        payloadSize = this.buffer.readUint8(1);
+      } else if (head === CongType.TYPE_LEN2) {
+        headerLen = 3;
+        if (this.buffer.byteLength < headerLen) return;
+        payloadSize = this.buffer.readUint16LE(1);
+      } else if (head === CongType.TYPE_LEN3) {
+        headerLen = 4;
+        if (this.buffer.byteLength < headerLen) return;
+        payloadSize = this.buffer.readUint16LE(1) + this.buffer.readUint8(3) * 65536;
+      } else if (head === CongType.TYPE_LEN4) {
+        headerLen = 5;
+        if (this.buffer.byteLength < headerLen) return;
+        payloadSize = this.buffer.readUint32LE(1);
+      } else {
+        this.emit('wrong', this.buffer);
+        this.buffer = Buffer.alloc(0);
+        return;
+      }
 
-    } else if (head == CongType.TYPE_LEN2) {
-      headerLen = 3;
-      if (this.buffer.byteLength < headerLen) return;
-      payloadSize = this.buffer.readUint16LE(1)
+      const frameSize = headerLen + payloadSize;
+      if (this.buffer.byteLength < frameSize) return;
 
-    } else if (head == CongType.TYPE_LEN3) {
-      headerLen = 4;
-      if (this.buffer.byteLength < headerLen) return;
-      payloadSize = this.buffer.readUint16LE(1) + this.buffer.readUint8(3) * 65536
-
-    } else if (head == CongType.TYPE_LEN4) {
-      headerLen = 5;
-      if (this.buffer.byteLength < headerLen) return;
-      payloadSize = this.buffer.readUint32LE(1)
-
-    } else {
-      this.emit('wrong', this.buffer)
-      this.buffer = Buffer.alloc(0)
+      this.frames.push(this.buffer.subarray(headerLen, frameSize));
+      if (this.buffer.byteLength === frameSize) {
+        this.buffer = Buffer.alloc(0);
+        return;
+      }
+      // Consume each complete frame without growing the call stack.
+      this.buffer = this.buffer.subarray(frameSize);
     }
-
-
-    if (payloadSize == this.buffer.byteLength - headerLen) {
-      this.frames.push(this.buffer.subarray(headerLen))
-      this.buffer = Buffer.alloc(0)
-      return
-    } else if (payloadSize < this.buffer.byteLength - headerLen) {
-      this.frames.push(this.buffer.subarray(headerLen, headerLen + payloadSize))
-      this.buffer = this.buffer.subarray(headerLen + payloadSize)
-      this.parse()
-    } else {
-      // not ready
-      // console.log('+')
-      return
-    }
-
-
   }
-
-
 }
-
-

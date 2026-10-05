@@ -15,7 +15,7 @@ import fs, { readFileSync } from 'fs';
 import { memoryUsage } from 'process';
 import path from 'path';
 
-var version$1 = "7.0.0";
+var version$1 = "7.0.1";
 var pkg = {
 	version: version$1};
 
@@ -964,7 +964,7 @@ class IOCore extends EventEmitter {
 
 
   /**
-   * Performs common cleanup for the connection. It clears pending promises,
+   * Performs common cleanup for the connection. It rejects pending RPCs,
    * resets the socket reference, and sets the state to closed.
    * This method is guarded to only run once.
    * If autoReconnect is false, it also clears the keep-alive timer.
@@ -998,6 +998,12 @@ class IOCore extends EventEmitter {
         } catch { }
       }
       this.socket = null;
+    }
+    const error = new Error('Connection closed');
+    error.code = 'CONNECTION_CLOSED';
+    for (const [, reject, timeoutId] of this.promiseMap.values()) {
+      clearTimeout(timeoutId);
+      reject(error);
     }
     this.promiseMap.clear();
     this.cid = '';
@@ -1692,11 +1698,12 @@ class IOCore extends EventEmitter {
   call(target, topic, ...args) {
     if (!target || !topic)
       return Promise.reject(new Error('request need target and topic)'))
+    this.mid = (this.mid + 1) & 0xffff;
     let sigPack;
     if (args.length > 0) {
       sigPack = $$1.pack(
         $$1.MB('#MsgType', '8', IOMsg.CALL),
-        $$1.MB('mid', '16', ++this.mid),
+        $$1.MB('mid', '16', this.mid),
         $$1.MB('target', target),
         $$1.MB('topic', topic),
         $$1.MBA(...args)
@@ -1704,7 +1711,7 @@ class IOCore extends EventEmitter {
     } else {
       sigPack = $$1.pack(
         $$1.MB('#MsgType', '8', IOMsg.CALL),
-        $$1.MB('mid', '16', ++this.mid),
+        $$1.MB('mid', '16', this.mid),
         $$1.MB('target', target),
         $$1.MB('topic', topic)
       );
@@ -2056,54 +2063,45 @@ class CongRx extends Transform {
 
 
   parse() {
-    let head = this.buffer[0];
-    let headerLen;
-    let payloadSize;
+    while (this.buffer.byteLength > 0) {
+      const head = this.buffer[0];
+      let headerLen;
+      let payloadSize;
 
-    if (head == CongType.TYPE_LEN1) {
-      headerLen = 2;
-      if (this.buffer.byteLength < headerLen) return;
-      payloadSize = this.buffer.readUint8(1);
+      if (head === CongType.TYPE_LEN1) {
+        headerLen = 2;
+        if (this.buffer.byteLength < headerLen) return;
+        payloadSize = this.buffer.readUint8(1);
+      } else if (head === CongType.TYPE_LEN2) {
+        headerLen = 3;
+        if (this.buffer.byteLength < headerLen) return;
+        payloadSize = this.buffer.readUint16LE(1);
+      } else if (head === CongType.TYPE_LEN3) {
+        headerLen = 4;
+        if (this.buffer.byteLength < headerLen) return;
+        payloadSize = this.buffer.readUint16LE(1) + this.buffer.readUint8(3) * 65536;
+      } else if (head === CongType.TYPE_LEN4) {
+        headerLen = 5;
+        if (this.buffer.byteLength < headerLen) return;
+        payloadSize = this.buffer.readUint32LE(1);
+      } else {
+        this.emit('wrong', this.buffer);
+        this.buffer = Buffer.alloc(0);
+        return;
+      }
 
-    } else if (head == CongType.TYPE_LEN2) {
-      headerLen = 3;
-      if (this.buffer.byteLength < headerLen) return;
-      payloadSize = this.buffer.readUint16LE(1);
+      const frameSize = headerLen + payloadSize;
+      if (this.buffer.byteLength < frameSize) return;
 
-    } else if (head == CongType.TYPE_LEN3) {
-      headerLen = 4;
-      if (this.buffer.byteLength < headerLen) return;
-      payloadSize = this.buffer.readUint16LE(1) + this.buffer.readUint8(3) * 65536;
-
-    } else if (head == CongType.TYPE_LEN4) {
-      headerLen = 5;
-      if (this.buffer.byteLength < headerLen) return;
-      payloadSize = this.buffer.readUint32LE(1);
-
-    } else {
-      this.emit('wrong', this.buffer);
-      this.buffer = Buffer.alloc(0);
+      this.frames.push(this.buffer.subarray(headerLen, frameSize));
+      if (this.buffer.byteLength === frameSize) {
+        this.buffer = Buffer.alloc(0);
+        return;
+      }
+      // Consume each complete frame without growing the call stack.
+      this.buffer = this.buffer.subarray(frameSize);
     }
-
-
-    if (payloadSize == this.buffer.byteLength - headerLen) {
-      this.frames.push(this.buffer.subarray(headerLen));
-      this.buffer = Buffer.alloc(0);
-      return
-    } else if (payloadSize < this.buffer.byteLength - headerLen) {
-      this.frames.push(this.buffer.subarray(headerLen, headerLen + payloadSize));
-      this.buffer = this.buffer.subarray(headerLen + payloadSize);
-      this.parse();
-    } else {
-      // not ready
-      // console.log('+')
-      return
-    }
-
-
   }
-
-
 }
 
 class IOCongSocket extends IOCore {
@@ -7331,6 +7329,7 @@ let serverOption = {
   httpServer: null,
   wsPath: null,
   timeout: 50000,
+  pingTimeoutGrace: 5000,
   showMessage: 'none',
   showMetric: 0,
   showChannel: 0,
@@ -7482,6 +7481,7 @@ class RemoteCore {
   rxQuotaChecker(message) {
     let rxBytes = message.byteLength;
     this.manager.rxBytes += rxBytes;
+    if (this.manager.telemetry) { this.manager.telemetry.rxBytes += rxBytes; this.manager.telemetry.rxMessages++; }
 
     if (serverOption.useQuota.signalSize && (rxBytes > this.quota.signalSize)) {
       console.log('## quota: size over');
@@ -7953,6 +7953,10 @@ const decoder$2 = new TextDecoder();
 class Remote extends RemoteCore {
   constructor(socket, req, manager) {
     super(socket, manager);
+    this.txQueuePeakBytes = 0;
+    this.txWriteFalseCount = 0;
+    this.txBlockedSince = null;
+    this.txDrainMaxMs = 0;
     this.socketType = socket.socketType;
 
     if (this.socketType === 'websocket') {
@@ -7989,6 +7993,11 @@ class Remote extends RemoteCore {
         this.manager.removeRemote(this);
       };
     } else { // TCP else
+      socket.on('drain', () => {
+        if (this.txBlockedSince === null) return;
+        this.txDrainMaxMs = Math.max(this.txDrainMaxMs, performance.now() - this.txBlockedSince);
+        this.txBlockedSince = null;
+      });
       this.congRx = new CongRx();
       socket.on('data', data => { this.congRx.write(data); });
 
@@ -8057,6 +8066,7 @@ class Remote extends RemoteCore {
   // any type of received messages:  message, ping, pong
   receiveMonitor() {
     this.socket.rxCounter++;
+    if (this.socket.isAlive === false) this.manager.heartbeatPending.delete(this);
     this.socket.isAlive = true;
   }
 
@@ -8120,10 +8130,16 @@ class Remote extends RemoteCore {
     }
   }
 
+  recordTxQueue() {
+    const queued = this.socket.bufferedAmount ?? this.socket.writableLength ?? 0;
+    if (queued > this.txQueuePeakBytes) this.txQueuePeakBytes = queued;
+  }
+
   // node.js server side remote.
   send(message, isBinary) {
     // console.log(`<-S [${IOMsg[ message[0]]}]`)
     this.manager.txBytes += message.byteLength;
+    if (this.manager.telemetry) { this.manager.telemetry.txBytes += message.byteLength; this.manager.telemetry.txMessages++; }
     this.socket.txCounter++;
     if (this.socketType === 'websocket') {
       if (this.socket.readyState === 1) {
@@ -8132,6 +8148,7 @@ class Remote extends RemoteCore {
         } else {
           this.socket.send(message);
         }
+        this.recordTxQueue();
       } else {
         console.log('server(ws)Remote.send() called. not open state. current readyState:', this.socket.readyState );
         this.close(true);
@@ -8139,7 +8156,12 @@ class Remote extends RemoteCore {
       
     } else { //CongSocket
       if (this.socket.readyState == 'open') {
-        this.socket.write(pack(message));
+        const writable = this.socket.write(pack(message));
+        this.recordTxQueue();
+        if (!writable) {
+          this.txWriteFalseCount++;
+          if (this.txBlockedSince === null) this.txBlockedSince = performance.now();
+        }
       } else {
         console.log('server(cong)Remote.send() called. not open state. current readyState:', this.socket.readyState );
         this.close(true);
@@ -8343,6 +8365,12 @@ class Manager {
 
   constructor(server, authManager) {
     this.server = server;
+    this.pingPeriod = serverOption.timeout;
+    this.pingGrace = serverOption.pingTimeoutGrace;
+    if (!Number.isFinite(this.pingPeriod) || this.pingPeriod <= 0 ||
+        !Number.isFinite(this.pingGrace) || this.pingGrace < 0) {
+      throw new RangeError('Invalid heartbeat period or grace');
+    }
     this.txBytes = 0;
     this.rxBytes = 0;
 
@@ -8369,25 +8397,20 @@ class Manager {
     this.metrics = new Metrics(this);
     this.lastSSID = 0;
 
-    this.pingIntervalID = setInterval(e => {
-      this.remotes.forEach(function each(remo) {
-        let socket = remo.socket;
-        if (socket.isAlive === false) {
-          console.log('## timeout. cid:', remo.cid);
-          remo.close();
-          return;
-        }
-
-        socket.txCounter++;
-        socket.isAlive = false;
-        if (remo.socketType === 'websocket') {
-          socket.ping();
-        } else {
-          remo.ping();
-        }
-
-      });
-    }, serverOption.timeout);
+    const groups = Math.min(50, Math.max(1, Math.floor(this.pingPeriod / 1000)));
+    this.pingGroups = Array.from({ length: groups }, () => new Set());
+    this.nextPingGroup = 0;
+    this.pingGroupCursor = 0;
+    // Same timeout for all entries: insertion order is also deadline order.
+    this.heartbeatPending = new Map();
+    this.pingTickMs = this.pingPeriod / groups;
+    this.heartbeatStopped = false;
+    const tick = () => {
+      if (this.heartbeatStopped) return;
+      this.heartbeatTick();
+      if (!this.heartbeatStopped) this.pingIntervalID = setTimeout(tick, this.pingTickMs);
+    };
+    this.pingIntervalID = setTimeout(tick, this.pingTickMs);
 
     if (serverOption.showMetric) {
       this.monitIntervalID = setInterval((e) => {
@@ -8399,10 +8422,37 @@ class Manager {
   }
 
 
+  heartbeatTick() {
+    const now = performance.now();
+    // Process only expired requests, not every connected peer.
+    for (const [remote, deadline] of this.heartbeatPending) {
+      if (deadline > now) break;
+      this.heartbeatPending.delete(remote);
+      if (!remote._closing && remote.socket.isAlive === false) remote.close(true);
+    }
+    // The single timer schedules its next tick after this work; missed groups are not replayed.
+    const group = this.pingGroups[this.pingGroupCursor];
+    this.pingGroupCursor = (this.pingGroupCursor + 1) % this.pingGroups.length;
+    for (const remote of group) {
+      if (remote._closing || this.heartbeatPending.has(remote)) continue;
+      remote.socket.isAlive = false;
+      this.heartbeatPending.set(remote, performance.now() + this.pingPeriod + this.pingGrace);
+      try {
+        remote.ping();
+      } catch {
+        this.heartbeatPending.delete(remote);
+        remote.close(true);
+      }
+    }
+  }
+
   addRemote(socket, req) {
     socket.isAlive = true;
     let remote = new Remote(socket, req, this);
     this.remotes.add(remote);
+    remote.pingGroup = this.nextPingGroup;
+    this.pingGroups[remote.pingGroup].add(remote);
+    this.nextPingGroup = (this.nextPingGroup + 1) % this.pingGroups.length;
     remote.send(remote.issueAuthChallenge());
     remote.send( Buffer.from([ IOMsg.SERVER_READY]) );
     remote.setState(STATE.SERVER_READY);
@@ -8416,6 +8466,8 @@ class Manager {
   removeRemote(remote) {
 
     remote._closing = true;
+    this.pingGroups[remote.pingGroup]?.delete(remote);
+    this.heartbeatPending.delete(remote);
     remote.setState(STATE.CLOSED);
 
     let remoteInfo = `- IP:${remote.ip} #${remote.ssid} cid:${remote.cid} ${remote?.socket.socketType === 'websocket' ? "WS" : "CS"} `;
@@ -8594,6 +8646,7 @@ class Manager {
 
     }
 
+    if (this.telemetry) this.telemetry.publishes++;
     let sentCounter = 0;
     if (this.channel_map.has(tag)) {
       // console.log('raw channel_map matched tag:', tag)
@@ -8605,6 +8658,7 @@ class Manager {
         } else {
           limit = remotes.size;
         }
+        if (this.telemetry) this.telemetry.quotaExcluded += remotes.size - limit;
         let peers = remotes.values();
         while (sentCounter < limit) {
           let c = peers.next().value;
@@ -8624,6 +8678,7 @@ class Manager {
         // } else {
         //   // console.log(`pub >> [${tag}] sent: ${sentCounter} [no quota limit] total: ${remotes.size} subscribers. ` )
         // }
+        if (this.telemetry) this.telemetry.deliveryAttempts += sentCounter;
         return ['ok', sentCounter]
       }
     }
@@ -8757,7 +8812,10 @@ class Manager {
 
   close() {
     this.metrics.close();
-    clearInterval(this.pingIntervalID);
+    this.heartbeatStopped = true;
+    clearTimeout(this.pingIntervalID);
+    this.heartbeatPending.clear();
+    for (const group of this.pingGroups) group.clear();
     if (this.monitIntervalID) {
       clearInterval(this.monitIntervalID);
     }
@@ -8930,44 +8988,36 @@ class Server extends require$$0$3 {
       throw new Error(`Service ${service} : no commands or !Array.`)
     }
     
-    // Service TYPE 1. single call() function.
-    if ( service_module.call && typeof service_module.call == 'function' ) {
-      this.on(service, (remote, req) => {
-        try {
-          if (!service_module.checkPermission(remote, req)) {
-            remote.response(req.mid, STATUS.ERROR, "NO_PERMISSION.");
-            return
-          }
-          if( service_module.commands.includes( req.topic )){
-            // console.log('server service_module req', req )
-            service_module.call(remote, req);
-          }else {
-            remote.response(req.mid, STATUS.ERROR, "UNKNOWN_COMMAND");
-          }
-        } catch (error) {
-          console.error(`Unhandled Service Error in service [${service}]:`, error);
-          remote.response(req.mid, STATUS.ERROR, "INTERNAL_SERVER_ERROR");
+    const handleError = (remote, req, error) => {
+      console.error(`Unhandled Service Error in service [${service}]:`, error);
+      if (remote._closing) return;
+      // A disconnected transport can also fail while reporting the service error.
+      try {
+        remote.response(req.mid, STATUS.ERROR, "INTERNAL_SERVER_ERROR");
+      } catch (responseError) {
+        console.error(`Service error response failed [${service}]:`, responseError);
+      }
+    };
+    const useCall = typeof service_module.call === 'function';
+    this.on(service, (remote, req) => {
+      try {
+        if (!service_module.checkPermission(remote, req)) {
+          remote.response(req.mid, STATUS.ERROR, "NO_PERMISSION.");
+          return;
         }
-      });
-    } else {
-      // Service TYPE 2. multiple functions.
-      this.on(service, (remote, req) => {
-        try {
-          if (!service_module.checkPermission(remote, req)) {
-            remote.response(req.mid, STATUS.ERROR, "NO_PERMISSION.");
-            return
-          }
-          if( service_module.commands.includes( req.topic )){
-            service_module[req.topic](remote, req);
-          }else {
-            remote.response(req.mid, STATUS.ERROR, "UNKNOWN_COMMAND");
-          }
-        } catch (error) {
-          console.error(`Unhandled Service Error in service [${service}]:`, error);
-          remote.response(req.mid, STATUS.ERROR, "INTERNAL_SERVER_ERROR");
+        if (!service_module.commands.includes(req.topic)) {
+          remote.response(req.mid, STATUS.ERROR, "UNKNOWN_COMMAND");
+          return;
         }
-      });
-    }
+        // Keep synchronous invocation and the service receiver; also observe async failures.
+        const result = useCall
+          ? service_module.call(remote, req)
+          : service_module[req.topic](remote, req);
+        Promise.resolve(result).catch(error => handleError(remote, req, error));
+      } catch (error) {
+        handleError(remote, req, error);
+      }
+    });
     this.serviceNames.add(service);
     // console.log(`[Service attached: ${service} ] accept commands: ${service_module.commands}`)
     return this

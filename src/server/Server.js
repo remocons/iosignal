@@ -154,44 +154,36 @@ export class Server extends EventEmitter {
       throw new Error(`Service ${service} : no commands or !Array.`)
     }
     
-    // Service TYPE 1. single call() function.
-    if ( service_module.call && typeof service_module.call == 'function' ) {
-      this.on(service, (remote, req) => {
-        try {
-          if (!service_module.checkPermission(remote, req)) {
-            remote.response(req.mid, STATUS.ERROR, "NO_PERMISSION.")
-            return
-          }
-          if( service_module.commands.includes( req.topic )){
-            // console.log('server service_module req', req )
-            service_module.call(remote, req)
-          }else{
-            remote.response(req.mid, STATUS.ERROR, "UNKNOWN_COMMAND");
-          }
-        } catch (error) {
-          console.error(`Unhandled Service Error in service [${service}]:`, error);
-          remote.response(req.mid, STATUS.ERROR, "INTERNAL_SERVER_ERROR");
+    const handleError = (remote, req, error) => {
+      console.error(`Unhandled Service Error in service [${service}]:`, error);
+      if (remote._closing) return;
+      // A disconnected transport can also fail while reporting the service error.
+      try {
+        remote.response(req.mid, STATUS.ERROR, "INTERNAL_SERVER_ERROR");
+      } catch (responseError) {
+        console.error(`Service error response failed [${service}]:`, responseError);
+      }
+    };
+    const useCall = typeof service_module.call === 'function';
+    this.on(service, (remote, req) => {
+      try {
+        if (!service_module.checkPermission(remote, req)) {
+          remote.response(req.mid, STATUS.ERROR, "NO_PERMISSION.");
+          return;
         }
-      })
-    } else {
-      // Service TYPE 2. multiple functions.
-      this.on(service, (remote, req) => {
-        try {
-          if (!service_module.checkPermission(remote, req)) {
-            remote.response(req.mid, STATUS.ERROR, "NO_PERMISSION.")
-            return
-          }
-          if( service_module.commands.includes( req.topic )){
-            service_module[req.topic](remote, req)
-          }else{
-            remote.response(req.mid, STATUS.ERROR, "UNKNOWN_COMMAND");
-          }
-        } catch (error) {
-          console.error(`Unhandled Service Error in service [${service}]:`, error);
-          remote.response(req.mid, STATUS.ERROR, "INTERNAL_SERVER_ERROR");
+        if (!service_module.commands.includes(req.topic)) {
+          remote.response(req.mid, STATUS.ERROR, "UNKNOWN_COMMAND");
+          return;
         }
-      })
-    }
+        // Keep synchronous invocation and the service receiver; also observe async failures.
+        const result = useCall
+          ? service_module.call(remote, req)
+          : service_module[req.topic](remote, req);
+        Promise.resolve(result).catch(error => handleError(remote, req, error));
+      } catch (error) {
+        handleError(remote, req, error);
+      }
+    });
     this.serviceNames.add(service)
     // console.log(`[Service attached: ${service} ] accept commands: ${service_module.commands}`)
     return this

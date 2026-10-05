@@ -1,4 +1,5 @@
 import MBP from 'meta-buffer-pack'
+import { performance } from 'node:perf_hooks';
 import { Remote } from './Remote.js'
 import { serverOption } from './serverOption.js'
 import { IOMsg, STATE, SIZE_LIMIT } from '../common/constants.js'
@@ -13,6 +14,12 @@ export class Manager {
 
   constructor(server, authManager) {
     this.server = server;
+    this.pingPeriod = serverOption.timeout;
+    this.pingGrace = serverOption.pingTimeoutGrace;
+    if (!Number.isFinite(this.pingPeriod) || this.pingPeriod <= 0 ||
+        !Number.isFinite(this.pingGrace) || this.pingGrace < 0) {
+      throw new RangeError('Invalid heartbeat period or grace');
+    }
     this.txBytes = 0;
     this.rxBytes = 0;
 
@@ -39,25 +46,20 @@ export class Manager {
     this.metrics = new Metrics(this)
     this.lastSSID = 0;
 
-    this.pingIntervalID = setInterval(e => {
-      this.remotes.forEach(function each(remo) {
-        let socket = remo.socket;
-        if (socket.isAlive === false) {
-          console.log('## timeout. cid:', remo.cid)
-          remo.close();
-          return;
-        }
-
-        socket.txCounter++;
-        socket.isAlive = false;
-        if (remo.socketType === 'websocket') {
-          socket.ping();
-        } else {
-          remo.ping()
-        }
-
-      });
-    }, serverOption.timeout);
+    const groups = Math.min(50, Math.max(1, Math.floor(this.pingPeriod / 1000)));
+    this.pingGroups = Array.from({ length: groups }, () => new Set());
+    this.nextPingGroup = 0;
+    this.pingGroupCursor = 0;
+    // Same timeout for all entries: insertion order is also deadline order.
+    this.heartbeatPending = new Map();
+    this.pingTickMs = this.pingPeriod / groups;
+    this.heartbeatStopped = false;
+    const tick = () => {
+      if (this.heartbeatStopped) return;
+      this.heartbeatTick();
+      if (!this.heartbeatStopped) this.pingIntervalID = setTimeout(tick, this.pingTickMs);
+    };
+    this.pingIntervalID = setTimeout(tick, this.pingTickMs);
 
     if (serverOption.showMetric) {
       this.monitIntervalID = setInterval((e) => {
@@ -69,10 +71,37 @@ export class Manager {
   }
 
 
+  heartbeatTick() {
+    const now = performance.now();
+    // Process only expired requests, not every connected peer.
+    for (const [remote, deadline] of this.heartbeatPending) {
+      if (deadline > now) break;
+      this.heartbeatPending.delete(remote);
+      if (!remote._closing && remote.socket.isAlive === false) remote.close(true);
+    }
+    // The single timer schedules its next tick after this work; missed groups are not replayed.
+    const group = this.pingGroups[this.pingGroupCursor];
+    this.pingGroupCursor = (this.pingGroupCursor + 1) % this.pingGroups.length;
+    for (const remote of group) {
+      if (remote._closing || this.heartbeatPending.has(remote)) continue;
+      remote.socket.isAlive = false;
+      this.heartbeatPending.set(remote, performance.now() + this.pingPeriod + this.pingGrace);
+      try {
+        remote.ping();
+      } catch {
+        this.heartbeatPending.delete(remote);
+        remote.close(true);
+      }
+    }
+  }
+
   addRemote(socket, req) {
     socket.isAlive = true;
     let remote = new Remote(socket, req, this)
     this.remotes.add(remote)
+    remote.pingGroup = this.nextPingGroup;
+    this.pingGroups[remote.pingGroup].add(remote);
+    this.nextPingGroup = (this.nextPingGroup + 1) % this.pingGroups.length;
     remote.send(remote.issueAuthChallenge())
     remote.send( Buffer.from([ IOMsg.SERVER_READY]) )
     remote.setState(STATE.SERVER_READY)
@@ -86,6 +115,8 @@ export class Manager {
   removeRemote(remote) {
 
     remote._closing = true;
+    this.pingGroups[remote.pingGroup]?.delete(remote);
+    this.heartbeatPending.delete(remote);
     remote.setState(STATE.CLOSED);
 
     let remoteInfo = `- IP:${remote.ip} #${remote.ssid} cid:${remote.cid} ${remote?.socket.socketType === 'websocket' ? "WS" : "CS"} `
@@ -275,6 +306,7 @@ export class Manager {
       // console.log('no retain. serverOption.retain:', serverOption.retain )
     }
 
+    if (this.telemetry) this.telemetry.publishes++;
     let sentCounter = 0;
     if (this.channel_map.has(tag)) {
       // console.log('raw channel_map matched tag:', tag)
@@ -286,6 +318,7 @@ export class Manager {
         } else {
           limit = remotes.size;
         }
+        if (this.telemetry) this.telemetry.quotaExcluded += remotes.size - limit;
         let peers = remotes.values();
         while (sentCounter < limit) {
           let c = peers.next().value
@@ -305,6 +338,7 @@ export class Manager {
         // } else {
         //   // console.log(`pub >> [${tag}] sent: ${sentCounter} [no quota limit] total: ${remotes.size} subscribers. ` )
         // }
+        if (this.telemetry) this.telemetry.deliveryAttempts += sentCounter;
         return ['ok', sentCounter]
       }
     }
@@ -441,7 +475,10 @@ export class Manager {
 
   close() {
     this.metrics.close();
-    clearInterval(this.pingIntervalID);
+    this.heartbeatStopped = true;
+    clearTimeout(this.pingIntervalID);
+    this.heartbeatPending.clear();
+    for (const group of this.pingGroups) group.clear();
     if (this.monitIntervalID) {
       clearInterval(this.monitIntervalID);
     }

@@ -211,7 +211,7 @@ export class IOCore extends EventEmitter {
 
 
   /**
-   * Performs common cleanup for the connection. It clears pending promises,
+   * Performs common cleanup for the connection. It rejects pending RPCs,
    * resets the socket reference, and sets the state to closed.
    * This method is guarded to only run once.
    * If autoReconnect is false, it also clears the keep-alive timer.
@@ -245,6 +245,12 @@ export class IOCore extends EventEmitter {
         } catch { }
       }
       this.socket = null;
+    }
+    const error = new Error('Connection closed');
+    error.code = 'CONNECTION_CLOSED';
+    for (const [, reject, timeoutId] of this.promiseMap.values()) {
+      clearTimeout(timeoutId);
+      reject(error);
     }
     this.promiseMap.clear();
     this.cid = '';
@@ -944,11 +950,12 @@ export class IOCore extends EventEmitter {
   call(target, topic, ...args) {
     if (!target || !topic)
       return Promise.reject(new Error('request need target and topic)'))
+    this.mid = (this.mid + 1) & 0xffff;
     let sigPack;
     if (args.length > 0) {
       sigPack = MBP.pack(
         MBP.MB('#MsgType', '8', IOMsg.CALL),
-        MBP.MB('mid', '16', ++this.mid),
+        MBP.MB('mid', '16', this.mid),
         MBP.MB('target', target),
         MBP.MB('topic', topic),
         MBP.MBA(...args)
@@ -956,7 +963,7 @@ export class IOCore extends EventEmitter {
     } else {
       sigPack = MBP.pack(
         MBP.MB('#MsgType', '8', IOMsg.CALL),
-        MBP.MB('mid', '16', ++this.mid),
+        MBP.MB('mid', '16', this.mid),
         MBP.MB('target', target),
         MBP.MB('topic', topic)
       )

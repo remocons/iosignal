@@ -7,6 +7,7 @@ export let serverOption = {
   httpServer: null,
   wsPath: null,
   timeout: 50000,
+  pingTimeoutGrace: 5000,
   showMessage: 'none',
   showMetric: 0,
   showChannel: 0,
