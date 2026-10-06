@@ -21,6 +21,13 @@ export class Server extends EventEmitter {
     this.port = null;
     this.congPort = null;
 
+    if (options.pingTimeoutGrace !== undefined) {
+      if (!Number.isFinite(options.pingTimeoutGrace) || options.pingTimeoutGrace < 0) {
+        throw new RangeError('pingTimeoutGrace must be a finite non-negative number');
+      }
+      serverOption.pingTimeoutGrace = options.pingTimeoutGrace;
+    }
+
     if (options.timeout) {
       let pingT = parseInt(options.timeout)
       if (pingT && pingT >= 1000) serverOption.timeout = pingT
