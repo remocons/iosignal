@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
 import { readFileSync } from 'node:fs';
+import { performance } from 'node:perf_hooks';
 
 // Private source entry in development; package self-reference for public builds.
 const pkg = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url)));
@@ -29,14 +30,14 @@ function event(emitter, name, signal) {
   });
 }
 
-async function fixture(t, api, authenticated = false, tcp = false, security = {}) {
+async function fixture(t, api, authenticated = false, tcp = false, security = {}, options = {}) {
   const http = createServer();
   const previousMembersOnly = api.serverOption.membersOnly;
   api.serverOption.membersOnly = authenticated;
   const auth = authenticated
     ? new api.BohoAuth(new api.StringKeyProvider('tester.fixture-key.fixture-client.3'))
     : undefined;
-  const server = new api.Server({ httpServer: http, security, ...(tcp ? { congPort: 0 } : {}) }, auth);
+  const server = new api.Server({ httpServer: http, security, ...(tcp ? { congPort: 0 } : {}), ...options }, auth);
   const clients = [];
   const errors = [];
   server.attach('reply', api.replyService);
@@ -82,6 +83,61 @@ async function fixture(t, api, authenticated = false, tcp = false, security = {}
 }
 
 for (const [format, api] of variants) {
+  test(`${format}: invalid heartbeat grace is rejected without changing defaults`, () => {
+    const grace = api.serverOption.pingTimeoutGrace;
+    const timeout = api.serverOption.timeout;
+    for (const value of [-1, NaN, Infinity, -Infinity, '1000', '', null, false, {}]) {
+      assert.throws(() => new api.Server({ port: 0, timeout: 2000, pingTimeoutGrace: value }),
+        { name: 'RangeError', message: 'pingTimeoutGrace must be a finite non-negative number' });
+      assert.equal(api.serverOption.pingTimeoutGrace, grace);
+      assert.equal(api.serverOption.timeout, timeout);
+    }
+  });
+
+  for (const tcp of [false, true]) {
+    for (const grace of [undefined, 0, 1234.5]) {
+      test(`${format}: ${tcp ? 'TCP' : 'WS'} heartbeat deadline with grace ${grace ?? 'default'}`, async t => {
+        const previous = { timeout: api.serverOption.timeout, pingTimeoutGrace: api.serverOption.pingTimeoutGrace };
+        t.after(() => Object.assign(api.serverOption, previous));
+        assert.equal(previous.timeout, 50000);
+        assert.equal(previous.pingTimeoutGrace, 5000);
+        // Keep the existing timeout string parsing behavior for custom options.
+        const options = grace === undefined ? {} : { timeout: '2000', pingTimeoutGrace: grace };
+        const { server, connect } = await fixture(t, api, false, tcp, {}, options);
+        const manager = server.manager;
+        clearTimeout(manager.pingIntervalID);
+        manager.heartbeatStopped = true;
+        const io = await connect();
+        io.autoReconnect = false;
+        const remote = manager.cid2remote.get(io.cid);
+        const ping = t.mock.method(remote, 'ping');
+        const close = t.mock.method(remote, 'close');
+        let now = 100;
+        t.mock.method(performance, 'now', () => now);
+        const period = grace === undefined ? 50000 : 2000;
+        const expectedGrace = grace ?? 5000;
+        assert.equal(manager.pingPeriod, period);
+        assert.equal(manager.pingGrace, expectedGrace);
+        assert.equal(api.serverOption.pingTimeoutGrace, expectedGrace);
+        manager.pingGroupCursor = remote.pingGroup;
+        manager.heartbeatTick();
+        const deadline = 100 + period + expectedGrace;
+        assert.equal(manager.heartbeatPending.get(remote), deadline);
+        assert.equal(ping.mock.callCount(), 1);
+        assert.equal(remote.socket.isAlive, false);
+        now = deadline - 0.5;
+        manager.heartbeatTick();
+        assert.equal(close.mock.callCount(), 0);
+        assert.equal(manager.heartbeatPending.get(remote), deadline);
+        now = deadline;
+        manager.heartbeatTick();
+        assert.equal(close.mock.callCount(), 1);
+        assert.deepEqual(close.mock.calls[0].arguments, [true]);
+        assert.equal(manager.heartbeatPending.has(remote), false);
+      });
+    }
+  }
+
   for (const tcp of [false, true]) {
     test(`${format}: ${tcp ? 'TCP' : 'WS'} RPC IDs wrap through zero with and without arguments`, async t => {
       const { server, connect } = await fixture(t, api, false, tcp);
