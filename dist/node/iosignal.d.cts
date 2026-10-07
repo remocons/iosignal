@@ -578,7 +578,6 @@ type Buffer$1 = Boho.Buffer;
 
 declare function pack(payload: any): Buffer<ArrayBufferLike>;
 declare class CongRx extends Transform {
-    constructor(options: any);
     buffer: Buffer<ArrayBuffer>;
     frames: any[];
     rxi: number;
@@ -777,7 +776,11 @@ declare class Manager {
 }
 
 declare class Server extends EventEmitter$1<[never]> {
-    constructor(options: any, authManager: any);
+    /**
+     * @param {object} options Server configuration.
+     * @param {any} [authManager] Optional authentication manager.
+     */
+    constructor(options: object, authManager?: any);
     security: any;
     serviceNames: Set<any>;
     wss: {};
@@ -798,7 +801,10 @@ declare class Server extends EventEmitter$1<[never]> {
      * return this
      */
     attach(service: any, service_module: any): this;
-    close(callback: any): void;
+    /**
+     * @param {() => void} [callback] Called when the server has closed.
+     */
+    close(callback?: () => void): void;
 }
 
 declare namespace serverOption {

@@ -2021,6 +2021,9 @@ function pack(payload) {
 }
 
 class CongRx extends Transform {
+  /**
+   * @param {import('stream').TransformOptions} [options] Stream options.
+   */
   constructor(options) {
     super(options);
     this.buffer = Buffer.alloc(0);
@@ -8841,6 +8844,10 @@ const STATUS = {
 
 class Server extends require$$0$3 {
 
+  /**
+   * @param {object} options Server configuration.
+   * @param {any} [authManager] Optional authentication manager.
+   */
   constructor(options, authManager) {
     super();
     const security = { ...serverOption.security, ...options.security };
@@ -9030,6 +9037,9 @@ class Server extends require$$0$3 {
     return this
   }
 
+  /**
+   * @param {() => void} [callback] Called when the server has closed.
+   */
   close(callback) {
     console.log('closing iosignal server...');
     if (this.manager) {

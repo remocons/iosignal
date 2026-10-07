@@ -48,6 +48,9 @@ export function pack(payload) {
 }
 
 export class CongRx extends Transform {
+  /**
+   * @param {import('stream').TransformOptions} [options] Stream options.
+   */
   constructor(options) {
     super(options)
     this.buffer = Buffer.alloc(0)

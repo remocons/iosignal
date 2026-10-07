@@ -7,6 +7,10 @@ import { STATUS } from '../services/constant.js'
 
 export class Server extends EventEmitter {
 
+  /**
+   * @param {object} options Server configuration.
+   * @param {any} [authManager] Optional authentication manager.
+   */
   constructor(options, authManager) {
     super();
     const security = { ...serverOption.security, ...options.security };
@@ -196,6 +200,9 @@ export class Server extends EventEmitter {
     return this
   }
 
+  /**
+   * @param {() => void} [callback] Called when the server has closed.
+   */
   close(callback) {
     console.log('closing iosignal server...')
     if (this.manager) {
