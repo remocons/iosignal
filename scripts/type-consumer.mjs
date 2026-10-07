@@ -18,8 +18,20 @@ try {
 import { ${names.join(', ')} } from 'iosignal';
 import * as api from 'iosignal';
 void [${names.join(', ')}];
-const server = new Server({ port: 0 }, undefined);
-server.on('listening', () => {});
+const server = new Server({ port: 0 });
+server.on('ready', () => {});
+server.close();
+server.close(() => {});
+new Server({ port: 0 }, undefined);
+const receiver = new CongRx();
+new CongRx({ highWaterMark: 1024 });
+receiver.end();
+// @ts-expect-error Server still requires options.
+new Server();
+// @ts-expect-error close accepts a callback, not a string.
+server.close('invalid');
+// @ts-expect-error Stream highWaterMark must be numeric.
+new CongRx({ highWaterMark: 'invalid' });
 const io = new IO('ws://localhost');
 io.on('ready', () => {});
 const tcp = new IOCongSocket('cong://localhost');
