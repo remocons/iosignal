@@ -47,6 +47,8 @@
     "dist/browser/iife/io.js",
     "dist/browser/iife/io.js.map",
     "dist/node/iosignal.cjs",
+    "dist/node/iosignal.d.cts",
+    "dist/node/iosignal.d.ts",
     "dist/node/iosignal.js",
     "dist/types/client/IOCore.d.ts",
     "dist/types/client/browser/IOWebSocket.d.ts",

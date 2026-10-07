@@ -9,7 +9,7 @@ export const controls = [
   '.gitignore', '.npmignore', 'index.js', 'package.json', 'package-lock.json',
   'rollup.config.js', 'tsconfig.json', 'README.md', 'README.ko.md',
   '.github/workflows/verify.yml', 'scripts/public-files.json',
-  'scripts/public-policy.mjs', 'scripts/verify.mjs',
+  'scripts/public-policy.mjs', 'scripts/verify.mjs', 'scripts/type-consumer.mjs',
   'checks/release.test.mjs', 'checks/policy.test.mjs',
 ];
 export const allowed = new Set([...controls, ...policy.sync, ...policy.dist]);
@@ -51,7 +51,7 @@ export function audit(base = root, artifacts = false) {
   }
   for (const name of [...controls, ...policy.sync, ...(artifacts ? policy.dist : [])]) safeFile(base, name);
   const pkg = JSON.parse(fs.readFileSync(path.join(base, 'package.json')));
-  if (pkg.private || pkg.license !== 'MIT' || pkg.exports['.'].import !== './dist/node/iosignal.js') throw Error('Invalid public package metadata');
+  if (pkg.private || pkg.license !== 'MIT' || pkg.exports['.'].import.default !== './dist/node/iosignal.js') throw Error('Invalid public package metadata');
   if (JSON.stringify(pkg.files) !== JSON.stringify(policy.dist)) throw Error('npm files must match the exact artifact allowlist');
   inspect('package.json', JSON.stringify({ dependencies: pkg.dependencies, devDependencies: pkg.devDependencies, optionalDependencies: pkg.optionalDependencies }));
 }

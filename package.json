@@ -5,14 +5,26 @@
   "type": "module",
   "exports": {
     ".": {
-      "import": "./dist/node/iosignal.js",
-      "require": "./dist/node/iosignal.cjs"
+      "import": {
+        "types": "./dist/node/iosignal.d.ts",
+        "default": "./dist/node/iosignal.js"
+      },
+      "require": {
+        "types": "./dist/node/iosignal.d.cts",
+        "default": "./dist/node/iosignal.cjs"
+      }
     },
-    "./io": "./dist/browser/esm/io.js",
-    "./io.js": "./dist/browser/esm/io.js",
+    "./io": {
+      "types": "./dist/browser/esm/io.d.ts",
+      "default": "./dist/browser/esm/io.js"
+    },
+    "./io.js": {
+      "types": "./dist/browser/esm/io.d.ts",
+      "default": "./dist/browser/esm/io.js"
+    },
     "./browser/*": "./dist/browser/*"
   },
-  "types": "./dist/types/client/browser/IOWebSocket.d.ts",
+  "types": "./dist/node/iosignal.d.ts",
   "jsdelivr": "./dist/browser/iife/io.js",
   "unpkg": "./dist/browser/iife/io.js",
   "scripts": {
@@ -75,6 +87,8 @@
     "dist/browser/iife/io.js",
     "dist/browser/iife/io.js.map",
     "dist/node/iosignal.cjs",
+    "dist/node/iosignal.d.cts",
+    "dist/node/iosignal.d.ts",
     "dist/node/iosignal.js",
     "dist/types/client/IOCore.d.ts",
     "dist/types/client/browser/IOWebSocket.d.ts",

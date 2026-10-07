@@ -6,13 +6,19 @@
     "rootDir": "./src",
     "outDir": "./dist/types",
     "allowJs": true,
-    "module": "nodenext",    
+    "module": "nodenext",
     "moduleResolution": "nodenext",
     "target": "es2020",
-    "lib": ["es2020", "dom"],
+    "lib": [
+      "es2020",
+      "dom"
+    ],
     "paths": {
-      "@src/*": ["./src/*"]
-    }
+      "@src/*": [
+        "./src/*"
+      ]
+    },
+    "types": []
   },
   "include": [
     "src/client/browser/IOWebSocket.js",

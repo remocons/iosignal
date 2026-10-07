@@ -14,4 +14,5 @@ for (const f of packed[0].files) {
   if (!expected.delete(f.path)) throw Error(`Unexpected npm package file: ${f.path}`);
 }
 if (expected.size) throw Error(`Missing npm files: ${[...expected].join(', ')}`);
-console.log('Public build, tests and npm package allowlist verified.');
+run('node', ['scripts/type-consumer.mjs']);
+console.log('Public build, tests, npm package allowlist and TypeScript consumers verified.');

@@ -6,6 +6,15 @@ import terser from '@rollup/plugin-terser'
 import dts from 'rollup-plugin-dts'
 
 export default [
+  {
+    input: './index.js',
+    external: ['events', 'stream'],
+    output: [
+      { file: './dist/node/iosignal.d.ts', format: 'es' },
+      { file: './dist/node/iosignal.d.cts', format: 'es' }
+    ],
+    plugins: [publicBoundary(), dts({ compilerOptions: { allowJs: true, types: ['node'] } })]
+  },
    {
     preserveSymlinks: true,
     input: './src/client/browser/IOWebSocket.js',
