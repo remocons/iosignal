@@ -1,6 +1,6 @@
 # iosignal
 
-[English](README.md) | [한국어](README.ko.md)
+[English](https://github.com/remocons/iosignal/blob/main/README.md) | [한국어](https://github.com/remocons/iosignal/blob/main/README.ko.md)
 
 Node.js와 브라우저를 위한 실시간 메시징 라이브러리입니다. WebSocket 기반
 클라이언트·서버 통신, 태그 기반 발행/구독, RPC 서비스를 제공합니다.

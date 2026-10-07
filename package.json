@@ -1,6 +1,6 @@
 {
   "name": "iosignal",
-  "version": "7.0.3",
+  "version": "7.0.4",
   "description": "iosignal",
   "type": "module",
   "exports": {
@@ -63,8 +63,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/remocons/iosignal.git",
-    "directory": "packages/iosignal"
+    "url": "git+https://github.com/remocons/iosignal.git"
   },
   "keywords": [
     "websocket",

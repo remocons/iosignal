@@ -17,7 +17,7 @@ var fs = require('fs');
 var process$1 = require('process');
 var path = require('path');
 
-var version$1 = "7.0.3";
+var version$1 = "7.0.4";
 var pkg = {
 	version: version$1};
 
