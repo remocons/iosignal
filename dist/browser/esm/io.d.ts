@@ -1,12 +1,14 @@
-import * as boho from 'boho';
-import boho__default from 'boho';
+import * as Boho from 'boho';
+import Boho__default from 'boho';
+import * as meta_buffer_pack from 'meta-buffer-pack';
 import * as buffer from 'buffer';
+import { EventEmitter } from 'eventemitter3';
 
 /**
  * Core class for handling WebSocket communication.
  * @augments {EventEmitter}
  */
-declare class IOCore {
+declare class IOCore extends EventEmitter<string | symbol, any> {
     /**
      * @param {string} url - The WebSocket URL to connect to.
      */
@@ -74,14 +76,15 @@ declare class IOCore {
     connectionCheckerPeriod: number;
     /**
      * Interval ID for connection checker.
-     * @type {NodeJS.Timeout | null}
+     * @type {ReturnType<typeof setInterval> | null}
      */
-    connectionCheckerIntervalID: NodeJS.Timeout | null;
+    connectionCheckerIntervalID: ReturnType<typeof setInterval> | null;
     /**
      * Boho instance for encryption/decryption.
      * @type {Boho}
      */
-    boho: boho__default;
+    boho: Boho__default;
+    /** @type {import('buffer').Buffer} */
     serverTimeNonce: buffer.Buffer;
     /**
      * Indicates if the connection is TLS (wss).
@@ -415,7 +418,7 @@ declare class IOCore {
      */
     stateChange(state: string, emitEventAndMessage?: string): boolean;
 }
-type Buffer$1 = boho.Buffer;
+type Buffer$1 = Boho.Buffer;
 
 /**
  * Browser WebSocket client extending IOCore.
@@ -436,7 +439,7 @@ declare class IO extends IOCore {
      * The Boho library instance.
      * @type {typeof Boho}
      */
-    static Boho: typeof boho__default;
+    static Boho: typeof Boho__default;
     /**
      * The MBP (MessagePack-Boho) instance.
      * @type {MBP}
@@ -444,9 +447,9 @@ declare class IO extends IOCore {
     static MBP: MBP;
     /**
      * The Buffer class from Boho.
-     * @type {Buffer}
+     * @type {typeof import('buffer').Buffer}
      */
-    static Buffer: Buffer;
+    static Buffer: typeof buffer.Buffer;
     /**
      * Constants used by the client.
      * @type {object}
@@ -492,8 +495,8 @@ declare class IO extends IOCore {
      */
     socket_send(data: BufferSource): void;
 }
-type MBP = boho.MBP;
-type Buffer = boho.Buffer;
+type MBP = typeof meta_buffer_pack.default;
+type Buffer = Boho.Buffer;
 
 export { IO as default };
 export type { Buffer, MBP };

@@ -1,12 +1,11 @@
 import MBP from 'meta-buffer-pack'
-import EventEmitter from "eventemitter3";
+import { EventEmitter } from "eventemitter3";
 import { IOMsg, PAYLOAD_TYPE, SIZE_LIMIT, ENC_MODE, STATE } from '../common/constants.js'
 import { quotaTable } from '../common/quotaTable.js'
 import { getSignalPack } from '../common/payload.js';
 import Boho from "boho";
 
 /**
- * @typedef {import('meta-buffer-pack').MBP} MBP
  * @typedef {import('../common/constants.js').IOMsg} IOMsg
  * @typedef {import('../common/constants.js').PAYLOAD_TYPE} PAYLOAD_TYPE
  * @typedef {import('../common/constants.js').SIZE_LIMIT} SIZE_LIMIT
@@ -115,7 +114,7 @@ export class IOCore extends EventEmitter {
     this.connectionCheckerPeriod = SIZE_LIMIT.CONNECTION_CHECKER_PERIOD;
     /**
      * Interval ID for connection checker.
-     * @type {NodeJS.Timeout | null}
+     * @type {ReturnType<typeof setInterval> | null}
      */
     this.connectionCheckerIntervalID = null;
 
@@ -125,6 +124,7 @@ export class IOCore extends EventEmitter {
      */
     this.boho = new Boho()
 
+    /** @type {import('buffer').Buffer} */
     this.serverTimeNonce = Buffer.alloc( Boho.MetaSize.SERVER_TIME_NONCE  );
     /**
      * Indicates if the connection is TLS (wss).

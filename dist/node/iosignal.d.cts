@@ -1,8 +1,10 @@
 import * as Boho from 'boho';
 import Boho__default from 'boho';
 export { default as Boho } from 'boho';
+import * as buffer from 'buffer';
+import { EventEmitter } from 'eventemitter3';
 import { Transform } from 'stream';
-import EventEmitter from 'events';
+import EventEmitter$1 from 'events';
 export { default as MBP } from 'meta-buffer-pack';
 
 type STATE = {
@@ -162,7 +164,7 @@ declare namespace STATUS {
  * Core class for handling WebSocket communication.
  * @augments {EventEmitter}
  */
-declare class IOCore {
+declare class IOCore extends EventEmitter<string | symbol, any> {
     /**
      * @param {string} url - The WebSocket URL to connect to.
      */
@@ -230,15 +232,16 @@ declare class IOCore {
     connectionCheckerPeriod: number;
     /**
      * Interval ID for connection checker.
-     * @type {NodeJS.Timeout | null}
+     * @type {ReturnType<typeof setInterval> | null}
      */
-    connectionCheckerIntervalID: NodeJS.Timeout | null;
+    connectionCheckerIntervalID: ReturnType<typeof setInterval> | null;
     /**
      * Boho instance for encryption/decryption.
      * @type {Boho}
      */
     boho: Boho__default;
-    serverTimeNonce: globalThis.Buffer<ArrayBuffer>;
+    /** @type {import('buffer').Buffer} */
+    serverTimeNonce: buffer.Buffer;
     /**
      * Indicates if the connection is TLS (wss).
      * @type {boolean}
@@ -773,7 +776,7 @@ declare class Manager {
     close(): void;
 }
 
-declare class Server extends EventEmitter<[never]> {
+declare class Server extends EventEmitter$1<[never]> {
     constructor(options: any, authManager: any);
     security: any;
     serviceNames: Set<any>;

@@ -2,7 +2,7 @@
  * Core class for handling WebSocket communication.
  * @augments {EventEmitter}
  */
-export class IOCore {
+export class IOCore extends EventEmitter<string | symbol, any> {
     /**
      * @param {string} url - The WebSocket URL to connect to.
      */
@@ -70,14 +70,15 @@ export class IOCore {
     connectionCheckerPeriod: number;
     /**
      * Interval ID for connection checker.
-     * @type {NodeJS.Timeout | null}
+     * @type {ReturnType<typeof setInterval> | null}
      */
-    connectionCheckerIntervalID: NodeJS.Timeout | null;
+    connectionCheckerIntervalID: ReturnType<typeof setInterval> | null;
     /**
      * Boho instance for encryption/decryption.
      * @type {Boho}
      */
     boho: Boho;
+    /** @type {import('buffer').Buffer} */
     serverTimeNonce: import("buffer").Buffer;
     /**
      * Indicates if the connection is TLS (wss).
@@ -411,7 +412,6 @@ export class IOCore {
      */
     stateChange(state: string, emitEventAndMessage?: string): boolean;
 }
-export type MBP = import("meta-buffer-pack").MBP;
 export type IOMsg = import("../common/constants.js").IOMsg;
 export type PAYLOAD_TYPE = import("../common/constants.js").PAYLOAD_TYPE;
 export type SIZE_LIMIT = import("../common/constants.js").SIZE_LIMIT;
@@ -419,4 +419,5 @@ export type ENC_MODE = import("../common/constants.js").ENC_MODE;
 export type STATE = import("../common/constants.js").STATE;
 export type quotaTable = any;
 export type Buffer = import("boho").Buffer;
+import { EventEmitter } from "eventemitter3";
 import Boho from "boho";

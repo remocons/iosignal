@@ -4,7 +4,7 @@ import Boho from 'boho'
 import * as constants from '../../common/constants.js'
 
 /**
- * @typedef {import("boho").MBP} MBP
+ * @typedef {typeof import("meta-buffer-pack").default} MBP
  * @typedef {import("boho").Buffer} Buffer
  */
 
@@ -37,7 +37,7 @@ export default class IO extends IOCore {
   static MBP = Boho.MBP;
   /**
    * The Buffer class from Boho.
-   * @type {Buffer}
+   * @type {typeof import('buffer').Buffer}
    */
   static Buffer = Boho.Buffer;
   /**
