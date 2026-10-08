@@ -1203,6 +1203,7 @@ class IOCore extends EventEmitter {
         break;
 
       case IOMsg.PONG:
+        this.emit('pong');
         break;
 
       case IOMsg.ECHO:
@@ -7623,7 +7624,8 @@ class RemoteCore {
 
       switch (msgType) {
         case IOMsg.PING:
-          this.pong();
+          // Reply in the IOSignal protocol; browser JS cannot observe WS control PONG.
+          this.send(Buffer.from([IOMsg.PONG]));
           break;
 
         case IOMsg.PONG:

@@ -452,6 +452,7 @@ export class IOCore extends EventEmitter {
         break;
 
       case IOMsg.PONG:
+        this.emit('pong');
         break;
 
       case IOMsg.ECHO:

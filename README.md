@@ -337,3 +337,24 @@ not run automatically, and some require a separate server or Redis.
 ## License
 
 Package license: MIT.
+
+### Server ping and peer ping
+
+`io.ping()` sends a protocol PING to the server. The server replies with a
+protocol PONG and the client emits `io.on('pong', () => { ... })`.
+Native WebSocket heartbeat frames remain separate.
+
+Peer ping uses ordinary direct signals, with **one TEXT argument** carrying the
+sender CID. An application can opt in to replies as follows:
+
+```js
+io.signal(`${targetCid}@ping`, io.cid);
+io.on('@', (tag, senderCid) => {
+  if (tag === '@ping') io.signal(`${senderCid}@pong`, io.cid);
+  if (tag === '@pong') console.log(`pong (${senderCid})`);
+});
+```
+
+Peer responses arrive in that same `@` handler with tag `@pong`; they do not
+emit the protocol `pong` event. CLI clients implement replies, and Arduino's
+`peer_ping_pong` example implements them in user code.

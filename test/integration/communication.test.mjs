@@ -83,6 +83,25 @@ async function fixture(t, api, authenticated = false, tcp = false, security = {}
 }
 
 for (const [format, api] of variants) {
+  for (const tcp of [false, true]) {
+    test(`${format}: ${tcp ? 'TCP' : 'WS'} server PONG event is separate from peer @pong`, async t => {
+      const { connect } = await fixture(t, api, false, tcp);
+      const a = await connect(), b = await connect();
+      const serverPong = event(a, 'pong', t.signal);
+      a.ping();
+      assert.deepEqual(await serverPong, []);
+      let protocolPongs = 0;
+      a.on('pong', () => protocolPongs++);
+      b.on('@', (tag, sender) => {
+        if (tag === '@ping') b.signal(`${sender}@pong`, b.cid);
+      });
+      const peerPong = event(a, '@', t.signal);
+      a.signal(`${b.cid}@ping`, a.cid);
+      assert.deepEqual(await peerPong, ['@pong', b.cid]);
+      assert.equal(protocolPongs, 0);
+    });
+  }
+
   test(`${format}: invalid heartbeat grace is rejected without changing defaults`, () => {
     const grace = api.serverOption.pingTimeoutGrace;
     const timeout = api.serverOption.timeout;
