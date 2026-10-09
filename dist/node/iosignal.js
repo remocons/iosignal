@@ -15,7 +15,7 @@ import fs, { readFileSync } from 'fs';
 import { memoryUsage } from 'process';
 import path from 'path';
 
-var version$1 = "7.1.0";
+var version$1 = "7.2.0";
 var pkg = {
 	version: version$1};
 
@@ -783,6 +783,22 @@ function encodeTag(tag, allowEmpty = true) {
   return encoded
 }
 
+// Direct-receive tags are local event names, never server subscriptions.
+function encodeSubscriptionTags(tag) {
+  const encoded = encodeTag(tag);
+  if (tag.split(',').some(part => part.startsWith('@'))) {
+    throw TypeError("direct signal tags need no subscription; use on/listen/link and off/unlink")
+  }
+  return encoded
+}
+
+function sendSubscription(io, tag) {
+  const encoded = encodeSubscriptionTags(tag);
+  io.send_enc_mode(Buffer$1.concat([
+    $$1.NB('8', IOMsg.SUBSCRIBE), $$1.NB('8', encoded.byteLength), encoded
+  ]));
+}
+
 function byteToUrl(buffer) {
   //ipv4(4bytes) , port(2bytes)
   if (buffer.byteLength != 6) return
@@ -941,6 +957,12 @@ class IOCore extends EventEmitter {
      * @type {Map<string, Set<string>>}
      */
     this.linkMap = new Map();
+    /** @private @type {Map<string, Map<string, Set<Function>>>} */
+    this._linkHandlers = new Map();
+    /** @private @type {Set<string>} */
+    this._listenTags = new Set();
+    /** @private @type {Set<string>} */
+    this._manualSubscriptions = new Set();
 
     /**
      * Indicates if auto-reconnect is enabled.
@@ -1006,6 +1028,7 @@ class IOCore extends EventEmitter {
       reject(error);
     }
     this.promiseMap.clear();
+    this._manualSubscriptions.clear();
     this.cid = '';
     if (this.boho) this.boho.isAuthorized = false;
     if (this.state !== STATE.STOP && this.stateChange('closed')) {
@@ -1034,6 +1057,9 @@ class IOCore extends EventEmitter {
 
     this.channels.clear();
     this.linkMap.clear();
+    this._linkHandlers.clear();
+    this._listenTags.clear();
+    this._manualSubscriptions.clear();
 
     // Help GC
     this.boho = null;
@@ -1327,8 +1353,10 @@ class IOCore extends EventEmitter {
           switch (payloadType) {
 
             case PAYLOAD_TYPE.EMPTY:
-              if (tag.indexOf('@') === 0) this.emit('@', tag);
-              else {
+              if (tag.indexOf('@') === 0) {
+                this.emit('@', tag);
+                if (tag !== '@') this.emit(tag, tag);
+              } else {
                 this.emit(tag, tag);
                 this.emit('message', tag);
               }
@@ -1342,16 +1370,20 @@ class IOCore extends EventEmitter {
                 payloadStringWithoutNull = payloadBuffer.subarray(0, payloadBuffer.byteLength - 1);
               }
               let oneString = decoder$4.decode(payloadStringWithoutNull);
-              if (tag.indexOf('@') === 0) this.emit('@', tag, oneString);
-              else {
+              if (tag.indexOf('@') === 0) {
+                this.emit('@', tag, oneString);
+                if (tag !== '@') this.emit(tag, tag, oneString);
+              } else {
                 this.emit(tag, tag, oneString);
                 this.emit('message', tag, oneString);
               }
               break;
 
             case PAYLOAD_TYPE.BINARY:
-              if (tag.indexOf('@') === 0) this.emit('@', tag, payloadBuffer);
-              else {
+              if (tag.indexOf('@') === 0) {
+                this.emit('@', tag, payloadBuffer);
+                if (tag !== '@') this.emit(tag, tag, payloadBuffer);
+              } else {
                 this.emit(tag, tag, payloadBuffer);
                 this.emit('message', tag, payloadBuffer);
               }
@@ -1360,8 +1392,10 @@ class IOCore extends EventEmitter {
             case PAYLOAD_TYPE.OBJECT:
               let oneObjectBuffer = decoder$4.decode(payloadBuffer);
               let oneJSONObject = JSON.parse(oneObjectBuffer);
-              if (tag.indexOf('@') === 0) this.emit('@', tag, oneJSONObject);
-              else {
+              if (tag.indexOf('@') === 0) {
+                this.emit('@', tag, oneJSONObject);
+                if (tag !== '@') this.emit(tag, tag, oneJSONObject);
+              } else {
                 this.emit(tag, tag, oneJSONObject);
                 this.emit('message', tag, oneJSONObject);
               }
@@ -1370,8 +1404,10 @@ class IOCore extends EventEmitter {
             case PAYLOAD_TYPE.MJSON:
               let mjsonBuffer = decoder$4.decode(payloadBuffer);
               let mjson = JSON.parse(mjsonBuffer);
-              if (tag.indexOf('@') === 0) this.emit('@', tag, ...mjson);
-              else {
+              if (tag.indexOf('@') === 0) {
+                this.emit('@', tag, ...mjson);
+                if (tag !== '@') this.emit(tag, tag, ...mjson);
+              } else {
                 this.emit(tag, tag, ...mjson);
                 this.emit('message', tag, ...mjson);
               }
@@ -1379,8 +1415,10 @@ class IOCore extends EventEmitter {
 
             case PAYLOAD_TYPE.MBA:
               let mbaObject = $$1.unpack(payloadBuffer);
-              if (tag.indexOf('@') === 0) this.emit('@', tag, ...mbaObject.args);
-              else {
+              if (tag.indexOf('@') === 0) {
+                this.emit('@', tag, ...mbaObject.args);
+                if (tag !== '@') this.emit(tag, tag, ...mbaObject.args);
+              } else {
                 this.emit(tag, tag, ...mbaObject.args);
                 this.emit('message', tag, ...mbaObject.args);
               }
@@ -1725,14 +1763,11 @@ class IOCore extends EventEmitter {
   /**
    * Subscribes to a channel or channels.
    * @param {string} tag - The tag(s) of the channel(s) to subscribe to (comma-separated).
-   * @throws {TypeError} If tag is not a string or exceeds length limit.
+   * @throws {TypeError} If tag is invalid, exceeds the length limit, or contains a direct-receive subscription.
    */
   subscribe(tag) {
-    const tagEncoded = encodeTag(tag);
-    this.send_enc_mode(Buffer$1.concat([
-      $$1.NB('8', IOMsg.SUBSCRIBE),
-      $$1.NB('8', tagEncoded.byteLength),
-      tagEncoded]));
+    sendSubscription(this, tag);
+    for (const part of tag.split(',')) this._manualSubscriptions.add(part);
   }
 
 
@@ -1745,7 +1780,7 @@ class IOCore extends EventEmitter {
     // Validate the entire list first, then split only at tag boundaries.
     // Preserve comma-separated entries accepted by existing registration APIs.
     const tags = Array.from(this.channels).join(',').split(',');
-    const sizes = tags.map(tag => encodeTag(tag).byteLength);
+    const sizes = tags.map(tag => encodeSubscriptionTags(tag).byteLength);
     const batches = [];
     let batch = [], bytes = 0;
     tags.forEach((tag, i) => {
@@ -1758,23 +1793,27 @@ class IOCore extends EventEmitter {
       batch.push(tag);
     });
     if (batch.length) batches.push(batch.join(','));
-    batches.forEach(tag => this.subscribe(tag));
+    batches.forEach(tag => sendSubscription(this, tag));
   }
 
   /**
    * Unsubscribes from a channel or channels.
    * @param {string} [tag=""] - The tag(s) of the channel(s) to unsubscribe from (comma-separated). If empty, unsubscribes from all.
-   * @throws {TypeError} If tag is not a string or exceeds length limit.
+   * @throws {TypeError} If tag is invalid, exceeds the length limit, or contains a direct-receive subscription.
    */
   unsubscribe(tag = "") {
-    const tagEncoded = encodeTag(tag);
+    const tagEncoded = encodeSubscriptionTags(tag);
 
     if (tag == "") { // blank tag means unsubscribe all
       this.channels.clear();
+      this._listenTags.clear();
+      this._manualSubscriptions.clear();
     } else {
       let tagList = tag.split(',');
       tagList.forEach(tag => {
         this.channels.delete(tag);
+        this._listenTags.delete(tag);
+        this._manualSubscriptions.delete(tag);
       });
     }
 
@@ -1788,12 +1827,17 @@ class IOCore extends EventEmitter {
 
   /**
    * Convenience API for simple clients (for example, CLI tools): register a
-   * tag handler once and remember its subscription in channels. Register before
-   * connection readiness; the CID-ready flow subscribes on initial connection
+   * tag handler once and remember its subscription in channels. For subscription
+   * tags, register before connection readiness; the CID-ready flow subscribes on initial connection
    * and again after reconnect, without application-level ready/subscribe code.
    * This does not send a subscription immediately, even if already ready.
    * For precise subscription/send ordering or dynamic subscriptions, use
-   * on() with subscribe() in a ready handler instead. Direct signals use on('@').
+   * on() with subscribe() in a ready handler instead.
+   * Direct signals need no subscription: use on/listen('@') for all direct
+   * signals, or on/listen('@topic') for an exact topic. Direct handlers can be
+   * registered before or after readiness, before the message arrives.
+   * Dispatch is synchronous: '@' first, then '@topic' when tag is not '@'.
+   * Returning false does not cancel dispatch; a thrown error interrupts it.
    * @param {string} tag - The tag to listen on.
    * @param {Function} handler - The callback function to handle the signal.
    * @throws {TypeError} If tag is not a string, handler is not a function, or tag length is invalid.
@@ -1804,7 +1848,9 @@ class IOCore extends EventEmitter {
     if (typeof handler !== 'function') throw TypeError('handler is not a function.')
 
     if (tag.indexOf('@') !== 0) {
+      encodeSubscriptionTags(tag);
       this.channels.add(tag);
+      this._listenTags.add(tag);
     }
     this.on(tag, handler);
     // Subscribe from the CID-ready flow, initially and after reconnect.
@@ -1815,79 +1861,80 @@ class IOCore extends EventEmitter {
 
 
   /**
-   * Links a local target to a remote tag and sets up a handler.
-   * @param {string} to - The local link target.
-   * @param {string} tag - The remote tag.
-   * @param {Function} handler - The callback function to handle the signal.
-   * @throws {TypeError} If 'to' or 'tag' are not strings, handler is not a function, or tag length is invalid.
+   * Associates handlers with a local component for scoped teardown.
+   * Direct tags (@ or @topic) only register local handlers. Other tags also
+   * subscribe now and are remembered for reconnection.
+   * @param {string} to - The local component identifier, not a server target.
+   * @param {string} tag - The exact event tag.
+   * @param {Function} handler - The callback receiving (tag, ...args).
+   * @throws {TypeError} If the arguments or subscription tags are invalid.
    */
   link(to, tag, handler) {
     if (typeof to !== 'string') throw TypeError('to(local link target) is not a string.')
-    if (typeof tag !== 'string') throw TypeError('tag is not a string.')
     encodeTag(tag, false);
     if (typeof handler !== 'function') throw TypeError('handler is not a function.')
+    const direct = tag.startsWith('@');
+    if (!direct) encodeSubscriptionTags(tag);
 
-    if (tag.indexOf('@') !== 0) {
-      this.channels.add(tag);
-    }
-
-    let linkSet;
-    if (this.linkMap.has(to)) {
-      linkSet = this.linkMap.get(to);
-    } else {
-      linkSet = new Set();
-    }
-
+    let tags = this._linkHandlers.get(to);
+    if (!tags) this._linkHandlers.set(to, tags = new Map());
+    let handlers = tags.get(tag);
+    if (!handlers) tags.set(tag, handlers = new Set());
+    // Each registration owns its wrapper, even if components share a callback.
+    const linkedHandler = (...args) => handler.apply(this, args);
+    handlers.add(linkedHandler);
+    let linkSet = this.linkMap.get(to);
+    if (!linkSet) this.linkMap.set(to, linkSet = new Set());
     linkSet.add(tag);
-    this.linkMap.set(to, linkSet);
-    this.on(tag, handler);
-    this.subscribe(tag);
-
+    this.on(tag, linkedHandler);
+    if (!direct) {
+      this.channels.add(tag);
+      sendSubscription(this, tag);
+    }
   }
 
-
   /**
-   * Unlinks a specific tag from a local target.
-   * @param {string} to - The local link target.
-   * @param {string} tag - The tag to unlink.
-   * @throws {TypeError} If 'to' or 'tag' are not strings or tag length is invalid.
+   * Removes only one local component's handlers for a tag. Direct tags never
+   * send an unsubscribe. Shared subscriptions and explicit subscriptions remain.
+   * @param {string} to - The local component identifier.
+   * @param {string} tag - The exact linked tag.
+   * @throws {TypeError} If the arguments are invalid.
    */
   unlink(to, tag) {
     if (typeof to !== 'string') throw TypeError('to(local link target) is not a string.')
-    if (typeof tag !== 'string') throw TypeError('tag is not a string.')
     encodeTag(tag, false);
-
+    const tags = this._linkHandlers.get(to);
+    const handlers = tags?.get(tag);
+    if (!handlers) return
+    for (const handler of handlers) this.removeListener(tag, handler);
+    tags.delete(tag);
     const linkSet = this.linkMap.get(to);
-    if (!linkSet || !linkSet.has(tag)) return;
-
-    this.unsubscribe(tag);
-    this.removeAllListeners(tag);
     linkSet.delete(tag);
-
-    if (linkSet.size === 0) {
+    if (tags.size === 0) {
+      this._linkHandlers.delete(to);
       this.linkMap.delete(to);
     }
+    if (tag.startsWith('@')) return
+
+    const linkedElsewhere = [...this._linkHandlers.values()].some(other => other.has(tag));
+    if (!linkedElsewhere && !this._listenTags.has(tag)) this.channels.delete(tag);
+    const remembered = new Set([...this.channels].flatMap(entry => entry.split(',')));
+    const unused = tag.split(',').filter(part =>
+      !remembered.has(part) && !this._manualSubscriptions.has(part));
+    if (unused.length) this.unsubscribe(unused.join(','));
   }
 
   /**
-   * Unlinks all tags from a local target.
-   * @param {string} to - The local link target.
-   * @throws {TypeError} If 'to' is not a string.
+   * Removes this local component's links without removing other listeners.
+   * @param {string} to - The local component identifier.
+   * @throws {TypeError} If the component identifier is not a string.
    */
   unlinkAll(to) {
     if (typeof to !== 'string') throw TypeError('to(local link target) is not a string.')
-
-    const linkSet = this.linkMap.get(to);
-    if (!linkSet) return;
-
-    for (const tag of linkSet) {
-      this.unsubscribe(tag);
-      this.removeAllListeners(tag);
-    }
-
-    this.linkMap.delete(to);
+    const tags = this._linkHandlers.get(to);
+    if (!tags) return
+    for (const tag of [...tags.keys()]) this.unlink(to, tag);
   }
-
 
 
   /**

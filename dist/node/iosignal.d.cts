@@ -302,6 +302,12 @@ declare class IOCore extends EventEmitter<string | symbol, any> {
      * @type {Map<string, Set<string>>}
      */
     linkMap: Map<string, Set<string>>;
+    /** @private @type {Map<string, Map<string, Set<Function>>>} */
+    private _linkHandlers;
+    /** @private @type {Set<string>} */
+    private _listenTags;
+    /** @private @type {Set<string>} */
+    private _manualSubscriptions;
     /**
      * Indicates if auto-reconnect is enabled.
      * @type {boolean}
@@ -479,7 +485,7 @@ declare class IOCore extends EventEmitter<string | symbol, any> {
     /**
      * Subscribes to a channel or channels.
      * @param {string} tag - The tag(s) of the channel(s) to subscribe to (comma-separated).
-     * @throws {TypeError} If tag is not a string or exceeds length limit.
+     * @throws {TypeError} If tag is invalid, exceeds the length limit, or contains a direct-receive subscription.
      */
     subscribe(tag: string): void;
     /**
@@ -490,41 +496,49 @@ declare class IOCore extends EventEmitter<string | symbol, any> {
     /**
      * Unsubscribes from a channel or channels.
      * @param {string} [tag=""] - The tag(s) of the channel(s) to unsubscribe from (comma-separated). If empty, unsubscribes from all.
-     * @throws {TypeError} If tag is not a string or exceeds length limit.
+     * @throws {TypeError} If tag is invalid, exceeds the length limit, or contains a direct-receive subscription.
      */
     unsubscribe(tag?: string): void;
     /**
      * Convenience API for simple clients (for example, CLI tools): register a
-     * tag handler once and remember its subscription in channels. Register before
-     * connection readiness; the CID-ready flow subscribes on initial connection
+     * tag handler once and remember its subscription in channels. For subscription
+     * tags, register before connection readiness; the CID-ready flow subscribes on initial connection
      * and again after reconnect, without application-level ready/subscribe code.
      * This does not send a subscription immediately, even if already ready.
      * For precise subscription/send ordering or dynamic subscriptions, use
-     * on() with subscribe() in a ready handler instead. Direct signals use on('@').
+     * on() with subscribe() in a ready handler instead.
+     * Direct signals need no subscription: use on/listen('@') for all direct
+     * signals, or on/listen('@topic') for an exact topic. Direct handlers can be
+     * registered before or after readiness, before the message arrives.
+     * Dispatch is synchronous: '@' first, then '@topic' when tag is not '@'.
+     * Returning false does not cancel dispatch; a thrown error interrupts it.
      * @param {string} tag - The tag to listen on.
      * @param {Function} handler - The callback function to handle the signal.
      * @throws {TypeError} If tag is not a string, handler is not a function, or tag length is invalid.
      */
     listen(tag: string, handler: Function): void;
     /**
-     * Links a local target to a remote tag and sets up a handler.
-     * @param {string} to - The local link target.
-     * @param {string} tag - The remote tag.
-     * @param {Function} handler - The callback function to handle the signal.
-     * @throws {TypeError} If 'to' or 'tag' are not strings, handler is not a function, or tag length is invalid.
+     * Associates handlers with a local component for scoped teardown.
+     * Direct tags (@ or @topic) only register local handlers. Other tags also
+     * subscribe now and are remembered for reconnection.
+     * @param {string} to - The local component identifier, not a server target.
+     * @param {string} tag - The exact event tag.
+     * @param {Function} handler - The callback receiving (tag, ...args).
+     * @throws {TypeError} If the arguments or subscription tags are invalid.
      */
     link(to: string, tag: string, handler: Function): void;
     /**
-     * Unlinks a specific tag from a local target.
-     * @param {string} to - The local link target.
-     * @param {string} tag - The tag to unlink.
-     * @throws {TypeError} If 'to' or 'tag' are not strings or tag length is invalid.
+     * Removes only one local component's handlers for a tag. Direct tags never
+     * send an unsubscribe. Shared subscriptions and explicit subscriptions remain.
+     * @param {string} to - The local component identifier.
+     * @param {string} tag - The exact linked tag.
+     * @throws {TypeError} If the arguments are invalid.
      */
     unlink(to: string, tag: string): void;
     /**
-     * Unlinks all tags from a local target.
-     * @param {string} to - The local link target.
-     * @throws {TypeError} If 'to' is not a string.
+     * Removes this local component's links without removing other listeners.
+     * @param {string} to - The local component identifier.
+     * @throws {TypeError} If the component identifier is not a string.
      */
     unlinkAll(to: string): void;
     /**

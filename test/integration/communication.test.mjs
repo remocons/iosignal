@@ -393,7 +393,7 @@ for (const [format, api] of variants) {
     for (const [sendTag, receiveTag, events] of [
       ['empty-room', 'empty-room', ['empty-room', 'message']],
       ['@value', cidTag, [cidTag, 'message']],
-      [`${receiver.cid}@value`, '@value', ['@']],
+      [`${receiver.cid}@value`, '@value', ['@', '@value']],
     ]) {
       for (const payloadArgs of [[], [null]]) {
         const pending = events.map(name => event(receiver, name, t.signal));
@@ -849,4 +849,113 @@ for (const [format, api] of variants) {
       }
     }
   });
+}
+
+for (const [format, api] of variants) {
+  test(`${format}: direct tags reject subscription atomically and component links are local`, t => {
+    const io = new api.IO(); t.after(() => io.destroy());
+    const sent = []; io.send_enc_mode = p => sent.push(p);
+    for (const invalid of ['@', '@offer', 'room,@offer', '@offer,room']) {
+      assert.throws(() => io.subscribe(invalid), /no subscription/);
+      assert.throws(() => io.unsubscribe(invalid), /no subscription/);
+    }
+    assert.throws(() => io.listen('room,@offer', () => {}), /no subscription/);
+    assert.throws(() => io.link('view', 'room,@offer', () => {}), /no subscription/);
+    assert.equal(io.channels.size, 0); assert.equal(io.linkMap.size, 0);
+    let shared = 0, standalone = 0;
+    const callback = () => shared++;
+    io.listen('@offer', () => standalone++);
+    io.link('view-a', '@offer', callback);
+    io.link('view-b', '@offer', callback);
+    io.unlinkAll('view-a');
+    io.emit('@offer', '@offer', 'msg');
+    assert.equal(shared, 1); assert.equal(standalone, 1);
+    io.unlink('view-b', '@offer');
+    io.emit('@offer', '@offer', 'msg');
+    assert.equal(shared, 1); assert.equal(standalone, 2);
+    assert.equal(sent.length, 0); assert.equal(io.channels.size, 0);
+    io.channels.add('room'); io.channels.add('@offer'); io.state = api.STATE.READY;
+    assert.throws(() => io.subscribe_channels(), /no subscription/);
+    assert.equal(sent.length, 0, 'validate all saved subscriptions before any send');
+  });
+
+  test(`${format}: unlink preserves shared, listen and explicit subscription ownership`, t => {
+    const io = new api.IO(); t.after(() => io.destroy());
+    const sent = []; io.send_enc_mode = p => sent.push(p);
+    const unsubs = () => sent.filter(p => p[0] === api.IOMsg.UNSUBSCRIBE).map(p => Buffer.from(p.subarray(2)).toString());
+    io.link('a', 'room', () => {}); io.link('b', 'room', () => {});
+    io.unlinkAll('a'); assert.deepEqual(unsubs(), []); assert.ok(io.channels.has('room'));
+    io.unlinkAll('b'); assert.deepEqual(unsubs(), ['room']); assert.ok(!io.channels.has('room'));
+    sent.length = 0;
+    io.link('a', 'shared', () => {}); io.listen('shared', () => {});
+    io.unlinkAll('a'); assert.deepEqual(unsubs(), []); assert.ok(io.channels.has('shared'));
+    io.subscribe('manual'); io.link('a', 'manual', () => {});
+    io.unlinkAll('a'); assert.deepEqual(unsubs(), []); assert.ok(!io.channels.has('manual'));
+    io.link('a', 'late-manual', () => {}); io.subscribe('late-manual');
+    io.unlinkAll('a'); assert.deepEqual(unsubs(), []);
+    io.link('a', 'one,two', () => {}); io.link('b', 'one', () => {});
+    io.unlinkAll('a'); assert.deepEqual(unsubs(), ['two']);
+    io.unlinkAll('b'); assert.deepEqual(unsubs(), ['two', 'one']);
+    sent.length = 0;
+    io.subscribe('released'); io.unsubscribe('released');
+    io.link('a', 'released', () => {}); io.unlinkAll('a');
+    assert.deepEqual(unsubs(), ['released', 'released'], 'explicit unsubscribe releases ownership');
+    sent.length = 0;
+    io.listen('released-listen', () => {}); io.unsubscribe('released-listen');
+    io.link('a', 'released-listen', () => {}); io.unlinkAll('a');
+    assert.deepEqual(unsubs(), ['released-listen', 'released-listen']);
+  });
+
+  for (const tcp of [false, true]) {
+    test(`${format}: ${tcp ? 'TCP' : 'WS'} direct dual events preserve payloads without subscriptions`, async t => {
+      const { connect } = await fixture(t, api, false, tcp);
+      const a = await connect(), b = await connect();
+      const events = [], sent = [];
+      const send = b.send_enc_mode.bind(b);
+      b.send_enc_mode = p => { sent.push(p[0]); return send(p); };
+      // Register exact-topic first to verify dispatch order is independent of registration order.
+      b.listen('@offer', (...args) => events.push(['@offer', args]));
+      b.on('@', (...args) => events.push(['@', args]));
+      b.on('message', (...args) => events.push(['message', args]));
+      b.link('view', '@offer', () => {});
+      assert.ok(!sent.includes(api.IOMsg.SUBSCRIBE));
+      const payloads = [[], ['msg'], [Buffer.from([0, 255])], [{ n: 1 }], [null], ['a', 42], ['a', Buffer.from([7]), 42]];
+      const normalize = value => ArrayBuffer.isView(value) ? Buffer.from(value) : value;
+      for (const tag of ['@offer', '@']) for (const payload of payloads) {
+        events.length = 0;
+        const received = event(b, tag === '@' ? '@' : '@offer', t.signal);
+        a.signal(b.cid + tag, ...payload);
+        await received;
+        // A reply round trip from b observes completion of synchronous packet dispatch.
+        await b.call('reply', 'echo', 'barrier');
+        assert.deepEqual(events.map(([name]) => name), tag === '@' ? ['@'] : ['@', '@offer']);
+        for (const [, args] of events) assert.deepEqual(args.map(normalize), [tag, ...payload].map(normalize));
+      }
+      b.unlinkAll('view');
+      assert.ok(!sent.includes(api.IOMsg.UNSUBSCRIBE));
+    });
+
+    test(`${format}: ${tcp ? 'TCP' : 'WS'} linked subscription survives component teardown and reconnect`, async t => {
+      const { connect, server, url } = await fixture(t, api, false, tcp);
+      const a = await connect(), b = await connect();
+      let first = 0, second = 0;
+      b.link('view-a', 'shared-room', () => first++);
+      b.link('view-b', 'shared-room', () => second++);
+      await b.call('reply', 'echo', 'subscribed');
+      b.unlinkAll('view-a');
+      let received = event(b, 'shared-room', t.signal);
+      a.signal('shared-room', 'one'); await received;
+      assert.equal(first, 0); assert.equal(second, 1);
+      const closed = event(server.manager.cid2remote.get(b.cid).socket, 'close', t.signal);
+      b.stop(); await closed;
+      const ready = event(b, 'ready', t.signal); b.open(url); await ready;
+      await b.call('reply', 'echo', 'resubscribed');
+      received = event(b, 'shared-room', t.signal);
+      a.signal('shared-room', 'two'); await received;
+      assert.equal(first, 0); assert.equal(second, 2);
+      b.unlinkAll('view-b');
+      await b.call('reply', 'echo', 'unsubscribed');
+      assert.equal(server.manager.cid2remote.get(b.cid).channels.size, 0);
+    });
+  }
 }
