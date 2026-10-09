@@ -97,18 +97,42 @@ process.once('SIGINT', () => io.stop());
 | B에게 직접 송신 | `B@topic` | 불필요 | `@topic` |
 | A의 CID 발행 | A가 `@topic` 송신 | `A@topic` | `A@topic` |
 
-직접 시그널은 `on('message', ...)`가 아닌 `on('@', ...)`로 받습니다.
-
-```js
-io.on('@', (tag, ...args) => {
-  if (tag === '@topic') console.log(...args);
-});
-```
-
 리테인 발행은 `room#$state`나 `@$state`처럼 `$`를 포함한 태그를 사용합니다.
 보관 정책과 제한은 서버·서비스 설정 및 인증 유형에 따라 달라집니다.
 자세한 내용은 [시그널 태그](https://iosignal.net/docs/core/signal_tags)와
 [시그널 유형](https://iosignal.net/docs/core/signal_types)을 참고하세요.
+
+### 직접 메시지 수신
+
+7.2.0부터 `B@topic`으로 보낸 직접 메시지는 B에서 `@`와 `@topic` 이벤트를
+모두 발생시킵니다. 두 이벤트 이름 모두 `on()`과 `listen()`에 사용할 수 있습니다.
+
+| 이벤트 이름 | `on()` | `listen()` | 수신 범위 |
+| --- | --- | --- | --- |
+| `@` | `io.on('@', handler)` | `io.listen('@', handler)` | 모든 직접 메시지 |
+| `@topic` | `io.on('@topic', handler)` | `io.listen('@topic', handler)` | 정확히 일치하는 토픽의 직접 메시지 |
+
+```js
+function handler(tag, ...args) {
+  console.log(tag, ...args);
+}
+
+// 이 핸들러의 등록 방식 중 하나를 선택합니다.
+io.on('@topic', handler);
+// io.listen('@topic', handler);
+// io.on('@', handler);
+// io.listen('@', handler);
+```
+
+두 이벤트의 인자는 모두 `(tag, ...args)`이며, `tag`에서 수신자 CID가 제거됩니다.
+`@`를 먼저 발생시키고 정확한 토픽 이벤트를 뒤에 발생시킵니다. `B@`처럼 토픽이
+없으면 `@`를 한 번만 발생시킵니다. 직접 메시지는 `message` 이벤트에 전달하지 않습니다.
+
+`listen()`을 사용하는 경우에도 직접 수신용 서버 구독은 필요하지 않습니다.
+`subscribe('@topic')`와 `unsubscribe('@topic')`는 `TypeError`를 발생시키며,
+`on()` 또는 `listen()`으로 등록한 핸들러는 `off(eventName, handler)`로 해제합니다.
+두 이벤트에 같은 업무를 등록하거나 `@`에서 `emit(tag, ...)`로 수동 전달하면
+중복 처리될 수 있습니다.
 
 ## 브라우저
 
@@ -139,11 +163,48 @@ io.on('ready', () => {
 | `server.attach(name, service)` | RPC 서비스 등록 |
 | `io.call(service, command, ...args)` | RPC 요청 |
 | `io.subscribe(tag)` / `io.unsubscribe(tag)` | 태그 구독 / 해제 |
-| `io.signal(tag, ...args)` | 메시지 발행 |
+| `io.signal(tag, ...args)` | 메시지 발행 또는 직접 송신 |
+| `io.on(tag, handler)` | 이벤트 핸들러 등록 |
+| `io.listen(tag, handler)` | 핸들러 등록; 직접 태그 이외에는 자동 구독 설정 |
+| `io.ping()` | 서버 ping; 프로토콜 `pong` 이벤트로 응답 수신 |
 | `io.stop()` | 자동 재연결 중단 및 연결 정리 |
 | `server.close(callback)` | 서버 종료 |
 | `BohoAuth` | 서버 인증 관리자 |
 | `StringKeyProvider`, `FileKeyProvider`, `RedisKeyProvider` | 인증 키 공급자 |
+
+## 서버 ping과 peer ping
+
+`io.ping()`은 서버에 프로토콜 PING을 전송합니다. 서버는 프로토콜 PONG으로
+응답하고 클라이언트는 `pong` 이벤트를 발생시킵니다. 핸들러를 먼저 등록하고
+연결이 ready인 상태에서 `ping()`을 호출하세요.
+
+```js
+io.on('pong', () => console.log('서버 PONG'));
+io.ping();
+```
+
+WebSocket 자체 heartbeat 프레임은 별개입니다.
+
+Peer ping은 일반 직접 시그널을 사용하며, **TEXT 인자 하나**에 송신자 CID를
+담습니다. 송신 전에 응용 프로그램의 응답 핸들러를 등록하세요.
+
+```js
+io.on('@ping', (tag, senderCid) => {
+  io.signal(`${senderCid}@pong`, io.cid);
+});
+io.listen('@pong', (tag, senderCid) => {
+  console.log(`Peer pong (${senderCid})`);
+});
+
+// 연결이 ready인 상태에서 상대의 실제 CID를 사용합니다.
+io.signal(`${targetCid}@ping`, io.cid);
+```
+
+두 peer 핸들러 모두 서버 구독 없이 `on()` 또는 `listen()`으로 등록할 수 있습니다.
+`@` 핸들러에서 `tag` 인자로 `@ping`과 `@pong`을 구분하는 방식도 가능합니다.
+중복 응답을 피하려면 처리 방식 하나를 선택하세요. Peer 응답은 프로토콜 `pong`
+이벤트를 발생시키지 않습니다. CLI는 peer 응답을 구현하며, Arduino의
+`peer_ping_pong` 예제는 사용자 코드에서 응답을 구현합니다.
 
 ## boho를 이용한 인증과 암호통신
 

@@ -98,18 +98,42 @@ arguments. Use `unsubscribe(tag)` to unsubscribe.
 | Direct to B | `B@topic` | Not required | `@topic` |
 | Publication by A | A sends `@topic` | `A@topic` | `A@topic` |
 
-Direct signals arrive on `on('@', ...)`, rather than `on('message', ...)`.
-
-```js
-io.on('@', (tag, ...args) => {
-  if (tag === '@topic') console.log(...args);
-});
-```
-
 For retained publications, use a tag containing `$`, such as `room#$state` or
 `@$state`. Retention policies and limits depend on server/service configuration
 and authentication type. See [signal tags](https://iosignal.net/docs/core/signal_tags)
 and [signal types](https://iosignal.net/docs/core/signal_types) for details.
+
+### Receiving direct messages
+
+Since 7.2.0, a direct message to `B@topic` emits both `@` and `@topic` on B.
+Use either `on()` or `listen()` with either event name:
+
+| Event name | `on()` | `listen()` | Receives |
+| --- | --- | --- | --- |
+| `@` | `io.on('@', handler)` | `io.listen('@', handler)` | All direct messages |
+| `@topic` | `io.on('@topic', handler)` | `io.listen('@topic', handler)` | Direct messages with that exact topic |
+
+```js
+function handler(tag, ...args) {
+  console.log(tag, ...args);
+}
+
+// Choose one registration for this handler:
+io.on('@topic', handler);
+// io.listen('@topic', handler);
+// io.on('@', handler);
+// io.listen('@', handler);
+```
+
+Both events pass `(tag, ...args)`, with the destination CID removed from `tag`.
+The client emits `@` first, then the exact topic event. A message to `B@` emits
+`@` only once. Direct messages do not emit `message`.
+
+Direct reception requires no subscription, including when using `listen()`.
+`subscribe('@topic')` and `unsubscribe('@topic')` throw `TypeError`; use
+`off(eventName, handler)` to remove an `on()` or `listen()` handler.
+Registering the same work on both events, or forwarding from `@` with
+`emit(tag, ...)`, causes duplicate handling.
 
 ## Browsers
 
@@ -141,11 +165,48 @@ to close the connection and stop automatic reconnection.
 | `server.attach(name, service)` | Register an RPC service |
 | `io.call(service, command, ...args)` | Make an RPC request |
 | `io.subscribe(tag)` / `io.unsubscribe(tag)` | Subscribe / unsubscribe |
-| `io.signal(tag, ...args)` | Publish a message |
+| `io.signal(tag, ...args)` | Publish or send a direct message |
+| `io.on(tag, handler)` | Register an event handler |
+| `io.listen(tag, handler)` | Register a handler; remember subscriptions for non-direct tags |
+| `io.ping()` | Ping the server; receive the protocol `pong` event |
 | `io.stop()` | Stop automatic reconnection and clean up the connection |
 | `server.close(callback)` | Shut down the server |
 | `BohoAuth` | Server authentication manager |
 | `StringKeyProvider`, `FileKeyProvider`, `RedisKeyProvider` | Authentication key providers |
+
+## Server ping and peer ping
+
+`io.ping()` sends a protocol PING to the server. The server replies with a
+protocol PONG and the client emits `pong`. Register the handler before sending
+and call `ping()` after the connection is ready:
+
+```js
+io.on('pong', () => console.log('Server PONG'));
+io.ping();
+```
+
+Native WebSocket heartbeat frames remain separate.
+
+Peer ping uses ordinary direct signals, with **one TEXT argument** carrying the
+sender CID. Register an application responder before sending:
+
+```js
+io.on('@ping', (tag, senderCid) => {
+  io.signal(`${senderCid}@pong`, io.cid);
+});
+io.listen('@pong', (tag, senderCid) => {
+  console.log(`Peer pong (${senderCid})`);
+});
+
+// Send after the connection is ready, using the peer's actual CID.
+io.signal(`${targetCid}@ping`, io.cid);
+```
+
+Both peer handlers can use `on()` or `listen()` without subscribing. An `@`
+handler can also receive and distinguish `@ping` and `@pong` by the `tag`
+argument; choose one handling approach to avoid duplicate replies.
+Peer responses do not emit the protocol `pong` event. CLI clients implement
+replies, and Arduino's `peer_ping_pong` example implements them in user code.
 
 ## Authentication and encrypted communication with Boho
 
@@ -337,24 +398,3 @@ not run automatically, and some require a separate server or Redis.
 ## License
 
 Package license: MIT.
-
-### Server ping and peer ping
-
-`io.ping()` sends a protocol PING to the server. The server replies with a
-protocol PONG and the client emits `io.on('pong', () => { ... })`.
-Native WebSocket heartbeat frames remain separate.
-
-Peer ping uses ordinary direct signals, with **one TEXT argument** carrying the
-sender CID. An application can opt in to replies as follows:
-
-```js
-io.signal(`${targetCid}@ping`, io.cid);
-io.on('@', (tag, senderCid) => {
-  if (tag === '@ping') io.signal(`${senderCid}@pong`, io.cid);
-  if (tag === '@pong') console.log(`pong (${senderCid})`);
-});
-```
-
-Peer responses arrive in that same `@` handler with tag `@pong`; they do not
-emit the protocol `pong` event. CLI clients implement replies, and Arduino's
-`peer_ping_pong` example implements them in user code.
