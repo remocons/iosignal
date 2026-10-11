@@ -103,6 +103,12 @@ For retained publications, use a tag containing `$`, such as `room#$state` or
 and authentication type. See [signal tags](https://iosignal.net/docs/core/signal_tags)
 and [signal types](https://iosignal.net/docs/core/signal_types) for details.
 
+**Special-character usage guidance:** Tags beginning with a special character may be used for special features.
+Start general-purpose tags with a letter or number, and use documented special characters such as `#` and `@` only in their documented positions and forms.
+Avoid tags beginning with special characters whose usage is not documented, such as `$aaaa` and `/bbb`.
+Avoid special characters with no documented usage elsewhere in a tag as well.
+This guidance adds no new error handling or input restrictions; existing tag-processing rules still apply.
+
 ### Receiving direct messages
 
 Since 7.2.0, a direct message to `B@topic` emits both `@` and `@topic` on B.
