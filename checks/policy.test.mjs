@@ -45,6 +45,11 @@ test('unapproved files and contaminated artifacts fail audit', () => {
     assert.throws(() => audit(dir, true), /Unapproved tracked file: \.vscode\/settings\.json/);
     execFileSync('git', ['rm', '--cached', '--quiet', '.vscode/settings.json'], { cwd: dir });
     audit(dir, true);
+    const instructions = path.join(dir, 'AGENTS.md');
+    const publicInstructions = fs.readFileSync(instructions, 'utf8');
+    fs.appendFileSync(instructions, '\nSee src/services_private/fixture.js');
+    assert.throws(() => audit(dir, true), /Private reference detected: AGENTS\.md/);
+    fs.writeFileSync(instructions, publicInstructions);
     const extra = path.join(dir, 'src/services/unapproved.js');
     fs.writeFileSync(extra, 'export const confidential = true;');
     assert.throws(() => audit(dir, true), /Unapproved public file/);
