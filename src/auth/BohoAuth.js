@@ -6,17 +6,67 @@ import { IOMsg, STATE } from '../common/constants.js'
 import { FileLogger } from '../server/FileLogger.js'
 
 const decoder = new TextDecoder()
+const DUPLICATE_LOGIN_POLICIES = ['keepOld', 'keepNew']
+// Only WebSocket remotes carry socketType; CongSocket remotes leave it unset.
+const transportOf = remote => remote.socketType === 'websocket' ? 'websocket' : 'congsocket'
+
+export function validateDuplicateLogin(policy) {
+  if (!DUPLICATE_LOGIN_POLICIES.includes(policy)) {
+    throw new RangeError(`duplicateLogin must be one of: ${DUPLICATE_LOGIN_POLICIES.join(', ')}`)
+  }
+  return policy
+}
+
 export class BohoAuth {
-  constructor(keyProvider) {
+  /**
+   * @param {object} keyProvider
+   * @param {{ duplicateLogin?: 'keepOld' | 'keepNew', onAuthEvent?: (event: object) => any }} [options]
+   *   duplicateLogin: unset follows serverOption.auth.duplicateLogin (default 'keepNew').
+   *   onAuthEvent: called with { type, did, cid, uid, ip, oldIp, socketType, oldSocketType, reason, at }
+   *   for 'replaced' (keepNew evicted the old connection) and 'duplicate_rejected' (keepOld).
+   *   socketType/oldSocketType are 'websocket' or 'congsocket'.
+   *   Errors and rejected promises are logged and never affect authentication.
+   */
+  constructor(keyProvider, options = {}) {
     if (!keyProvider) {
       throw new Error('BohoAuth must be initialized with a keyProvider.');
     }
     this.keyProvider = keyProvider;
-    this.keepOldConnection = true;
+    this._duplicateLogin = null;
+    if (options.duplicateLogin !== undefined) this.duplicateLogin = options.duplicateLogin;
+    this.onAuthEvent = options.onAuthEvent ?? null;
     this.authLogger;
     if (serverOption.fileLogger.auth.use) {
       this.authLogger = new FileLogger(serverOption.fileLogger.auth.path)
       console.log('Auth: begin file logger.[auth]')
+    }
+  }
+
+  /** Effective duplicate login policy: this instance's setting, else serverOption.auth.duplicateLogin. */
+  get duplicateLogin() {
+    return this._duplicateLogin ?? serverOption.auth.duplicateLogin;
+  }
+
+  /** @param {'keepOld' | 'keepNew' | null} policy  null returns to the serverOption default. */
+  set duplicateLogin(policy) {
+    this._duplicateLogin = policy === null ? null : validateDuplicateLogin(policy);
+  }
+
+  // Backward-compatible boolean form of duplicateLogin.
+  get keepOldConnection() {
+    return this.duplicateLogin === 'keepOld';
+  }
+
+  set keepOldConnection(keepOld) {
+    this.duplicateLogin = keepOld ? 'keepOld' : 'keepNew';
+  }
+
+  emitAuthEvent(event) {
+    if (typeof this.onAuthEvent !== 'function') return;
+    try {
+      Promise.resolve(this.onAuthEvent(event)).catch(error => console.error('onAuthEvent error:', error));
+    } catch (error) {
+      console.error('onAuthEvent error:', error);
     }
   }
 
@@ -108,7 +158,7 @@ export class BohoAuth {
           MBP.MB('#MsgType', '8', IOMsg.AUTH_CLEAR),
           MBP.MB('#reason', 'duplicate login.')
         )
-        if (this.keepOldConnection) { // default true
+        if (this.keepOldConnection) { // duplicateLogin 'keepOld'
           peer.boho.isAuthorized = false;
           // keep old connection. reject new connection by sending auth_fail signal.
           // peer.send(authClearSignal)
@@ -123,6 +173,13 @@ export class BohoAuth {
           old.send(authClearSignal)
           old.close()
         }
+        this.emitAuthEvent({
+          type: this.keepOldConnection ? 'duplicate_rejected' : 'replaced',
+          did: id, cid: authInfo.cid, uid: authInfo.uid || null,
+          ip: peer.ip, oldIp: old.ip,
+          socketType: transportOf(peer), oldSocketType: transportOf(old),
+          reason: 'duplicate login', at: Date.now()
+        })
         if (this.keepOldConnection) return
       }
 

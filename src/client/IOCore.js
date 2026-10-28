@@ -296,7 +296,9 @@ export class IOCore extends EventEmitter {
 
   /**
    * Permanently destroys the instance, cleaning up all resources.
-   * The instance will not be usable after this.
+   * The instance will not be usable after this. Later signal()/publish()/subscribe()
+   * calls are silently dropped, the same as sends while disconnected, and call()
+   * rejects with code 'CONNECTION_CLOSED'.
    */
   destroy() {
     this.stop();
@@ -801,7 +803,7 @@ export class IOCore extends EventEmitter {
   getEncryptionMode() {
     if (this.encMode === ENC_MODE.YES ||
       this.encMode === ENC_MODE.AUTO &&
-      !this.TLS && this.boho.isAuthorized
+      !this.TLS && this.boho?.isAuthorized
     ) {
       return true;
     } else {
@@ -811,10 +813,12 @@ export class IOCore extends EventEmitter {
 
   /**
    * Sends data with encryption based on the encryption mode.
+   * Like an unconnected socket, a destroyed instance silently drops the data.
    * @param {Buffer} data - The data buffer to send.
    * @param {boolean} [useEncryption] - Optional. Force encryption or not. If undefined, uses default policy.
    */
   send_enc_mode(data, useEncryption) {
+    if (!this.boho) return; // destroyed
 
     // use default policy.
     if (useEncryption === undefined) {
@@ -932,7 +936,7 @@ export class IOCore extends EventEmitter {
 
     const tagEncoded = encodeTag(tag)
     if (tag.startsWith('@') && this.cid) encodeTag(this.cid + tag)
-    if( !this.boho.isAuthorized ) return;
+    if( !this.boho?.isAuthorized ) return;
     let dataPack = MBP.B8(data)
 
     //encrypt payload area with key
@@ -989,6 +993,12 @@ export class IOCore extends EventEmitter {
   call(target, topic, ...args) {
     if (!target || !topic)
       return Promise.reject(new Error('request need target and topic)'))
+    if (!this.boho) {
+      // destroyed: reject like close() does for pending calls instead of waiting for a timeout.
+      const error = new Error('Connection closed');
+      error.code = 'CONNECTION_CLOSED';
+      return Promise.reject(error);
+    }
     this.mid = (this.mid + 1) & 0xffff;
     let sigPack;
     if (args.length > 0) {
@@ -1232,7 +1242,7 @@ export class IOCore extends EventEmitter {
     return {
       useAuth: this.useAuth,
       isTLS: this.TLS,
-      isAuthorized: this.boho.isAuthorized,
+      isAuthorized: this.boho?.isAuthorized ?? false,
       encMode: this.encMode,
       usingEncryption: this.getEncryptionMode()
     }

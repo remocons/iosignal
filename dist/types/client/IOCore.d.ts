@@ -172,7 +172,9 @@ export class IOCore extends EventEmitter<string | symbol, any> {
     stop(): void;
     /**
      * Permanently destroys the instance, cleaning up all resources.
-     * The instance will not be usable after this.
+     * The instance will not be usable after this. Later signal()/publish()/subscribe()
+     * calls are silently dropped, the same as sends while disconnected, and call()
+     * rejects with code 'CONNECTION_CLOSED'.
      */
     destroy(): void;
     /**
@@ -255,6 +257,7 @@ export class IOCore extends EventEmitter<string | symbol, any> {
     getEncryptionMode(): boolean;
     /**
      * Sends data with encryption based on the encryption mode.
+     * Like an unconnected socket, a destroyed instance silently drops the data.
      * @param {Buffer} data - The data buffer to send.
      * @param {boolean} [useEncryption] - Optional. Force encryption or not. If undefined, uses default policy.
      */

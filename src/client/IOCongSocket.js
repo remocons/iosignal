@@ -47,6 +47,8 @@ export class IOCongSocket extends IOCore {
       urlObj = new URL('cong://' + url)
     }
     const socket = this.socket = net.createConnection(urlObj.port, urlObj.hostname)
+    // Signals are small frames; send each immediately instead of waiting on Nagle.
+    socket.setNoDelay(true)
     this._closed = false;
 
     this.socket.on('connect', () => {
@@ -87,8 +89,6 @@ export class IOCongSocket extends IOCore {
       this.txCounter++;
       this.txBytes += packData.byteLength;
       this.lastTxRxTime = Date.now();
-    } else {
-      console.log('.')
     }
   }
 

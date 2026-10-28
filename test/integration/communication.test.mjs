@@ -4,6 +4,7 @@ import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
 import { readFileSync } from 'node:fs';
 import { performance } from 'node:perf_hooks';
+import net from 'node:net';
 
 // Private source entry in development; package self-reference for public builds.
 const pkg = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url)));
@@ -467,8 +468,65 @@ for (const [format, api] of variants) {
     assert.deepEqual((await replacement.call('reply', 'echo', 'replacement')).body, ['replacement']);
   });
 
+  test(`${format}: duplicate login policy defaults to keepNew and validates overrides`, () => {
+    const provider = new api.StringKeyProvider('tester.fixture-key.fixture-client.3');
+    assert.equal(api.serverOption.auth.duplicateLogin, 'keepNew');
+    const auth = new api.BohoAuth(provider);
+    assert.deepEqual([auth.duplicateLogin, auth.keepOldConnection], ['keepNew', false]);
+    assert.equal(new api.BohoAuth(provider, { duplicateLogin: 'keepOld' }).duplicateLogin, 'keepOld');
+    auth.keepOldConnection = true;
+    assert.equal(auth.duplicateLogin, 'keepOld');
+    auth.duplicateLogin = null;
+    assert.equal(auth.duplicateLogin, 'keepNew');
+    for (const value of [true, 'keepold', '', 1]) {
+      assert.throws(() => new api.BohoAuth(provider, { duplicateLogin: value }), RangeError);
+      assert.throws(() => new api.Server({ port: 0, duplicateLogin: value }, auth), RangeError);
+    }
+    assert.equal(auth.duplicateLogin, 'keepNew');
+  });
+
+  test(`${format}: default duplicateLogin replaces the old login`, { timeout: 10000 }, async t => {
+    const { server, auth, connect } = await fixture(t, api, true);
+    assert.equal(auth.duplicateLogin, 'keepNew');
+    const old = await connect(['tester', 'fixture-key']);
+    old.autoReconnect = false;
+    const oldRemote = server.manager.cid2remote.get(old.cid);
+    const closed = event(oldRemote.socket, 'close', t.signal);
+    const replacement = await connect(['tester', 'fixture-key']);
+    await closed;
+    assert.notEqual(server.manager.cid2remote.get(replacement.cid), oldRemote);
+    assert.deepEqual((await replacement.call('reply', 'echo', 'new')).body, ['new']);
+  });
+
+  test(`${format}: replaced duplicate login does not publish close for the online CID`, { timeout: 10000 }, async t => {
+    const { server, auth, connect } = await fixture(t, api, true);
+    auth.keepOldConnection = false;
+    const old = await connect(['tester', 'fixture-key']);
+    old.autoReconnect = false;
+    const cid = old.cid;
+    const oldRemote = server.manager.cid2remote.get(cid);
+    const watcher = await connect();
+    const states = [];
+    watcher.on(`${cid}@state`, (tag, state) => states.push([tag, state]));
+    watcher.on(`${cid}@$state`, (tag, state) => states.push([tag, state]));
+    watcher.subscribe(`${cid}@state,${cid}@$state`);
+    await watcher.call('reply', 'echo', 'subscribed');
+
+    const closed = event(oldRemote.socket, 'close', t.signal);
+    const replacement = await connect(['tester', 'fixture-key']);
+    await closed;
+    // Signals from the removed remote would arrive before this response.
+    await watcher.call('reply', 'echo', 'flush');
+    assert.equal(replacement.cid, cid);
+    assert.deepEqual(states, []);
+
+    const realClose = event(watcher, `${cid}@state`, t.signal);
+    replacement.stop();
+    assert.deepEqual(await realClose, [`${cid}@state`, 'close']);
+  });
+
   test(`${format}: keeping the old login revokes authorization on the rejected peer`, { timeout: 10000 }, async t => {
-    const { server, connect, client, url } = await fixture(t, api, true);
+    const { server, connect, client, url } = await fixture(t, api, true, false, {}, { duplicateLogin: 'keepOld' });
     const old = await connect(['tester', 'fixture-key']);
     const remote = server.manager.cid2remote.get(old.cid);
     const duplicate = client(['tester', 'fixture-key']);
@@ -584,7 +642,7 @@ for (const [format, api] of variants) {
   });
 
   test(`${format}: TCP duplicate rejection records failure before close`, { timeout: 10000 }, async t => {
-    const { server, connect, client, url } = await fixture(t, api, true, true);
+    const { server, connect, client, url } = await fixture(t, api, true, true, {}, { duplicateLogin: 'keepOld' });
     const old = await connect(['tester', 'fixture-key']);
     const original = server.manager.cid2remote.get(old.cid);
     const observed = [];
@@ -958,4 +1016,121 @@ for (const [format, api] of variants) {
       assert.equal(server.manager.cid2remote.get(b.cid).channels.size, 0);
     });
   }
+
+  for (const tcp of [false, true]) {
+    test(`${format}: ${tcp ? 'TCP' : 'WS'} sends after stop or destroy are dropped without throwing or logging`, async t => {
+      const { connect } = await fixture(t, api, true, tcp);
+      const io = await connect(['tester', 'fixture-key']);
+      const logged = [];
+      t.mock.method(console, 'log', (...args) => logged.push(args));
+      io.stop();
+      io.signal('room', 'stopped');
+      io.destroy();
+      // A game loop timer that outlives its client must not crash the process.
+      await new Promise((resolve, reject) => setTimeout(() => {
+        try {
+          io.signal('room', 'late');
+          io.publish('room', { late: true });
+          io.signal('#room', 'late');
+          io.signal_e2e('room', Buffer.from([1]), 'e2e-key');
+          io.subscribe('room');
+          io.unsubscribe('room');
+          io.ping();
+          resolve();
+        } catch (error) { reject(error); }
+      }, 0));
+      assert.deepEqual(logged, []);
+      assert.equal(io.getSecurity().isAuthorized, false);
+      await assert.rejects(io.call('reply', 'echo', 'late'), { code: 'CONNECTION_CLOSED' });
+      assert.equal(io.promiseMap.size, 0);
+    });
+  }
+
+  test(`${format}: TCP client and server sockets disable Nagle`, async t => {
+    const calls = [];
+    const setNoDelay = net.Socket.prototype.setNoDelay;
+    t.mock.method(net.Socket.prototype, 'setNoDelay', function (...args) {
+      calls.push([this, ...args]);
+      return setNoDelay.apply(this, args);
+    });
+    const { connect, server } = await fixture(t, api, false, true);
+    const io = await connect();
+    const remoteSocket = server.manager.cid2remote.get(io.cid).socket;
+    assert.ok(calls.some(([socket, noDelay]) => socket === io.socket && noDelay === true), 'client socket');
+    assert.ok(calls.some(([socket, noDelay]) => socket === remoteSocket && noDelay === true), 'server socket');
+  });
+}
+
+for (const [format, api] of variants) {
+  test(`${format}: attached services receive onRemoteClose once per closed remote`, { timeout: 10000 }, async t => {
+    const { server, connect } = await fixture(t, api);
+    const closedRemotes = [];
+    const service = { commands: [], checkPermission: () => false, onRemoteClose: remote => closedRemotes.push(remote) };
+    server.attach('lifecycle', service).attach('lifecycle-alias', service);
+    const io = await connect();
+    const remote = server.manager.cid2remote.get(io.cid);
+    const closed = event(remote.socket, 'close', t.signal);
+    io.stop();
+    await closed;
+    assert.deepEqual(closedRemotes, [remote]);
+  });
+}
+
+for (const [format, api] of variants) {
+  for (const [policy, tcp] of [['keepNew', false], ['keepOld', false], ['keepNew', true], ['keepOld', true]]) {
+    test(`${format}: onAuthEvent reports ${policy} duplicate logins over ${tcp ? 'TCP' : 'WS'} and cannot break auth`, { timeout: 10000 }, async t => {
+      const { server, auth, connect, client, url } = await fixture(t, api, true, tcp, {}, { duplicateLogin: policy });
+      const events = [];
+      let reported;
+      const seen = new Promise(resolve => { reported = resolve; });
+      auth.onAuthEvent = event => { events.push(event); reported(); throw new Error('hook failure is ignored'); };
+      const old = await connect(['tester', 'fixture-key']);
+      old.autoReconnect = false;
+      const oldRemote = server.manager.cid2remote.get(old.cid);
+      if (policy === 'keepNew') {
+        const closed = event(oldRemote.socket, 'close', t.signal);
+        await connect(['tester', 'fixture-key']);
+        await closed;
+      } else {
+        const duplicate = client(['tester', 'fixture-key']);
+        duplicate.autoReconnect = false;
+        // WebSocket gets AUTH_FAIL; CongSocket is closed without a message.
+        const rejected = tcp ? Promise.resolve() : event(duplicate, 'auth_fail', t.signal);
+        duplicate.open(url);
+        await rejected;
+      }
+      await seen;
+      assert.equal(events.length, 1);
+      const [e] = events;
+      assert.deepEqual([e.type, e.did, e.cid, e.uid, e.reason, e.ip, e.oldIp],
+        [policy === 'keepNew' ? 'replaced' : 'duplicate_rejected', 'tester', 'fixture-client', null,
+          'duplicate login', '127.0.0.1', '127.0.0.1']);
+      assert.ok(Number.isFinite(e.at));
+      const transport = tcp ? 'congsocket' : 'websocket';
+      assert.deepEqual([e.socketType, e.oldSocketType], [transport, transport]);
+    });
+  }
+}
+
+for (const [format, api] of variants) {
+  test(`${format}: anonymous CIDs never reuse an online CID`, { timeout: 10000 }, async t => {
+    const { server, connect } = await fixture(t, api);
+    const manager = server.manager;
+    const taken = {};
+    manager.cid2remote.set('?AAAA', taken);
+    const draws = [0x00, 0x00, 0xff];
+    manager.anonymousCidRandom = size => Buffer.alloc(size, draws.length ? draws.shift() : 0x11);
+    const io = await connect();
+    assert.equal(io.cid, '?____');
+    assert.equal(manager.cid2remote.get('?AAAA'), taken);
+    assert.equal(manager.cid2remote.get('?____'), manager.cid2remote.get(io.cid));
+
+    // The short space keeps colliding: fall back to 8 characters, then give up.
+    manager.anonymousCidRandom = size => Buffer.alloc(size, 0x00);
+    assert.equal(manager.issueAnonymousCid(), '?AAAAAAAA');
+    manager.cid2remote.set('?AAAAAAAA', taken);
+    assert.equal(manager.issueAnonymousCid(), null);
+    manager.cid2remote.delete('?AAAA');
+    manager.cid2remote.delete('?AAAAAAAA');
+  });
 }

@@ -191,7 +191,7 @@ export default class IO extends IOCore {
   }
 
   /**
-   * Sends data over the WebSocket.
+   * Sends data over the WebSocket. Data is dropped while the socket is not open.
    * @param {BufferSource} data - The data to send.
    */
   socket_send(data) {
@@ -200,8 +200,6 @@ export default class IO extends IOCore {
       this.txCounter++;
       this.txBytes += data.byteLength
       this.lastTxRxTime = Date.now();
-    } else {
-      console.log('.')
     }
   }
 

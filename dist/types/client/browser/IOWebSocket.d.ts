@@ -68,7 +68,7 @@ export default class IO extends IOCore {
      */
     onWebSocketMessageBlob(event: MessageEvent): Promise<void>;
     /**
-     * Sends data over the WebSocket.
+     * Sends data over the WebSocket. Data is dropped while the socket is not open.
      * @param {BufferSource} data - The data to send.
      */
     socket_send(data: BufferSource): void;

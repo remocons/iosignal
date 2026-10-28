@@ -260,7 +260,13 @@ export class RemoteCore {
           }
 
           if (!this.cid) {
-            this.cid = '?' + globalThis.crypto.getRandomValues(Buffer.alloc(3)).toString('base64url')
+            const cid = this.manager.issueAnonymousCid()
+            if (!cid) {
+              console.log('anonymous CID space exhausted')
+              this.close()
+              return;
+            }
+            this.cid = cid
             this.manager.cid2remote.set(this.cid, this)
           }
 

@@ -178,7 +178,9 @@ declare class IOCore extends EventEmitter<string | symbol, any> {
     stop(): void;
     /**
      * Permanently destroys the instance, cleaning up all resources.
-     * The instance will not be usable after this.
+     * The instance will not be usable after this. Later signal()/publish()/subscribe()
+     * calls are silently dropped, the same as sends while disconnected, and call()
+     * rejects with code 'CONNECTION_CLOSED'.
      */
     destroy(): void;
     /**
@@ -261,6 +263,7 @@ declare class IOCore extends EventEmitter<string | symbol, any> {
     getEncryptionMode(): boolean;
     /**
      * Sends data with encryption based on the encryption mode.
+     * Like an unconnected socket, a destroyed instance silently drops the data.
      * @param {Buffer} data - The data buffer to send.
      * @param {boolean} [useEncryption] - Optional. Force encryption or not. If undefined, uses default policy.
      */
@@ -504,7 +507,7 @@ declare class IO extends IOCore {
      */
     onWebSocketMessageBlob(event: MessageEvent): Promise<void>;
     /**
-     * Sends data over the WebSocket.
+     * Sends data over the WebSocket. Data is dropped while the socket is not open.
      * @param {BufferSource} data - The data to send.
      */
     socket_send(data: BufferSource): void;

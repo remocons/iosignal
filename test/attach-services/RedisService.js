@@ -22,7 +22,7 @@ redisClient.on('end', ()=>{
 })
 
 const server = new Server({port:0, showMessage: 'message'})
-                    .attach('redis', new RedisService( redisClient , -1))
+                    .attach('redis', new RedisService( redisClient , -1, { requireAuth: false }))
 
 server.on('ready',()=>{
     let io = new IO('ws://localhost:'+server.port)

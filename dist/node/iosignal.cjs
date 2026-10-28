@@ -17,7 +17,7 @@ var fs = require('fs');
 var process$1 = require('process');
 var path = require('path');
 
-var version$1 = "7.2.0";
+var version$1 = "8.0.0";
 var pkg = {
 	version: version$1};
 
@@ -1051,7 +1051,9 @@ class IOCore extends EventEmitter {
 
   /**
    * Permanently destroys the instance, cleaning up all resources.
-   * The instance will not be usable after this.
+   * The instance will not be usable after this. Later signal()/publish()/subscribe()
+   * calls are silently dropped, the same as sends while disconnected, and call()
+   * rejects with code 'CONNECTION_CLOSED'.
    */
   destroy() {
     this.stop();
@@ -1551,7 +1553,7 @@ class IOCore extends EventEmitter {
   getEncryptionMode() {
     if (this.encMode === ENC_MODE.YES ||
       this.encMode === ENC_MODE.AUTO &&
-      !this.TLS && this.boho.isAuthorized
+      !this.TLS && this.boho?.isAuthorized
     ) {
       return true;
     } else {
@@ -1561,10 +1563,12 @@ class IOCore extends EventEmitter {
 
   /**
    * Sends data with encryption based on the encryption mode.
+   * Like an unconnected socket, a destroyed instance silently drops the data.
    * @param {Buffer} data - The data buffer to send.
    * @param {boolean} [useEncryption] - Optional. Force encryption or not. If undefined, uses default policy.
    */
   send_enc_mode(data, useEncryption) {
+    if (!this.boho) return; // destroyed
 
     // use default policy.
     if (useEncryption === undefined) {
@@ -1682,7 +1686,7 @@ class IOCore extends EventEmitter {
 
     const tagEncoded = encodeTag(tag);
     if (tag.startsWith('@') && this.cid) encodeTag(this.cid + tag);
-    if( !this.boho.isAuthorized ) return;
+    if( !this.boho?.isAuthorized ) return;
     let dataPack = $$1.B8(data);
 
     //encrypt payload area with key
@@ -1739,6 +1743,12 @@ class IOCore extends EventEmitter {
   call(target, topic, ...args) {
     if (!target || !topic)
       return Promise.reject(new Error('request need target and topic)'))
+    if (!this.boho) {
+      // destroyed: reject like close() does for pending calls instead of waiting for a timeout.
+      const error = new Error('Connection closed');
+      error.code = 'CONNECTION_CLOSED';
+      return Promise.reject(error);
+    }
     this.mid = (this.mid + 1) & 0xffff;
     let sigPack;
     if (args.length > 0) {
@@ -1982,7 +1992,7 @@ class IOCore extends EventEmitter {
     return {
       useAuth: this.useAuth,
       isTLS: this.TLS,
-      isAuthorized: this.boho.isAuthorized,
+      isAuthorized: this.boho?.isAuthorized ?? false,
       encMode: this.encMode,
       usingEncryption: this.getEncryptionMode()
     }
@@ -2200,6 +2210,8 @@ class IOCongSocket extends IOCore {
       urlObj = new URL('cong://' + url);
     }
     const socket = this.socket = net.createConnection(urlObj.port, urlObj.hostname);
+    // Signals are small frames; send each immediately instead of waiting on Nagle.
+    socket.setNoDelay(true);
     this._closed = false;
 
     this.socket.on('connect', () => {
@@ -2240,8 +2252,6 @@ class IOCongSocket extends IOCore {
       this.txCounter++;
       this.txBytes += packData.byteLength;
       this.lastTxRxTime = Date.now();
-    } else {
-      console.log('.');
     }
   }
 
@@ -7368,8 +7378,6 @@ class IOWS extends IOCore {
       this.txCounter++;
       this.txBytes += data.byteLength;
       this.lastTxRxTime = Date.now();
-    } else {
-      console.log('.');
     }
   }
 
@@ -7430,7 +7438,11 @@ let serverOption = {
   },
 
   auth: {
-    delay_auth_fail: 600
+    delay_auth_fail: 600,
+    // Same authenticated CID already online:
+    // 'keepNew' (default) replaces the old connection, 'keepOld' rejects the new login.
+    // Override per Server with options.duplicateLogin, or per BohoAuth with its duplicateLogin option.
+    duplicateLogin: 'keepNew'
   },
   membersOnly: false
 
@@ -7689,7 +7701,13 @@ class RemoteCore {
           }
 
           if (!this.cid) {
-            this.cid = '?' + globalThis.crypto.getRandomValues(Buffer.alloc(3)).toString('base64url');
+            const cid = this.manager.issueAnonymousCid();
+            if (!cid) {
+              console.log('anonymous CID space exhausted');
+              this.close();
+              return;
+            }
+            this.cid = cid;
             this.manager.cid2remote.set(this.cid, this);
           }
 
@@ -8526,8 +8544,12 @@ class Manager {
 
     let remoteInfo = `- IP:${remote.ip} #${remote.ssid} cid:${remote.cid} ${remote?.socket.socketType === 'websocket' ? "WS" : "CS"} `;
     if (this.connectionLogger) this.connectionLogger.log(remoteInfo);
-    this.deligateSignal(remote, '@state', 'close');
-    this.deligateSignal(remote, '@$state', 'close');
+    // A replaced duplicate login no longer owns its CID; the new connection is still online.
+    const cidOwner = this.cid2remote.get(remote.cid);
+    if (!remote.cid || !cidOwner || cidOwner === remote) {
+      this.deligateSignal(remote, '@state', 'close');
+      this.deligateSignal(remote, '@$state', 'close');
+    }
 
     // remove subscriber 
     for (let ch of remote.channels.keys()) {
@@ -8554,10 +8576,14 @@ class Manager {
     }
 
 
-    if (remote.uid && this.server.serviceNames.has('account')) {
-      let req = { topic: 'detachUserRemote' };
-      req.args = ['caller:manager.removeRemote'];
-      this.server.emit('account', remote, req);
+    // Service lifecycle hook. Called directly: RPC permission/command checks do not apply to cleanup.
+    for (const service of new Set(this.server.services?.values() ?? [])) {
+      if (typeof service.onRemoteClose !== 'function') continue
+      try {
+        service.onRemoteClose(remote);
+      } catch (error) {
+        console.error('service onRemoteClose error:', error);
+      }
     }
 
     this.remotes.delete(remote);
@@ -8855,6 +8881,23 @@ class Manager {
   }
 
 
+  anonymousCidRandom(size) {
+    return globalThis.crypto.getRandomValues(Buffer.alloc(size))
+  }
+
+  // '?' + base64url random bytes, never one that is online. Check and set run in the same
+  // synchronous turn (CID_REQ handler), so concurrent requests cannot take the same CID.
+  // 3 bytes (4 chars) normally; 6 bytes (8 chars) if the short space keeps colliding.
+  issueAnonymousCid() {
+    for (const [size, tries] of [[3, 8], [6, 8]]) {
+      for (let i = 0; i < tries; i++) {
+        const cid = '?' + Buffer.from(this.anonymousCidRandom(size)).toString('base64url');
+        if (!this.cid2remote.has(cid)) return cid
+      }
+    }
+    return null
+  }
+
   closeRemoteByCId(cid) {
     if (this.cid2remote.has(cid)) {
       this.cid2remote.get(cid).close();
@@ -8893,261 +8936,68 @@ const STATUS = {
   ERROR: 255
 };
 
-class Server extends require$$0$3 {
+const decoder = new TextDecoder();
+const DUPLICATE_LOGIN_POLICIES = ['keepOld', 'keepNew'];
+// Only WebSocket remotes carry socketType; CongSocket remotes leave it unset.
+const transportOf = remote => remote.socketType === 'websocket' ? 'websocket' : 'congsocket';
 
-  /**
-   * @param {object} options Server configuration.
-   * @param {any} [authManager] Optional authentication manager.
-   */
-  constructor(options, authManager) {
-    super();
-    const security = { ...serverOption.security, ...options.security };
-    for (const name of ['maxClockSkewMs', 'authChallengeMaxAgeMs', 'maxReplayEntries']) {
-      if (!Number.isSafeInteger(security[name]) || security[name] <= 0) {
-        throw new RangeError(`security.${name} must be a positive safe integer`);
-      }
-    }
-    this.security = Object.freeze(security);
-    this.serviceNames = new Set();
-    this.wss = {};
-    this.port = null;
-    this.congPort = null;
-
-    if (options.pingTimeoutGrace !== undefined) {
-      if (!Number.isFinite(options.pingTimeoutGrace) || options.pingTimeoutGrace < 0) {
-        throw new RangeError('pingTimeoutGrace must be a finite non-negative number');
-      }
-      serverOption.pingTimeoutGrace = options.pingTimeoutGrace;
-    }
-
-    if (options.timeout) {
-      let pingT = parseInt(options.timeout);
-      if (pingT && pingT >= 1000) serverOption.timeout = pingT;
-    }
-    if (options.monitorPeriod) {
-      let monitorT = parseInt(options.monitorPeriod);
-      if (monitorT && monitorT >= 1000) serverOption.monitorPeriod = monitorT;
-    }
-    if (options.showMessage) {
-      serverOption.showMessage = options.showMessage;
-    }
-    if (options.showMetric) {
-      serverOption.showMetric = options.showMetric;
-    }
-    if (options.membersOnly) {
-      serverOption.membersOnly = options.membersOnly;
-    }
-
-
-    if (options.port || options.port == 0) {
-      this.port = parseInt(options.port);
-    }
-
-    if (options.httpServer) {
-      this.httpServer = options.httpServer;
-    }
-
-    if (options.wsPath) {
-      this.wsPath = options.wsPath;
-    }
-
-    if (options.congPort || options.congPort == 0) {
-      this.congPort = parseInt(options.congPort);
-    }
-
-    this.manager = new Manager(this, authManager);
-
-    this.serverCountToListen = 0;
-    this.listeningServerCount = 0;
-    if (this.port || this.port == 0 || this.httpServer) this.serverCountToListen++;
-    if (this.congPort || this.congPort == 0) this.serverCountToListen++;
-
-    if (this.serverCountToListen === 0) {
-      throw new Error('Cannot create Server: At least one of "port", "httpServer", or "congPort" must be specified.');
-    } else {
-      if (this.port || this.port == 0 || this.httpServer) this.startWSServer();
-      if (this.congPort || this.congPort == 0) this.startCongServer();
-    }
-
+function validateDuplicateLogin(policy) {
+  if (!DUPLICATE_LOGIN_POLICIES.includes(policy)) {
+    throw new RangeError(`duplicateLogin must be one of: ${DUPLICATE_LOGIN_POLICIES.join(', ')}`)
   }
-
-
-  startWSServer() {
-    // console.log('optoins', options )
-    if (this.port || this.port == 0) {
-      this.wss = new WebSocketServer({ port: this.port , path: this.wsPath });
-    } else if (this.httpServer ) {
-      this.wss = new WebSocketServer({ server: this.httpServer, path: this.wsPath });
-    } else {
-      throw new TypeError(
-        'One and only one of the "port", "httpServer"' +
-        'must be specified'
-      );
-    }
-
-    this.wss.once('listening', () => {
-      this.port = this.wss.address().port;
-      // console.log('wss server bound port:',  this.port );
-      this.listeningServerCount++;
-      if (this.listeningServerCount === this.serverCountToListen) {
-        this.emit('ready');
-      }
-    });
-
-    // this.wss.setMaxListeners(0)
-    this.wss.on('error', (err) => {
-      console.error('### ws server error:', err.message);
-      if (err.code == 'EADDRINUSE') {
-        process.exit();
-      }
-    });
-
-    this.wss.on('close', () => {
-      // console.log('### WS server is closed.')
-    });
-
-    this.wss.on('connection', (ws, req) => {
-      ws.socketType = 'websocket';
-      this.manager.addRemote(ws, req);
-    });
-
-
-  }
-
-  startCongServer() {
-    this.congServer = net.createServer((socket) => {
-      this.manager.addRemote(socket);
-    })
-      .on('error', (err) => {
-        console.log('### cong server error:', err.message);
-        if (err.code == 'EADDRINUSE') {
-          process.exit();
-        }
-      }).on('close', () => {
-        // console.log('### congsocket server is closed.')
-      }).listen(this.congPort, () => {
-        this.congPort = this.congServer.address().port;
-        // console.log('congsocket server bound port:', this.congPort );
-        this.listeningServerCount++;
-        if (this.listeningServerCount === this.serverCountToListen) {
-          this.emit('ready');
-        }
-      });
-  }
-
-/**
- * RPC service register.
- * service: service_name <string>
- * service_module <function module|class instance>
- * return this
- */
-  attach(service, service_module) {
-
-    if( typeof service !== 'string'){
-      throw new Error(`attach service name is not a string.`)
-    }
-    if (!service_module.checkPermission || typeof service_module.checkPermission != 'function') {
-      throw new Error(`Service ${service} : no checkPermission or not a function.`)
-    }
-    if(!service_module.commands || !Array.isArray(service_module.commands) ){
-      throw new Error(`Service ${service} : no commands or !Array.`)
-    }
-    
-    const handleError = (remote, req, error) => {
-      console.error(`Unhandled Service Error in service [${service}]:`, error);
-      if (remote._closing) return;
-      // A disconnected transport can also fail while reporting the service error.
-      try {
-        remote.response(req.mid, STATUS.ERROR, "INTERNAL_SERVER_ERROR");
-      } catch (responseError) {
-        console.error(`Service error response failed [${service}]:`, responseError);
-      }
-    };
-    const useCall = typeof service_module.call === 'function';
-    this.on(service, (remote, req) => {
-      try {
-        if (!service_module.checkPermission(remote, req)) {
-          remote.response(req.mid, STATUS.ERROR, "NO_PERMISSION.");
-          return;
-        }
-        if (!service_module.commands.includes(req.topic)) {
-          remote.response(req.mid, STATUS.ERROR, "UNKNOWN_COMMAND");
-          return;
-        }
-        // Keep synchronous invocation and the service receiver; also observe async failures.
-        const result = useCall
-          ? service_module.call(remote, req)
-          : service_module[req.topic](remote, req);
-        Promise.resolve(result).catch(error => handleError(remote, req, error));
-      } catch (error) {
-        handleError(remote, req, error);
-      }
-    });
-    this.serviceNames.add(service);
-    // console.log(`[Service attached: ${service} ] accept commands: ${service_module.commands}`)
-    return this
-  }
-
-  /**
-   * @param {() => void} [callback] Called when the server has closed.
-   */
-  close(callback) {
-    console.log('closing iosignal server...');
-    if (this.manager) {
-      this.manager.close();
-    }
-
-    this.serviceNames.forEach(v => this.removeAllListeners(v));
-    this.serviceNames.clear();
-
-    let serverCount = 0;
-    if (this.wss) serverCount++;
-    if (this.congServer) serverCount++;
-
-    if (serverCount === 0) {
-      if (callback) process.nextTick(callback);
-      return;
-    }
-
-    let closedCount = 0;
-    const onClosed = () => {
-      closedCount++;
-      if (closedCount === serverCount) {
-        console.log('IOSignal server is closed.');
-        if (callback) callback();
-      }
-    };
-
-    if (this.wss) {
-      this.wss.close(() => {
-        // console.log('wss server closed.')
-        onClosed();
-      });
-    }
-
-    if (this.congServer) {
-      this.congServer.close((err) => {
-        // if (err) console.error('congServer close error', err)
-        // console.log('cong server closed.')
-        onClosed();
-      });
-    }
-  }
-
+  return policy
 }
 
-const decoder = new TextDecoder();
 class BohoAuth {
-  constructor(keyProvider) {
+  /**
+   * @param {object} keyProvider
+   * @param {{ duplicateLogin?: 'keepOld' | 'keepNew', onAuthEvent?: (event: object) => any }} [options]
+   *   duplicateLogin: unset follows serverOption.auth.duplicateLogin (default 'keepNew').
+   *   onAuthEvent: called with { type, did, cid, uid, ip, oldIp, socketType, oldSocketType, reason, at }
+   *   for 'replaced' (keepNew evicted the old connection) and 'duplicate_rejected' (keepOld).
+   *   socketType/oldSocketType are 'websocket' or 'congsocket'.
+   *   Errors and rejected promises are logged and never affect authentication.
+   */
+  constructor(keyProvider, options = {}) {
     if (!keyProvider) {
       throw new Error('BohoAuth must be initialized with a keyProvider.');
     }
     this.keyProvider = keyProvider;
-    this.keepOldConnection = true;
+    this._duplicateLogin = null;
+    if (options.duplicateLogin !== undefined) this.duplicateLogin = options.duplicateLogin;
+    this.onAuthEvent = options.onAuthEvent ?? null;
     this.authLogger;
     if (serverOption.fileLogger.auth.use) {
       this.authLogger = new FileLogger(serverOption.fileLogger.auth.path);
       console.log('Auth: begin file logger.[auth]');
+    }
+  }
+
+  /** Effective duplicate login policy: this instance's setting, else serverOption.auth.duplicateLogin. */
+  get duplicateLogin() {
+    return this._duplicateLogin ?? serverOption.auth.duplicateLogin;
+  }
+
+  /** @param {'keepOld' | 'keepNew' | null} policy  null returns to the serverOption default. */
+  set duplicateLogin(policy) {
+    this._duplicateLogin = policy === null ? null : validateDuplicateLogin(policy);
+  }
+
+  // Backward-compatible boolean form of duplicateLogin.
+  get keepOldConnection() {
+    return this.duplicateLogin === 'keepOld';
+  }
+
+  set keepOldConnection(keepOld) {
+    this.duplicateLogin = keepOld ? 'keepOld' : 'keepNew';
+  }
+
+  emitAuthEvent(event) {
+    if (typeof this.onAuthEvent !== 'function') return;
+    try {
+      Promise.resolve(this.onAuthEvent(event)).catch(error => console.error('onAuthEvent error:', error));
+    } catch (error) {
+      console.error('onAuthEvent error:', error);
     }
   }
 
@@ -9239,7 +9089,7 @@ class BohoAuth {
           $$1.MB('#MsgType', '8', IOMsg.AUTH_CLEAR),
           $$1.MB('#reason', 'duplicate login.')
         );
-        if (this.keepOldConnection) { // default true
+        if (this.keepOldConnection) { // duplicateLogin 'keepOld'
           peer.boho.isAuthorized = false;
           // keep old connection. reject new connection by sending auth_fail signal.
           // peer.send(authClearSignal)
@@ -9254,6 +9104,13 @@ class BohoAuth {
           old.send(authClearSignal);
           old.close();
         }
+        this.emitAuthEvent({
+          type: this.keepOldConnection ? 'duplicate_rejected' : 'replaced',
+          did: id, cid: authInfo.cid, uid: authInfo.uid || null,
+          ip: peer.ip, oldIp: old.ip,
+          socketType: transportOf(peer), oldSocketType: transportOf(old),
+          reason: 'duplicate login', at: Date.now()
+        });
         if (this.keepOldConnection) return
       }
 
@@ -9335,6 +9192,264 @@ class BohoAuth {
     }
   }
 
+
+}
+
+class Server extends require$$0$3 {
+
+  /**
+   * @param {object} options Server configuration.
+   * @param {any} [authManager] Optional authentication manager.
+   */
+  constructor(options, authManager) {
+    super();
+    const security = { ...serverOption.security, ...options.security };
+    for (const name of ['maxClockSkewMs', 'authChallengeMaxAgeMs', 'maxReplayEntries']) {
+      if (!Number.isSafeInteger(security[name]) || security[name] <= 0) {
+        throw new RangeError(`security.${name} must be a positive safe integer`);
+      }
+    }
+    this.security = Object.freeze(security);
+    this.serviceNames = new Set();
+    this.services = new Map();   // name -> service module (for lifecycle hooks)
+    this.wss = {};
+    this.port = null;
+    this.congPort = null;
+
+    if (options.pingTimeoutGrace !== undefined) {
+      if (!Number.isFinite(options.pingTimeoutGrace) || options.pingTimeoutGrace < 0) {
+        throw new RangeError('pingTimeoutGrace must be a finite non-negative number');
+      }
+      serverOption.pingTimeoutGrace = options.pingTimeoutGrace;
+    }
+
+    if (options.timeout) {
+      let pingT = parseInt(options.timeout);
+      if (pingT && pingT >= 1000) serverOption.timeout = pingT;
+    }
+    if (options.monitorPeriod) {
+      let monitorT = parseInt(options.monitorPeriod);
+      if (monitorT && monitorT >= 1000) serverOption.monitorPeriod = monitorT;
+    }
+    if (options.showMessage) {
+      serverOption.showMessage = options.showMessage;
+    }
+    if (options.showMetric) {
+      serverOption.showMetric = options.showMetric;
+    }
+    if (options.membersOnly) {
+      serverOption.membersOnly = options.membersOnly;
+    }
+    // Applies to this server's auth manager only; without auth there are no duplicate logins.
+    if (options.duplicateLogin !== undefined) {
+      validateDuplicateLogin(options.duplicateLogin);
+      if (authManager) {
+        if (!('duplicateLogin' in authManager)) {
+          throw new TypeError('duplicateLogin: the auth manager does not support this option')
+        }
+        authManager.duplicateLogin = options.duplicateLogin;
+      }
+    }
+
+
+    if (options.port || options.port == 0) {
+      this.port = parseInt(options.port);
+    }
+
+    if (options.httpServer) {
+      this.httpServer = options.httpServer;
+    }
+
+    if (options.wsPath) {
+      this.wsPath = options.wsPath;
+    }
+
+    if (options.congPort || options.congPort == 0) {
+      this.congPort = parseInt(options.congPort);
+    }
+
+    this.manager = new Manager(this, authManager);
+
+    this.serverCountToListen = 0;
+    this.listeningServerCount = 0;
+    if (this.port || this.port == 0 || this.httpServer) this.serverCountToListen++;
+    if (this.congPort || this.congPort == 0) this.serverCountToListen++;
+
+    if (this.serverCountToListen === 0) {
+      throw new Error('Cannot create Server: At least one of "port", "httpServer", or "congPort" must be specified.');
+    } else {
+      if (this.port || this.port == 0 || this.httpServer) this.startWSServer();
+      if (this.congPort || this.congPort == 0) this.startCongServer();
+    }
+
+  }
+
+
+  startWSServer() {
+    // console.log('optoins', options )
+    if (this.port || this.port == 0) {
+      this.wss = new WebSocketServer({ port: this.port , path: this.wsPath });
+    } else if (this.httpServer ) {
+      this.wss = new WebSocketServer({ server: this.httpServer, path: this.wsPath });
+    } else {
+      throw new TypeError(
+        'One and only one of the "port", "httpServer"' +
+        'must be specified'
+      );
+    }
+
+    this.wss.once('listening', () => {
+      this.port = this.wss.address().port;
+      // console.log('wss server bound port:',  this.port );
+      this.listeningServerCount++;
+      if (this.listeningServerCount === this.serverCountToListen) {
+        this.emit('ready');
+      }
+    });
+
+    // this.wss.setMaxListeners(0)
+    this.wss.on('error', (err) => {
+      console.error('### ws server error:', err.message);
+      if (err.code == 'EADDRINUSE') {
+        process.exit();
+      }
+    });
+
+    this.wss.on('close', () => {
+      // console.log('### WS server is closed.')
+    });
+
+    this.wss.on('connection', (ws, req) => {
+      ws.socketType = 'websocket';
+      this.manager.addRemote(ws, req);
+    });
+
+
+  }
+
+  startCongServer() {
+    this.congServer = net.createServer((socket) => {
+      // Signals are small frames; send each immediately instead of waiting on Nagle.
+      socket.setNoDelay(true);
+      this.manager.addRemote(socket);
+    })
+      .on('error', (err) => {
+        console.log('### cong server error:', err.message);
+        if (err.code == 'EADDRINUSE') {
+          process.exit();
+        }
+      }).on('close', () => {
+        // console.log('### congsocket server is closed.')
+      }).listen(this.congPort, () => {
+        this.congPort = this.congServer.address().port;
+        // console.log('congsocket server bound port:', this.congPort );
+        this.listeningServerCount++;
+        if (this.listeningServerCount === this.serverCountToListen) {
+          this.emit('ready');
+        }
+      });
+  }
+
+/**
+ * RPC service register.
+ * service: service_name <string>
+ * service_module <function module|class instance>
+ * return this
+ */
+  attach(service, service_module) {
+
+    if( typeof service !== 'string'){
+      throw new Error(`attach service name is not a string.`)
+    }
+    if (!service_module.checkPermission || typeof service_module.checkPermission != 'function') {
+      throw new Error(`Service ${service} : no checkPermission or not a function.`)
+    }
+    if(!service_module.commands || !Array.isArray(service_module.commands) ){
+      throw new Error(`Service ${service} : no commands or !Array.`)
+    }
+    
+    const handleError = (remote, req, error) => {
+      console.error(`Unhandled Service Error in service [${service}]:`, error);
+      if (remote._closing) return;
+      // A disconnected transport can also fail while reporting the service error.
+      try {
+        remote.response(req.mid, STATUS.ERROR, "INTERNAL_SERVER_ERROR");
+      } catch (responseError) {
+        console.error(`Service error response failed [${service}]:`, responseError);
+      }
+    };
+    const useCall = typeof service_module.call === 'function';
+    this.on(service, (remote, req) => {
+      try {
+        if (!service_module.checkPermission(remote, req)) {
+          remote.response(req.mid, STATUS.ERROR, "NO_PERMISSION.");
+          return;
+        }
+        if (!service_module.commands.includes(req.topic)) {
+          remote.response(req.mid, STATUS.ERROR, "UNKNOWN_COMMAND");
+          return;
+        }
+        // Keep synchronous invocation and the service receiver; also observe async failures.
+        const result = useCall
+          ? service_module.call(remote, req)
+          : service_module[req.topic](remote, req);
+        Promise.resolve(result).catch(error => handleError(remote, req, error));
+      } catch (error) {
+        handleError(remote, req, error);
+      }
+    });
+    this.serviceNames.add(service);
+    this.services.set(service, service_module);
+    // console.log(`[Service attached: ${service} ] accept commands: ${service_module.commands}`)
+    return this
+  }
+
+  /**
+   * @param {() => void} [callback] Called when the server has closed.
+   */
+  close(callback) {
+    console.log('closing iosignal server...');
+    if (this.manager) {
+      this.manager.close();
+    }
+
+    this.serviceNames.forEach(v => this.removeAllListeners(v));
+    this.serviceNames.clear();
+    // this.services is kept so onRemoteClose cleanup still runs for sockets that close later.
+
+    let serverCount = 0;
+    if (this.wss) serverCount++;
+    if (this.congServer) serverCount++;
+
+    if (serverCount === 0) {
+      if (callback) process.nextTick(callback);
+      return;
+    }
+
+    let closedCount = 0;
+    const onClosed = () => {
+      closedCount++;
+      if (closedCount === serverCount) {
+        console.log('IOSignal server is closed.');
+        if (callback) callback();
+      }
+    };
+
+    if (this.wss) {
+      this.wss.close(() => {
+        // console.log('wss server closed.')
+        onClosed();
+      });
+    }
+
+    if (this.congServer) {
+      this.congServer.close((err) => {
+        // if (err) console.error('congServer close error', err)
+        // console.log('cong server closed.')
+        onClosed();
+      });
+    }
+  }
 
 }
 
@@ -9546,8 +9661,9 @@ const commands = [
 ];
 
 const MIN_LEVEL$1 = 255;
+// Only a Boho-authenticated device may use sudo; a raised level alone is not authentication.
 function checkPermission(remote) {
-  return (remote.level >= MIN_LEVEL$1) ? true : false;
+  return remote.boho?.isAuthorized === true && remote.level >= MIN_LEVEL$1;
 }
 
 async function call(remote, req) {
@@ -9639,21 +9755,30 @@ const MIN_LEVEL = 200;
 const COMMANDS = [
   'GET', 'SET', 'HGETALL', 'HGET', 'HSET', 'SADD', 'SISMEMBER',
   'SMEMBERS', 'EXISTS', 'SREM', 'DEL', 'KEYS', 'SAVE',
+  'LPUSH', 'LTRIM', 'LRANGE', 'LINDEX', 'LSET', 'EXPIRE',
   'get', 'set', 'hGetAll', 'hGet', 'hSet', 'sAdd', 'sIsMember',
-  'sMembers', 'exists', 'sRem', 'del', 'keys', 'save'
+  'sMembers', 'exists', 'sRem', 'del', 'keys', 'save',
+  'lPush', 'lTrim', 'lRange', 'lIndex', 'lSet', 'expire'
 ];
 
 class RedisService {
-  constructor(redisClient, _minLevel) {
+  /**
+   * @param {object} redisClient
+   * @param {number} [_minLevel=200]
+   * @param {{ requireAuth?: boolean }} [options] requireAuth (default true): allow Boho-authenticated remotes only.
+   */
+  constructor(redisClient, _minLevel, options = {}) {
     if (!redisClient) {
       throw new Error("RedisService constructor: no redisClient")
     }
     this.redisClient = redisClient;
     this.minLevel = _minLevel ? _minLevel : MIN_LEVEL;
+    this.requireAuth = options.requireAuth !== false;
     this.commands = COMMANDS;
   }
 
   checkPermission(remote, req) {
+    if (this.requireAuth && remote.boho?.isAuthorized !== true) return false;
     return (remote.level >= this.minLevel) ? true : false;
   }
 

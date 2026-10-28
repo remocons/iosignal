@@ -74,8 +74,6 @@ export class IOWS extends IOCore {
       this.txCounter++;
       this.txBytes += data.byteLength
       this.lastTxRxTime = Date.now();
-    } else {
-      console.log('.')
     }
   }
 

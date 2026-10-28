@@ -14,21 +14,30 @@ const MIN_LEVEL = 200;
 const COMMANDS = [
   'GET', 'SET', 'HGETALL', 'HGET', 'HSET', 'SADD', 'SISMEMBER',
   'SMEMBERS', 'EXISTS', 'SREM', 'DEL', 'KEYS', 'SAVE',
+  'LPUSH', 'LTRIM', 'LRANGE', 'LINDEX', 'LSET', 'EXPIRE',
   'get', 'set', 'hGetAll', 'hGet', 'hSet', 'sAdd', 'sIsMember',
-  'sMembers', 'exists', 'sRem', 'del', 'keys', 'save'
+  'sMembers', 'exists', 'sRem', 'del', 'keys', 'save',
+  'lPush', 'lTrim', 'lRange', 'lIndex', 'lSet', 'expire'
 ]
 
 export class RedisService {
-  constructor(redisClient, _minLevel) {
+  /**
+   * @param {object} redisClient
+   * @param {number} [_minLevel=200]
+   * @param {{ requireAuth?: boolean }} [options] requireAuth (default true): allow Boho-authenticated remotes only.
+   */
+  constructor(redisClient, _minLevel, options = {}) {
     if (!redisClient) {
       throw new Error("RedisService constructor: no redisClient")
     }
     this.redisClient = redisClient
     this.minLevel = _minLevel ? _minLevel : MIN_LEVEL
+    this.requireAuth = options.requireAuth !== false
     this.commands = COMMANDS
   }
 
   checkPermission(remote, req) {
+    if (this.requireAuth && remote.boho?.isAuthorized !== true) return false;
     return (remote.level >= this.minLevel) ? true : false;
   }
 

@@ -4,6 +4,7 @@ import { WebSocketServer } from 'ws'
 import { Manager } from './Manager.js'
 import { serverOption } from './serverOption.js'
 import { STATUS } from '../services/constant.js'
+import { validateDuplicateLogin } from '../auth/BohoAuth.js'
 
 export class Server extends EventEmitter {
 
@@ -21,6 +22,7 @@ export class Server extends EventEmitter {
     }
     this.security = Object.freeze(security);
     this.serviceNames = new Set()
+    this.services = new Map()   // name -> service module (for lifecycle hooks)
     this.wss = {};
     this.port = null;
     this.congPort = null;
@@ -48,6 +50,16 @@ export class Server extends EventEmitter {
     }
     if (options.membersOnly) {
       serverOption.membersOnly = options.membersOnly
+    }
+    // Applies to this server's auth manager only; without auth there are no duplicate logins.
+    if (options.duplicateLogin !== undefined) {
+      validateDuplicateLogin(options.duplicateLogin)
+      if (authManager) {
+        if (!('duplicateLogin' in authManager)) {
+          throw new TypeError('duplicateLogin: the auth manager does not support this option')
+        }
+        authManager.duplicateLogin = options.duplicateLogin
+      }
     }
 
 
@@ -128,6 +140,8 @@ export class Server extends EventEmitter {
 
   startCongServer() {
     this.congServer = net.createServer((socket) => {
+      // Signals are small frames; send each immediately instead of waiting on Nagle.
+      socket.setNoDelay(true)
       this.manager.addRemote(socket)
     })
       .on('error', (err) => {
@@ -196,6 +210,7 @@ export class Server extends EventEmitter {
       }
     });
     this.serviceNames.add(service)
+    this.services.set(service, service_module)
     // console.log(`[Service attached: ${service} ] accept commands: ${service_module.commands}`)
     return this
   }
@@ -211,6 +226,7 @@ export class Server extends EventEmitter {
 
     this.serviceNames.forEach(v => this.removeAllListeners(v))
     this.serviceNames.clear()
+    // this.services is kept so onRemoteClose cleanup still runs for sockets that close later.
 
     let serverCount = 0;
     if (this.wss) serverCount++;

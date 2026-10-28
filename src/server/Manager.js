@@ -121,8 +121,12 @@ export class Manager {
 
     let remoteInfo = `- IP:${remote.ip} #${remote.ssid} cid:${remote.cid} ${remote?.socket.socketType === 'websocket' ? "WS" : "CS"} `
     if (this.connectionLogger) this.connectionLogger.log(remoteInfo)
-    this.deligateSignal(remote, '@state', 'close')
-    this.deligateSignal(remote, '@$state', 'close')
+    // A replaced duplicate login no longer owns its CID; the new connection is still online.
+    const cidOwner = this.cid2remote.get(remote.cid)
+    if (!remote.cid || !cidOwner || cidOwner === remote) {
+      this.deligateSignal(remote, '@state', 'close')
+      this.deligateSignal(remote, '@$state', 'close')
+    }
 
     // remove subscriber 
     for (let ch of remote.channels.keys()) {
@@ -155,10 +159,14 @@ export class Manager {
     }
 
 
-    if (remote.uid && this.server.serviceNames.has('account')) {
-      let req = { topic: 'detachUserRemote' }
-      req.args = ['caller:manager.removeRemote']
-      this.server.emit('account', remote, req)
+    // Service lifecycle hook. Called directly: RPC permission/command checks do not apply to cleanup.
+    for (const service of new Set(this.server.services?.values() ?? [])) {
+      if (typeof service.onRemoteClose !== 'function') continue
+      try {
+        service.onRemoteClose(remote)
+      } catch (error) {
+        console.error('service onRemoteClose error:', error)
+      }
     }
 
     this.remotes.delete(remote)
@@ -463,6 +471,23 @@ export class Manager {
 
   }
 
+
+  anonymousCidRandom(size) {
+    return globalThis.crypto.getRandomValues(Buffer.alloc(size))
+  }
+
+  // '?' + base64url random bytes, never one that is online. Check and set run in the same
+  // synchronous turn (CID_REQ handler), so concurrent requests cannot take the same CID.
+  // 3 bytes (4 chars) normally; 6 bytes (8 chars) if the short space keeps colliding.
+  issueAnonymousCid() {
+    for (const [size, tries] of [[3, 8], [6, 8]]) {
+      for (let i = 0; i < tries; i++) {
+        const cid = '?' + Buffer.from(this.anonymousCidRandom(size)).toString('base64url')
+        if (!this.cid2remote.has(cid)) return cid
+      }
+    }
+    return null
+  }
 
   closeRemoteByCId(cid) {
     if (this.cid2remote.has(cid)) {

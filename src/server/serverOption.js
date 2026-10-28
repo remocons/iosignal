@@ -55,7 +55,11 @@ export let serverOption = {
   },
 
   auth: {
-    delay_auth_fail: 600
+    delay_auth_fail: 600,
+    // Same authenticated CID already online:
+    // 'keepNew' (default) replaces the old connection, 'keepOld' rejects the new login.
+    // Override per Server with options.duplicateLogin, or per BohoAuth with its duplicateLogin option.
+    duplicateLogin: 'keepNew'
   },
   membersOnly: false
 

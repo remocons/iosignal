@@ -334,7 +334,9 @@ declare class IOCore extends EventEmitter<string | symbol, any> {
     stop(): void;
     /**
      * Permanently destroys the instance, cleaning up all resources.
-     * The instance will not be usable after this.
+     * The instance will not be usable after this. Later signal()/publish()/subscribe()
+     * calls are silently dropped, the same as sends while disconnected, and call()
+     * rejects with code 'CONNECTION_CLOSED'.
      */
     destroy(): void;
     /**
@@ -417,6 +419,7 @@ declare class IOCore extends EventEmitter<string | symbol, any> {
     getEncryptionMode(): boolean;
     /**
      * Sends data with encryption based on the encryption mode.
+     * Like an unconnected socket, a destroyed instance silently drops the data.
      * @param {Buffer} data - The data buffer to send.
      * @param {boolean} [useEncryption] - Optional. Force encryption or not. If undefined, uses default policy.
      */
@@ -785,6 +788,8 @@ declare class Manager {
     subscribe(chArr: any, remote: any): any;
     unsubscribe(chArr: any, remote: any): void;
     monitor(): void;
+    anonymousCidRandom(size: any): Buffer<ArrayBuffer>;
+    issueAnonymousCid(): string | null;
     closeRemoteByCId(cid: any): 0 | 1;
     close(): void;
 }
@@ -797,6 +802,7 @@ declare class Server extends EventEmitter$1<[never]> {
     constructor(options: object, authManager?: any);
     security: any;
     serviceNames: Set<any>;
+    services: Map<any, any>;
     wss: {};
     port: number | null;
     congPort: number | null;
@@ -876,6 +882,7 @@ declare namespace serverOption {
     }
     export namespace auth_1 {
         let delay_auth_fail: number;
+        let duplicateLogin: string;
     }
     export { auth_1 as auth };
     export let membersOnly: boolean;
@@ -888,10 +895,30 @@ declare function getLocalAddress(): string;
 declare function delay(ms: any): Promise<any>;
 
 declare class BohoAuth {
-    constructor(keyProvider: any);
-    keyProvider: any;
-    keepOldConnection: boolean;
+    /**
+     * @param {object} keyProvider
+     * @param {{ duplicateLogin?: 'keepOld' | 'keepNew', onAuthEvent?: (event: object) => any }} [options]
+     *   duplicateLogin: unset follows serverOption.auth.duplicateLogin (default 'keepNew').
+     *   onAuthEvent: called with { type, did, cid, uid, ip, oldIp, socketType, oldSocketType, reason, at }
+     *   for 'replaced' (keepNew evicted the old connection) and 'duplicate_rejected' (keepOld).
+     *   socketType/oldSocketType are 'websocket' or 'congsocket'.
+     *   Errors and rejected promises are logged and never affect authentication.
+     */
+    constructor(keyProvider: object, options?: {
+        duplicateLogin?: "keepOld" | "keepNew";
+        onAuthEvent?: (event: object) => any;
+    });
+    keyProvider: object;
+    _duplicateLogin: any;
+    /** @param {'keepOld' | 'keepNew' | null} policy  null returns to the serverOption default. */
+    set duplicateLogin(policy: "keepOld" | "keepNew" | null);
+    /** Effective duplicate login policy: this instance's setting, else serverOption.auth.duplicateLogin. */
+    get duplicateLogin(): "keepOld" | "keepNew" | null;
+    onAuthEvent: ((event: object) => any) | null;
     authLogger: FileLogger | undefined;
+    set keepOldConnection(keepOld: boolean);
+    get keepOldConnection(): boolean;
+    emitAuthEvent(event: any): void;
     send_auth_fail(peer: any, reason: any): void;
     verify_auth_req(auth_req: any, peer: any): Promise<any>;
     getAuth(id: any): Promise<any>;
@@ -974,9 +1001,17 @@ declare namespace sudoService {
 }
 
 declare class RedisService {
-    constructor(redisClient: any, _minLevel: any);
-    redisClient: any;
-    minLevel: any;
+    /**
+     * @param {object} redisClient
+     * @param {number} [_minLevel=200]
+     * @param {{ requireAuth?: boolean }} [options] requireAuth (default true): allow Boho-authenticated remotes only.
+     */
+    constructor(redisClient: object, _minLevel?: number, options?: {
+        requireAuth?: boolean;
+    });
+    redisClient: object;
+    minLevel: number;
+    requireAuth: boolean;
     commands: string[];
     checkPermission(remote: any, req: any): boolean;
     call(remote: any, req: any): Promise<void>;

@@ -10,8 +10,9 @@ export const commands = [
 ]
 
 const MIN_LEVEL = 255;
+// Only a Boho-authenticated device may use sudo; a raised level alone is not authentication.
 export function checkPermission(remote) {
-  return (remote.level >= MIN_LEVEL) ? true : false;
+  return remote.boho?.isAuthorized === true && remote.level >= MIN_LEVEL;
 }
 
 export async function call(remote, req) {
