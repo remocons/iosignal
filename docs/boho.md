@@ -142,7 +142,7 @@ application concern, separate from the connection envelope.
 
 ## Local test logins (localAuth)
 
-Not in 8.0.0. `localAuth` creates a `BohoAuth` with a `LocalKeyProvider`, so
+Added in 8.1.0. `localAuth` creates a `BohoAuth` with a `LocalKeyProvider`, so
 devices can log in without registering keys. Every non-empty ID logs in and
 becomes the CID.
 

@@ -193,7 +193,7 @@ with TLS, session validation and implementation conditions.
 
 For local tests, the `localAuth` server option turns on authentication without
 a key list. The login ID becomes the CID. Anyone who knows the rule can log in
-under any ID, so use it only on a trusted local network. Not in 8.0.0.
+under any ID, so use it only on a trusted local network. Added in 8.1.0.
 
 ```js
 new Server({ port: 7777, localAuth: 'idKey' })                                // io.auth('dev1', 'dev1')

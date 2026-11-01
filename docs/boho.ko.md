@@ -131,7 +131,7 @@ JS 클라이언트 시계는 허용 범위 안에 있어야 합니다. Boho Ardu
 
 ## 로컬 테스트 로그인 (localAuth)
 
-8.0.0에는 포함되지 않았습니다. `localAuth`는 `LocalKeyProvider`로 `BohoAuth`를
+8.1.0부터 지원합니다. `localAuth`는 `LocalKeyProvider`로 `BohoAuth`를
 만들어, 키를 등록하지 않고도 장치가 로그인하게 합니다. 비어 있지 않은 모든 ID가
 로그인하며 그 ID가 CID가 됩니다.
 
