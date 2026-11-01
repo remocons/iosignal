@@ -797,13 +797,16 @@ declare class Manager {
 declare class Server extends EventEmitter$1<[never]> {
     /**
      * @param {object} options Server configuration.
+     *   options.localAuth: login without a key list, for local testing. 'idKey' (key = ID) or
+     *   { mode: 'idKey' | 'sharedKey', key, level } (see LocalKeyProvider); the CID is the ID.
+     *   Cannot be combined with authManager.
      * @param {any} [authManager] Optional authentication manager.
      */
     constructor(options: object, authManager?: any);
     security: any;
     serviceNames: Set<any>;
     services: Map<any, any>;
-    wss: {};
+    wss: any;
     port: number | null;
     congPort: number | null;
     httpServer: any;
@@ -957,6 +960,26 @@ declare class StringKeyProvider {
     addAuth(id: any, keyStr: any, cid: any, level?: number): void;
 }
 
+declare class LocalKeyProvider {
+    /**
+     * @param {'idKey' | { mode: 'idKey' | 'sharedKey', key?: string, level?: number }} options
+     *   A string is the mode alone.
+     */
+    constructor(options: "idKey" | {
+        mode: "idKey" | "sharedKey";
+        key?: string;
+        level?: number;
+    });
+    mode: "idKey" | "sharedKey";
+    level: number | undefined;
+    sharedKeyHash: string | null;
+    getAuth(id: any): Promise<{
+        key: string;
+        cid: any;
+        level: number;
+    } | undefined>;
+}
+
 declare function checkPermission$1(remote: any): boolean;
 /**
  * client api call example:  await io.call('reply','echo','hello')
@@ -1026,4 +1049,4 @@ declare function getPayloadFromSignalPack(signalPack: any): any;
 
 declare const version: string;
 
-export { BohoAuth, CongRx, ENC_MODE, FileKeyProvider, FileLogger, IOWS as IO, IOCongSocket, IOMsg, PAYLOAD_TYPE, RedisKeyProvider, RedisService, SIZE_LIMIT, STATE, STATUS, Server, StringKeyProvider, delay, getIPv4HexString, getLocalAddress, getPayloadFromSignalPack, getSignalPack, isPrivateIP, numberWithCommas, pack, parsePayload, replyService, serverOption, sudoService, version };
+export { BohoAuth, CongRx, ENC_MODE, FileKeyProvider, FileLogger, IOWS as IO, IOCongSocket, IOMsg, LocalKeyProvider, PAYLOAD_TYPE, RedisKeyProvider, RedisService, SIZE_LIMIT, STATE, STATUS, Server, StringKeyProvider, delay, getIPv4HexString, getLocalAddress, getPayloadFromSignalPack, getSignalPack, isPrivateIP, numberWithCommas, pack, parsePayload, replyService, serverOption, sudoService, version };

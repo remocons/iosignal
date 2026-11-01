@@ -4,16 +4,24 @@ import { WebSocketServer } from 'ws'
 import { Manager } from './Manager.js'
 import { serverOption } from './serverOption.js'
 import { STATUS } from '../services/constant.js'
-import { validateDuplicateLogin } from '../auth/BohoAuth.js'
+import { BohoAuth, validateDuplicateLogin } from '../auth/BohoAuth.js'
+import { LocalKeyProvider } from '../auth/key_providers/LocalKeyProvider.js'
 
 export class Server extends EventEmitter {
 
   /**
    * @param {object} options Server configuration.
+   *   options.localAuth: login without a key list, for local testing. 'idKey' (key = ID) or
+   *   { mode: 'idKey' | 'sharedKey', key, level } (see LocalKeyProvider); the CID is the ID.
+   *   Cannot be combined with authManager.
    * @param {any} [authManager] Optional authentication manager.
    */
   constructor(options, authManager) {
     super();
+    if (options.localAuth !== undefined && options.localAuth !== null) {
+      if (authManager) throw new TypeError('localAuth cannot be combined with an authManager')
+      authManager = new BohoAuth(new LocalKeyProvider(options.localAuth))
+    }
     const security = { ...serverOption.security, ...options.security };
     for (const name of ['maxClockSkewMs', 'authChallengeMaxAgeMs', 'maxReplayEntries']) {
       if (!Number.isSafeInteger(security[name]) || security[name] <= 0) {
@@ -23,7 +31,8 @@ export class Server extends EventEmitter {
     this.security = Object.freeze(security);
     this.serviceNames = new Set()
     this.services = new Map()   // name -> service module (for lifecycle hooks)
-    this.wss = {};
+    // Stays null for a CongSocket-only server, so close() does not wait on a WebSocket server.
+    this.wss = null;
     this.port = null;
     this.congPort = null;
 

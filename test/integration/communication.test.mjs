@@ -1059,6 +1059,21 @@ for (const [format, api] of variants) {
     assert.ok(calls.some(([socket, noDelay]) => socket === io.socket && noDelay === true), 'client socket');
     assert.ok(calls.some(([socket, noDelay]) => socket === remoteSocket && noDelay === true), 'server socket');
   });
+
+  test(`${format}: CongSocket-only server serves TCP and closes with its callback`, { timeout: 10000 }, async t => {
+    const server = new api.Server({ congPort: 0 });
+    let closed = false;
+    t.after(() => { if (!closed) server.congServer?.close(); });
+    await event(server, 'ready', t.signal);
+    assert.equal(server.wss, null);
+    const io = new api.IOCongSocket();
+    const ready = event(io, 'ready', t.signal);
+    io.open(`cong://127.0.0.1:${server.congPort}`);
+    await ready;
+    io.stop();
+    await new Promise(resolve => server.close(resolve));
+    closed = true;
+  });
 }
 
 for (const [format, api] of variants) {
@@ -1132,5 +1147,58 @@ for (const [format, api] of variants) {
     assert.equal(manager.issueAnonymousCid(), null);
     manager.cid2remote.delete('?AAAA');
     manager.cid2remote.delete('?AAAAAAAA');
+  });
+}
+
+for (const [format, api] of variants) {
+  for (const tcp of [false, true]) {
+    test(`${format}: ${tcp ? 'TCP' : 'WS'} localAuth idKey logs in when the key equals the ID`, { timeout: 10000 }, async t => {
+      const { server, connect } = await fixture(t, api, false, tcp, {}, { localAuth: 'idKey' });
+      const io = await connect(['dev1', 'dev1']);
+      assert.equal(io.cid, 'dev1');
+      assert.equal(io.boho.isAuthorized, true);
+      const remote = server.manager.cid2remote.get('dev1');
+      assert.deepEqual([remote.did, remote.level], ['dev1', api.serverOption.defaultQuotaIndex]);
+      // Anonymous clients are still served unless membersOnly is set.
+      assert.match((await connect()).cid, /^\?/);
+    });
+
+    test(`${format}: ${tcp ? 'TCP' : 'WS'} localAuth sharedKey logs in any ID with the shared key`, { timeout: 10000 }, async t => {
+      // 44 characters: the length of a stored base64 hash, which must still be read as a plain key.
+      const key = 'k'.repeat(44);
+      const { server, connect } = await fixture(t, api, false, tcp, {}, { localAuth: { mode: 'sharedKey', key, level: 2 } });
+      const [a, b] = [await connect(['devA', key]), await connect(['devB', key])];
+      assert.deepEqual([a.cid, b.cid], ['devA', 'devB']);
+      assert.equal(a.boho.isAuthorized && b.boho.isAuthorized, true);
+      assert.equal(server.manager.cid2remote.get('devA').level, 2);
+      // Authenticated CIDs work as unicast addresses.
+      const got = event(b, '@', t.signal);
+      a.signal('devB@hello', 'hi');
+      assert.deepEqual(await got, ['@hello', 'hi']);
+    });
+  }
+
+  for (const [localAuth, credentials] of [['idKey', ['dev1', 'not-dev1']], [{ mode: 'sharedKey', key: 'lab' }, ['dev1', 'dev1']]]) {
+    test(`${format}: localAuth ${localAuth.mode ?? localAuth} rejects a wrong key`, { timeout: 10000 }, async t => {
+      const { client, url } = await fixture(t, api, false, false, {}, { localAuth });
+      const io = client(credentials);
+      let ready = false;
+      io.on('ready', () => { ready = true; });
+      const rejected = event(io, 'auth_fail', t.signal);
+      io.open(url);
+      await rejected;
+      assert.equal(ready, false);
+    });
+  }
+
+  test(`${format}: localAuth options are validated`, () => {
+    const auth = new api.BohoAuth(new api.LocalKeyProvider('idKey'));
+    assert.throws(() => new api.Server({ port: 0, localAuth: 'idKey' }, auth), { name: 'TypeError', message: /authManager/ });
+    for (const localAuth of ['shared', { mode: 'sharedKey' }, { mode: 'sharedKey', key: '' }]) {
+      assert.throws(() => new api.Server({ port: 0, localAuth }), TypeError);
+    }
+    for (const level of [5, 256, -1, 1.5, '3']) {
+      assert.throws(() => new api.LocalKeyProvider({ mode: 'idKey', level }), RangeError);
+    }
   });
 }
