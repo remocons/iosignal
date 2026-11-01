@@ -19,6 +19,7 @@ export { BohoAuth } from './src/auth/BohoAuth.js'
 export { FileKeyProvider } from './src/auth/key_providers/FileKeyProvider.js'
 export { RedisKeyProvider } from './src/auth/key_providers/RedisKeyProvider.js'
 export { StringKeyProvider } from './src/auth/key_providers/StringKeyProvider.js'
+export { LocalKeyProvider } from './src/auth/key_providers/LocalKeyProvider.js'
 
 // services
 export * as replyService from './src/services/replyService.js'

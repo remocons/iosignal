@@ -140,6 +140,37 @@ adds gradual clock correction from authenticated server envelopes; plain
 PING/PONG provides no time sample. Inner E2E payload freshness remains an
 application concern, separate from the connection envelope.
 
+## Local test logins (localAuth)
+
+Not in 8.0.0. `localAuth` creates a `BohoAuth` with a `LocalKeyProvider`, so
+devices can log in without registering keys. Every non-empty ID logs in and
+becomes the CID.
+
+| Option | Login | Example |
+| --- | --- | --- |
+| `'idKey'` or `{ mode: 'idKey' }` | The key equals the ID | `io.auth('dev1', 'dev1')` |
+| `{ mode: 'sharedKey', key }` | Any ID with the shared key | `io.auth('dev1', 'lab2026')` |
+
+```js
+const server = new Server({
+  port: 7777,
+  congPort: 8888,
+  localAuth: { mode: 'sharedKey', key: 'lab2026', level: 3 },
+  membersOnly: true
+});
+```
+
+- `level` is the quota level of every login and must be a `quotaTable` index;
+  the default is `serverOption.defaultQuotaIndex`.
+- Anonymous connections are still served; `membersOnly: true` drops their signals.
+- `duplicateLogin` and `onAuthEvent` work as with any `BohoAuth`. Passing an
+  `authManager` together with `localAuth` throws a `TypeError`.
+- To build it yourself: `new BohoAuth(new LocalKeyProvider('idKey'))`.
+- Anyone who knows the rule can log in under any ID and take over that CID
+  (`keepNew` replaces the online connection). With a shared key every device
+  holds the same key, so connection encryption does not separate the devices
+  from each other. Use it only for local tests on a trusted network.
+
 ## Conditions in the current implementation
 
 - Use sufficiently random keys. A single SHA-256 in `set_key` is not a slow password KDF.

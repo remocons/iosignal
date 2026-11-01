@@ -2,6 +2,7 @@
   "sync": [
     "src/auth/BohoAuth.js",
     "src/auth/key_providers/FileKeyProvider.js",
+    "src/auth/key_providers/LocalKeyProvider.js",
     "src/auth/key_providers/RedisKeyProvider.js",
     "src/auth/key_providers/StringKeyProvider.js",
     "src/client/CongPacket.js",

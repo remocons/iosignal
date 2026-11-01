@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { inspect, safeFile, allowed, policy, audit, root } from '../scripts/public-policy.mjs';
+import { inspect, safeFile, safeTarget, allowed, policy, audit, root } from '../scripts/public-policy.mjs';
 
 test('private references and credentials fail closed', () => {
   for (const text of ["import '../services_private/service.js'", 'src/redis_clients/client.js', '-----BEGIN PRIVATE KEY-----']) {
@@ -26,6 +26,16 @@ test('symlink and traversal cannot bypass file boundaries', () => {
     assert.throws(() => safeFile(dir, 'link'), /Symlink/);
     assert.throws(() => safeFile(dir, '../file'), /Unsafe/);
     assert.throws(() => safeFile(dir, '/file'), /Unsafe/);
+    // A not yet promoted file: absent paths are fine, symlinked or traversing parents are not.
+    fs.mkdirSync(path.join(dir, 'real'));
+    fs.symlinkSync(path.join(dir, 'real'), path.join(dir, 'dirlink'));
+    fs.symlinkSync(path.join(dir, 'missing'), path.join(dir, 'dangling'));
+    assert.equal(safeTarget(dir, 'new/dir/file.js'), path.join(dir, 'new/dir/file.js'));
+    assert.equal(safeTarget(dir, 'file'), path.join(dir, 'file'));
+    assert.throws(() => safeTarget(dir, 'dirlink/file.js'), /Symlink/);
+    assert.throws(() => safeTarget(dir, 'dangling'), /Symlink/);
+    assert.throws(() => safeTarget(dir, '../file'), /Unsafe/);
+    assert.throws(() => safeTarget(dir, 'real'), /Not a regular file/);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 

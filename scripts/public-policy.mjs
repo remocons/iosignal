@@ -32,6 +32,19 @@ export function safeFile(base, name) {
   if (!fs.statSync(current).isFile()) throw Error(`Not a regular file: ${name}`);
   return current;
 }
+/** Like safeFile for a destination that may not exist yet: no traversal, no symlinked parent, never a non-file. */
+export function safeTarget(base, name) {
+  if (!name || path.isAbsolute(name) || name.split('/').some(p => !p || p === '..' || p === '.')) throw Error(`Unsafe path: ${name}`);
+  let current = base;
+  for (const part of name.split('/')) {
+    current = path.join(current, part);
+    if (!fs.existsSync(current) && !isSymlink(current)) return path.join(base, name);
+    if (isSymlink(current)) throw Error(`Symlink rejected: ${name}`);
+  }
+  if (!fs.statSync(current).isFile()) throw Error(`Not a regular file: ${name}`);
+  return current;
+}
+const isSymlink = p => { try { return fs.lstatSync(p).isSymbolicLink(); } catch { return false; } };
 export function inspect(name, data) {
   if (/(?:[\w.-]*_private|_private[\w.-]*|redis_clients|google-auth-library|serialport)/i.test(data)) throw Error(`Private reference detected: ${name}`);
   if (/-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|\b(?:ghp_|github_pat_|AKIA)[A-Za-z0-9_]{16,}/.test(data)) throw Error(`Possible credential detected: ${name}`);
@@ -46,7 +59,8 @@ export function walk(base, prefix = '') {
     return e.isDirectory() ? walk(base, name) : [name];
   });
 }
-export function audit(base = root, artifacts = false) {
+// added: sync paths newly allowed but not yet promoted, so absent from base.
+export function audit(base = root, artifacts = false, added = []) {
   if (fs.existsSync(path.join(base, '.git'))) {
     for (const name of run('git', ['ls-files', '-z'], base, true).split('\0').filter(Boolean)) {
       // Deleted files are absent from the current release tree; required files are checked below.
@@ -58,7 +72,9 @@ export function audit(base = root, artifacts = false) {
     safeFile(base, name);
     if (['index.js', 'package-lock.json', 'README.md', 'README.ko.md', 'AGENTS.md'].includes(name) || (/^(src|test|dist)\//.test(name) || /^docs\/.*\.md$/.test(name))) inspect(name, fs.readFileSync(path.join(base, name), 'utf8'));
   }
-  for (const name of [...controls, ...policy.sync, ...(artifacts ? policy.dist : [])]) safeFile(base, name);
+  for (const name of [...controls, ...policy.sync, ...(artifacts ? policy.dist : [])]) {
+    if (added.includes(name)) safeTarget(base, name); else safeFile(base, name);
+  }
   const pkg = JSON.parse(fs.readFileSync(path.join(base, 'package.json')));
   if (pkg.private || pkg.license !== 'MIT' || pkg.exports['.'].import.default !== './dist/node/iosignal.js') throw Error('Invalid public package metadata');
   if (JSON.stringify(pkg.files) !== JSON.stringify(policy.dist)) throw Error('npm files must match the exact artifact allowlist');

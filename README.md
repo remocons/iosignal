@@ -181,6 +181,7 @@ for more options.
 | `server.close(callback)` | Shut down the server |
 | `BohoAuth` | Server authentication manager |
 | `StringKeyProvider`, `FileKeyProvider`, `RedisKeyProvider` | Authentication key providers |
+| `LocalKeyProvider` | Key-list-free logins for local tests (`localAuth` server option) |
 
 ## Authentication and encryption
 
@@ -189,6 +190,18 @@ message encryption for JavaScript and Arduino. End-to-end encryption (E2E) uses
 a separate data key shared only by the final endpoints. See the
 [Boho technical guide](https://github.com/remocons/iosignal/blob/main/docs/boho.md) for key management, the relationship
 with TLS, session validation and implementation conditions.
+
+For local tests, the `localAuth` server option turns on authentication without
+a key list. The login ID becomes the CID. Anyone who knows the rule can log in
+under any ID, so use it only on a trusted local network. Not in 8.0.0.
+
+```js
+new Server({ port: 7777, localAuth: 'idKey' })                                // io.auth('dev1', 'dev1')
+new Server({ port: 7777, localAuth: { mode: 'sharedKey', key: 'lab2026' } })  // io.auth('dev1', 'lab2026')
+```
+
+Add `membersOnly: true` to drop signals from anonymous connections. See
+[Local test logins](https://github.com/remocons/iosignal/blob/main/docs/boho.md#local-test-logins-localauth).
 
 ## Detailed guides
 

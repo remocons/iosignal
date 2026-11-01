@@ -129,6 +129,37 @@ JS 클라이언트 시계는 허용 범위 안에 있어야 합니다. Boho Ardu
 서버 암호 헤더로 시계를 점진 보정하며 평문 PING/PONG은 시간 보정에 사용하지 않습니다.
 내부 E2E 본문의 재사용 방지는 연결 암호 헤더 검증과 별도로 응용 계층에서 처리합니다.
 
+## 로컬 테스트 로그인 (localAuth)
+
+8.0.0에는 포함되지 않았습니다. `localAuth`는 `LocalKeyProvider`로 `BohoAuth`를
+만들어, 키를 등록하지 않고도 장치가 로그인하게 합니다. 비어 있지 않은 모든 ID가
+로그인하며 그 ID가 CID가 됩니다.
+
+| 옵션 | 로그인 조건 | 예 |
+| --- | --- | --- |
+| `'idKey'` 또는 `{ mode: 'idKey' }` | 키가 ID와 같음 | `io.auth('dev1', 'dev1')` |
+| `{ mode: 'sharedKey', key }` | 아무 ID + 공통 키 | `io.auth('dev1', 'lab2026')` |
+
+```js
+const server = new Server({
+  port: 7777,
+  congPort: 8888,
+  localAuth: { mode: 'sharedKey', key: 'lab2026', level: 3 },
+  membersOnly: true
+});
+```
+
+- `level`은 모든 로그인의 할당량 레벨이며 `quotaTable`에 있는 값이어야 합니다.
+  기본값은 `serverOption.defaultQuotaIndex`입니다.
+- 익명 연결도 계속 받습니다. `membersOnly: true`를 주면 익명 연결의 시그널을 막습니다.
+- `duplicateLogin`, `onAuthEvent`는 일반 `BohoAuth`와 같이 동작합니다. `localAuth`와
+  `authManager` 인자를 함께 주면 `TypeError`가 발생합니다.
+- 직접 구성하려면 `new BohoAuth(new LocalKeyProvider('idKey'))`를 사용합니다.
+- 규칙을 아는 누구나 임의 ID로 로그인해 그 CID를 가져갈 수 있습니다(`keepNew`는
+  접속 중인 연결을 교체). 공통 키를 쓰면 모든 장치가 같은 키를 가지므로
+  연결 암호화가 장치 사이를 서로 구분해 보호하지 않습니다.
+  신뢰하는 네트워크의 로컬 테스트에만 사용하세요.
+
 ## 현재 구현의 적용 조건
 
 - 충분히 무작위인 키를 사용하세요. `set_key`의 SHA-256 한 번은 비밀번호용 느린 KDF가 아닙니다.

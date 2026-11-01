@@ -176,6 +176,7 @@ io-client -c ws://localhost:8080
 | `server.close(callback)` | 서버 종료 |
 | `BohoAuth` | 서버 인증 관리자 |
 | `StringKeyProvider`, `FileKeyProvider`, `RedisKeyProvider` | 인증 키 공급자 |
+| `LocalKeyProvider` | 로컬 테스트용 키 목록 없는 로그인 (`localAuth` 서버 옵션) |
 
 ## 인증과 암호화
 
@@ -183,6 +184,18 @@ io-client -c ws://localhost:8080
 메시지 암호화를 제공합니다. 종단간 암호화(E2E)는 최종 송수신자만 공유하는 별도
 데이터 키로 설정합니다. 키 관리, TLS와의 관계, 세션 검증 및 구현의 적용 조건은
 [Boho 기술 가이드](https://github.com/remocons/iosignal/blob/main/docs/boho.ko.md)를 참고하세요.
+
+로컬 테스트에서는 `localAuth` 서버 옵션으로 키 목록 없이 인증을 켤 수 있습니다.
+로그인 ID가 CID가 됩니다. 규칙을 아는 누구나 임의 ID로 로그인할 수 있으므로
+신뢰하는 로컬 네트워크에서만 사용하세요. 8.0.0에는 포함되지 않았습니다.
+
+```js
+new Server({ port: 7777, localAuth: 'idKey' })                                // io.auth('dev1', 'dev1')
+new Server({ port: 7777, localAuth: { mode: 'sharedKey', key: 'lab2026' } })  // io.auth('dev1', 'lab2026')
+```
+
+익명 연결의 시그널을 막으려면 `membersOnly: true`를 함께 지정합니다.
+[로컬 테스트 로그인](https://github.com/remocons/iosignal/blob/main/docs/boho.ko.md#로컬-테스트-로그인-localauth)을 참고하세요.
 
 ## 상세 문서
 
