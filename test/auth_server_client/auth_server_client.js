@@ -1,12 +1,12 @@
 import { Server , IO, BohoAuth, StringKeyProvider} from 'iosignal'
 
-// serverOption.showMetric = 2;
+// serverOption.logStats = 5000;
 
-const authManager = new BohoAuth( new StringKeyProvider('io.key.io.3,io2.password.io2.3')) 
+const authManager = new BohoAuth( new StringKeyProvider('io.key.io,io2.password.io2')) 
 const s = new Server({
     port: 0,
-    // showMetric: 2,
-    showMessage: 'message'
+    // logStats: 5000,
+    logMessages: true
 }, authManager);
 // s.attach('sudo', sudoService );
 

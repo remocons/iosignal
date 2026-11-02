@@ -3,7 +3,7 @@ import { Server , IO, MBP } from 'iosignal'
 const tag = 'aaaaaaaa'
 const s = new Server({
     port:0,
-    showMessage: 'message'
+    logMessages: true
 });
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 

@@ -97,7 +97,7 @@ for (let c in PAYLOAD_TYPE) { PAYLOAD_TYPE[PAYLOAD_TYPE[c]] = c }
  * @property {number} SERVER_READY
  * @property {number} CID_REQ
  * @property {number} CID_RES
- * @property {number} QUOTA_LEVEL
+ * @property {number} QUOTA
  * @property {number} AUTH_CLEAR
  * @property {number} SERVER_REDIRECT
  * @property {number} LOOP
@@ -147,9 +147,10 @@ export let IOMsg = {
   SERVER_READY: 0xC0,
   CID_REQ: 0xC1,
   CID_RES: 0xC2,
-  QUOTA_LEVEL: 0xC3,
+  // 0xC3: QUOTA_LEVEL before 9.0. Not reused: older clients would read QUOTA as a quota level.
   AUTH_CLEAR: 0xC4,
   SERVER_REDIRECT: 0xC5,
+  QUOTA: 0xC6, // u32 LE maxMessageBytes of the connection (0: unlimited)
   // ..
   LOOP: 0xCB,
   ECHO: 0xCC,

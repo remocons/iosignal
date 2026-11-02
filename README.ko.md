@@ -177,6 +177,8 @@ io-client -c ws://localhost:8080
 | `BohoAuth` | 서버 인증 관리자 |
 | `StringKeyProvider`, `FileKeyProvider`, `RedisKeyProvider` | 인증 키 공급자 |
 | `LocalKeyProvider` | 로컬 테스트용 키 목록 없는 로그인 (`localAuth` 서버 옵션) |
+| `ROLES`, `hasRole(remote, role)` | 서비스 권한 검사용 연결 역할 |
+| `server.stats()` | 연결·채널·retain·트래픽 집계 |
 
 ## 인증과 암호화
 
@@ -196,6 +198,52 @@ new Server({ port: 7777, localAuth: { mode: 'sharedKey', key: 'lab2026' } })  //
 
 익명 연결의 시그널을 막으려면 `membersOnly: true`를 함께 지정합니다.
 [로컬 테스트 로그인](https://github.com/remocons/iosignal/blob/main/docs/boho.ko.md#로컬-테스트-로그인-localauth)을 참고하세요.
+
+## 역할과 쿼터
+
+연결의 **역할**은 무엇을 할 수 있는지, **쿼터 프로필**은 얼마나 보낼 수 있는지를 정합니다.
+둘은 서로 독립입니다.
+
+- 역할(낮은 것부터): `anonymous`(미로그인), `device`(로그인 기본값), `service`, `admin`.
+  키 항목 `id.key.cid[.role[.quota]]`로 지정합니다. 예: `'dev1.k1.dev1'`, `'cli.k2.cli.admin'`.
+  서비스는 `hasRole(remote, 'admin')`으로 검사합니다. `sudoService`는 `admin`이 필요하고,
+  `RedisService(client, minRole)`의 기본값은 `service`입니다.
+- 쿼터 프로필은 `quotas` 서버 옵션에 이름으로 정의한 제한 묶음입니다.
+  `maxMessageBytes`, `fanout`(발행 한 건이 전달되는 구독자 수), `msgPerSec`, `bytesPerSec`,
+  계정별 `maxConnections`를 지정하며 `null`은 무제한입니다. 서버가 항상 적용합니다.
+  미로그인 연결은 `anonymousQuota`를, 로그인은 키 항목의 quota 또는
+  `BohoAuth`의 `resolveQuota(authInfo, role)` 옵션 결과를 사용합니다.
+- 내장 프로필(`serverOption.quotas`의 `anonymous`, `basic`, `pro`, `unlimited`)은 운영자가
+  조정하기 위한 시작값이며 보장된 값이 아닙니다. 클라이언트는 `ready` 이후
+  `io.quota.maxMessageBytes`를 읽습니다.
+
+```js
+const server = new Server({
+  port: 7777,
+  quotas: { anonymous: { maxMessageBytes: 64 * 1024 }, basic: { fanout: 200 } },
+  anonymousQuota: 'anonymous'
+}, new BohoAuth(new StringKeyProvider('dev1.k1.dev1,cli.k2.cli.admin')));
+```
+
+## 8.x에서 업그레이드
+
+9.0은 쿼터 레벨 표를 없애고 설정을 호환 계층 없이 바꿨습니다.
+옛 설정 이름을 쓰면 대신 쓸 이름을 알려주는 오류가 발생합니다.
+
+- 키 항목은 레벨 대신 역할과 쿼터 이름을 씁니다. `id.key.cid.255`는 `id.key.cid.admin`,
+  `id.key.cid.3`은 `id.key.cid`가 됩니다. `addAuth(id, key, cid, role, quota)`와 파일 항목
+  `[id, key, cid, role, quota]`도 같은 순서입니다. 레벨은 더 이상 읽지 않습니다.
+- 삭제: `quotaTable`, `serverOption.useQuota`, `defaultQuotaIndex`, `adminLevel`,
+  `remote.level`, `io.level`, `QUOTA_LEVEL` 메시지, `RedisService`의 `minLevel`/`requireAuth` 인자.
+- 모든 설정은 서버별이며 `serverOption`은 서버가 바꾸지 않는 기본값만 담습니다.
+  이름 변경: `timeout` → `heartbeatInterval`, `pingTimeoutGrace` → `heartbeatGrace`,
+  `retain.isAvailable` → `retain.enabled`, `auth.delay_auth_fail` → `auth.failDelay`.
+  `showMessage`, `showMetric`, `monitorPeriod`는 삭제했으며 `logMessages`, `logStats`,
+  `server.stats()`를 사용합니다.
+- 새 서버 옵션: `maxPayload`, `maxBufferedBytes`, `trustProxy`, 서버별 `membersOnly`·
+  `duplicateLogin`, `retain`의 소유자별 저장 예산.
+- 쿼터는 새 `QUOTA` 메시지로 전달됩니다. 이전 클라이언트는 이를 무시하고 기존
+  로컬 크기 제한을 유지합니다.
 
 ## 상세 문서
 

@@ -12,12 +12,13 @@ var require$$0$1 = require('zlib');
 var require$$0$2 = require('buffer');
 var require$$2 = require('util');
 var node_perf_hooks = require('node:perf_hooks');
+var node_net = require('node:net');
 var os = require('os');
 var fs = require('fs');
 var process$1 = require('process');
 var path = require('path');
 
-var version$1 = "8.1.0";
+var version$1 = "9.0.0";
 var pkg = {
 	version: version$1};
 
@@ -482,7 +483,7 @@ for (let c in PAYLOAD_TYPE) { PAYLOAD_TYPE[PAYLOAD_TYPE[c]] = c; }
  * @property {number} SERVER_READY
  * @property {number} CID_REQ
  * @property {number} CID_RES
- * @property {number} QUOTA_LEVEL
+ * @property {number} QUOTA
  * @property {number} AUTH_CLEAR
  * @property {number} SERVER_REDIRECT
  * @property {number} LOOP
@@ -532,9 +533,10 @@ let IOMsg = {
   SERVER_READY: 0xC0,
   CID_REQ: 0xC1,
   CID_RES: 0xC2,
-  QUOTA_LEVEL: 0xC3,
+  // 0xC3: QUOTA_LEVEL before 9.0. Not reused: older clients would read QUOTA as a quota level.
   AUTH_CLEAR: 0xC4,
   SERVER_REDIRECT: 0xC5,
+  QUOTA: 0xC6, // u32 LE maxMessageBytes of the connection (0: unlimited)
   // ..
   LOOP: 0xCB,
   ECHO: 0xCC,
@@ -592,74 +594,6 @@ const STATUS$1 = {
   //0~127: success
   //128~255: fail
   ERROR: 255
-};
-
-// table index related with:
-// - AUTH database level
-// - serverOption.defaultQuotaIndex
-
-// quota example
-// index range: 0~255.
-let quotaTable = {
-  // CongSocket
-  0: { // default. anonymouse:
-    signalSize: 1500,
-    publishCounter: 10,
-    trafficRate: 10000
-  },
-  1: { // auth_ultralight:  eg. Arduino Uno.
-    signalSize: 255,
-    publishCounter: 10,
-    trafficRate: 100000
-  },
-  2: { // auth_light:  eg. authorized ESP.
-    signalSize: 65535,
-    publishCounter: 10,
-    trafficRate: 1048576
-  },
-
-  // WebSocket (browser and node app)
-  3: { // authorized basic.
-    signalSize: 1048576,
-    publishCounter: 10,
-    trafficRate: 1048576 * 20
-  },
-
-  // WebSocket (browser and node app)
-  10: { //  anonymouse
-    signalSize: 1500,
-    publishCounter: 5,
-    trafficRate: 1048576 * 20
-  },
-
-  11: { // authorized basic.
-    signalSize: 65535,
-    publishCounter: 10,
-    trafficRate: 1048576 * 20
-  },
-
-  12: { // authorized power.
-    signalSize: 1048576,
-    publishCounter: 100,
-    trafficRate: 1048576 * 20
-  },
-
-  // you can add your custom quota levels.
-
-  // Remote service node
-  // High Quota, No root permission.
-  200: {
-    signalSize: 1048576 * 20,
-    publishCounter: 10000,
-    trafficRate: 1048576 * 100
-  },
-  // super admin or root user.
-  // to monitor, metric, sudo command, db access.
-  255: {
-    signalSize: 1048576 * 20,
-    publishCounter: 10000,
-    trafficRate: 1048576 * 100
-  }
 };
 
 const encoder$2 = new TextEncoder();
@@ -766,7 +700,6 @@ const t=new Uint32Array([1116352408,1899447441,3049323471,3921009573,961987163,1
  * @typedef {import('../common/constants.js').SIZE_LIMIT} SIZE_LIMIT
  * @typedef {import('../common/constants.js').ENC_MODE} ENC_MODE
  * @typedef {import('../common/constants.js').STATE} STATE
- * @typedef {import('../common/quotaTable.js').quotaTable} quotaTable
  
  * @typedef {import('boho').Buffer} Buffer
  */
@@ -940,15 +873,11 @@ class IOCore extends EventEmitter {
     this.mid = 0;  // promise message id 
 
     /**
-     * Quota level.
-     * @type {number}
+     * This connection's quota as told by the server (QUOTA). maxMessageBytes: largest message
+     * send() passes on; null: no limit (also until the server tells).
+     * @type {{ maxMessageBytes: number | null }}
      */
-    this.level = 3; // also defaultQuotaLevel
-    /**
-     * Quota table for current level.
-     * @type {object}
-     */
-    this.quota = quotaTable[this.level];
+    this.quota = { maxMessageBytes: null };
     /**
      * Server settings.
      * @type {object}
@@ -1269,12 +1198,12 @@ class IOCore extends EventEmitter {
         this.subscribe_channels(); 
         break;
 
-      case IOMsg.QUOTA_LEVEL:
-        let quotaLevel = buffer[1];
-        this.level = quotaLevel;
-        this.quota = quotaTable[quotaLevel];
-        // console.log('[QUOTA_LEVEL]', JSON.stringify(this.quota))
+      case IOMsg.QUOTA: {
+        if (buffer.byteLength < 5) break;
+        const maxMessageBytes = (buffer[1] | buffer[2] << 8 | buffer[3] << 16) + buffer[4] * 0x1000000;
+        this.quota = { maxMessageBytes: maxMessageBytes || null };
         break;
+      }
 
       case IOMsg.AUTH_CLEAR:
         this.useAuth = false;
@@ -1536,10 +1465,10 @@ class IOCore extends EventEmitter {
    * @param {Buffer} data - The data buffer to send.
    */
   send(data) {
-    if (data.byteLength > this.quota.signalSize) {
+    const maxMessageBytes = this.quota.maxMessageBytes;
+    if (maxMessageBytes !== null && data.byteLength > maxMessageBytes) {
       this.emit('over_size');
-      console.log('## QUOTA LIMIT OVER!! \nsignal message.byteLength: ', data.byteLength);
-      console.log('## your maximum signalSize(bytes) is:', this.quota.signalSize);
+      console.log(`## quota: ${data.byteLength} bytes is over this connection's maxMessageBytes ${maxMessageBytes}`);
       return
     }
     // console.log(`C->[${IOMsg[ data[0]]}]`)
@@ -2082,14 +2011,19 @@ function pack(payload) {
 
 class CongRx extends require$$0.Transform {
   /**
-   * @param {import('stream').TransformOptions} [options] Stream options.
+   * @param {import('stream').TransformOptions & { maxFrameSize?: number }} [options] Stream options.
+   *   maxFrameSize: largest payload to buffer (default unlimited). A larger frame is
+   *   skipped without buffering and reported by an 'oversize' event (payloadSize).
    */
-  constructor(options) {
-    super(options);
+  constructor(options = {}) {
+    const { maxFrameSize = Infinity, ...streamOptions } = options;
+    super(streamOptions);
     this.buffer = Buffer.alloc(0);
     this.frames = [];
     this.rxi = 0;
     this.rxi_zero = 0;
+    this.maxFrameSize = maxFrameSize;
+    this.skipBytes = 0; // remaining payload bytes of an oversized frame to discard
   }
 
 
@@ -2114,6 +2048,15 @@ class CongRx extends require$$0.Transform {
       if (chunk[i++] == 0) {
         this.rxi_zero++;
       }
+    }
+
+    if (this.skipBytes > 0) {
+      if (chunk.byteLength <= this.skipBytes) {
+        this.skipBytes -= chunk.byteLength;
+        return;
+      }
+      chunk = chunk.subarray(this.skipBytes);
+      this.skipBytes = 0;
     }
 
     if (this.buffer.byteLength > 0) {
@@ -2151,6 +2094,20 @@ class CongRx extends require$$0.Transform {
         this.emit('wrong', this.buffer);
         this.buffer = Buffer.alloc(0);
         return;
+      }
+
+      // Decide as soon as the length is known: the header can advertise up to 4 GiB.
+      // Skipping keeps frame boundaries, so later frames still parse.
+      if (payloadSize > this.maxFrameSize) {
+        this.emit('oversize', payloadSize);
+        const available = this.buffer.byteLength - headerLen;
+        if (available < payloadSize) {
+          this.skipBytes = payloadSize - available;
+          this.buffer = Buffer.alloc(0);
+          return;
+        }
+        this.buffer = this.buffer.subarray(headerLen + payloadSize);
+        continue;
       }
 
       const frameSize = headerLen + payloadSize;
@@ -2209,7 +2166,9 @@ class IOCongSocket extends IOCore {
     if (urlObj.protocol != "cong:") {
       urlObj = new URL('cong://' + url);
     }
-    const socket = this.socket = net.createConnection(urlObj.port, urlObj.hostname);
+    // URL keeps the brackets of an IPv6 literal ('[::1]'); net expects the bare address.
+    const host = urlObj.hostname.replace(/^\[(.*)\]$/, '$1');
+    const socket = this.socket = net.createConnection(urlObj.port, host);
     // Signals are small frames; send each immediately instead of waiting on Nagle.
     socket.setNoDelay(true);
     this._closed = false;
@@ -7383,18 +7342,75 @@ class IOWS extends IOCore {
 
 }
 
-let serverOption = {
-  clientTracking: false,
-  port: null, // WebSocket
-  congPort: null, // CongSocket
-  httpServer: null,
-  wsPath: null,
-  timeout: 50000,
-  pingTimeoutGrace: 5000,
-  showMessage: 'none',
-  showMetric: 0,
-  showChannel: 0,
-  monitorPeriod: 5000,
+// Defaults, read when a Server is created; a Server never modifies them. Change one before
+// creating servers to change the default for all of them, or pass the setting to new Server().
+
+const serverOption = {
+
+  // --- Per Server: each of these can be given to new Server({ ... }) ---
+
+  heartbeatInterval: 50000, // ms between liveness checks
+  heartbeatGrace: 5000,     // extra ms a peer has to answer before it is closed
+  // Max bytes for a single WebSocket message and CongSocket frame. Bounds pre-auth memory use per
+  // connection (ws defaults to 100 MiB); see Remote.rxFrameLimit().
+  maxPayload: 32 * 1024 * 1024,
+  // When to use X-Forwarded-For / X-Forwarded-Proto of a WebSocket request:
+  // 'private' only if the connecting peer is a loopback/private address, e.g. a reverse proxy on
+  // the same host or network; true always; false never; a number N trusts N proxy hops. The entry
+  // appended by the last trusted proxy is used; earlier entries can be forged by the client.
+  trustProxy: 'private',
+  // A peer whose unsent data exceeds this many bytes (it stopped reading) is closed instead of
+  // letting its send queue grow without limit.
+  maxBufferedBytes: 64 * 1024 * 1024,
+  // Drop signals from connections that are not authenticated.
+  membersOnly: false,
+  // Observability. logMessages: log each received message (type and tag, never the payload).
+  // logStats: print a one-line summary every N ms (0 = off).
+  logMessages: false,
+  logStats: 0,
+
+  // Nested groups: a Server merges its own options over these.
+  // Packet layouts remain unchanged.
+  security: {
+    maxClockSkewMs: 60000,
+    authChallengeMaxAgeMs: 60000,
+    maxReplayEntries: 65536
+  },
+  // Named quota profiles. A connection uses one: an anonymous connection the Server's
+  // anonymousQuota, an authenticated one the profile its account resolves to (see BohoAuth
+  // resolveQuota). null is unlimited. A Server merges its quotas option over these per profile
+  // and may add profiles; a running server's profiles can be adjusted (server.quotas.basic.fanout = 50).
+  //   maxMessageBytes: largest message the connection may send (larger: OVER_SIZE, dropped)
+  //   fanout:          most subscribers one channel publish is delivered to
+  //   msgPerSec, bytesPerSec: sustained receive rate (token bucket, 1 s burst); over: dropped
+  //   maxConnections:  connections of one account (uid) at a time; over: the login fails
+  quotas: {
+    anonymous: { maxMessageBytes: 256 * 1024, fanout: 1000, msgPerSec: 100, bytesPerSec: 2 * 1024 * 1024, maxConnections: null },
+    basic: { maxMessageBytes: 1024 * 1024, fanout: 1000, msgPerSec: 200, bytesPerSec: 4 * 1024 * 1024, maxConnections: 20 },
+    pro: { maxMessageBytes: 4 * 1024 * 1024, fanout: 10000, msgPerSec: 1000, bytesPerSec: 16 * 1024 * 1024, maxConnections: 200 },
+    unlimited: { maxMessageBytes: null, fanout: null, msgPerSec: null, bytesPerSec: null, maxConnections: null }
+  },
+  anonymousQuota: 'anonymous', // profile of a connection that has not authenticated
+
+  retain: {
+    enabled: true,
+    limitSize: 100000,      // a retained message must be smaller than this many bytes
+    limitCounter: 1000,     // channel retain tags per server, and CID retain tags per connection
+    // A channel retain belongs to its last writer: an authenticated account (CID, shared by its
+    // connections) or a live anonymous connection. Each owner holds at most tagsPerOwner tags and
+    // bytesPerOwner bytes. An account's values stay until restart; a closed anonymous connection's
+    // move to its network's grace pool (same budget) and are removed after anonymousGraceMs.
+    tagsPerOwner: 32,
+    bytesPerOwner: 1024 * 1024,
+    anonymousGraceMs: 60 * 60 * 1000,
+    // CID retains of one connection (removed with it), and all retained messages of the server.
+    // A value over budget is not stored, and removes the value it would have replaced.
+    bytesPerConnection: 1024 * 1024,
+    bytesTotal: 256 * 1024 * 1024
+  },
+
+  // --- Process-wide: read directly where used, not per Server ---
+
   fileLogger: {
     connection: {
       use: false,
@@ -7409,49 +7425,49 @@ let serverOption = {
       path: 'attack.log'
     }
   },
-  useQuota: {
-    signalSize: false,
-    publishCounter: false,
-    trafficRate: false,
-    disconnect: false
-  },
-  defaultQuotaIndex: 3,
-  adminLevel: 255,
-
-  debug: {
-    slow: false,
-    delay: 500,
-    showAuthInfo: false
-  },
-
-  retain: {
-    isAvailable: true,
-    limitSize: 100000,
-    limitCounter: 1000
-  },
-
-  // Applied to each new Server instance; packet layouts remain unchanged.
-  security: {
-    maxClockSkewMs: 60000,
-    authChallengeMaxAgeMs: 60000,
-    maxReplayEntries: 65536
-  },
 
   auth: {
-    delay_auth_fail: 600,
-    // Same authenticated CID already online:
-    // 'keepNew' (default) replaces the old connection, 'keepOld' rejects the new login.
-    // Override per Server with options.duplicateLogin, or per BohoAuth with its duplicateLogin option.
+    failDelay: 600, // ms before AUTH_FAIL is sent
+    // Default for BohoAuth, when the same authenticated CID is already online:
+    // 'keepNew' replaces the old connection, 'keepOld' rejects the new login.
+    // Override per BohoAuth with its duplicateLogin option, and per Server with options.duplicateLogin
+    // (which wins, and applies only to that Server's connections).
     duplicateLogin: 'keepNew'
   },
-  membersOnly: false
 
+  // Development aids.
+  debug: {
+    slow: false,    // delay handling of every received message by `delay` ms
+    delay: 500,
+    showAuthInfo: false // log auth results and state traces (never keys)
+  }
 };
 
 const decoder$3 = new TextDecoder();
 
 $$1.NB;
 const MB = $$1.MB;
+
+// A one-byte CLOSE reason is a code, not text (Arduino IOSignal::close(uint8_t)): the message
+// that made the client close, or its CongPacket reader error state (ReadingState >= 250).
+// Its own table, because IOMsg gives 253 another meaning (TIME_OUT).
+const CLOSE_REASON = {
+  [IOMsg.AUTH_CLEAR]: 'AUTH_CLEAR',
+  [IOMsg.SERVER_REDIRECT]: 'SERVER_REDIRECT',
+  253: 'CONG_UNKNOWN_TYPE',
+  254: 'CONG_OVER_SIZE',
+  255: 'CONG_OVER_FLOW'
+};
+
+// Readable reason of a CLOSE message, e.g. 'AUTH_CLEAR(0xc4)'; longer reasons are text.
+function closeReason(message) {
+  if (message.byteLength < 2) return 'none'
+  if (message.byteLength === 2) {
+    const code = '0x' + message[1].toString(16).padStart(2, '0');
+    return CLOSE_REASON[message[1]] ? `${CLOSE_REASON[message[1]]}(${code})` : code
+  }
+  return decoder$3.decode(message.subarray(1))
+}
 
 
 class RemoteCore {
@@ -7471,9 +7487,11 @@ class RemoteCore {
     this._replayEntries = 0;
     this._replayExpiredBefore = 0;
     this.securityFailure = null;
+    this.closeReason = null; // reason of the client's CLOSE message, see closeReason()
     this.encMode = ENC_MODE.AUTO;
     this.channels = new Set();  //  subscribed tags
     this.retain_signal = new Map();
+    this.retainBytes = 0; // bytes of its CID retains (retain_signal)
 
     this.ssid = RemoteCore.ssid++;  // ordered index number
     this.manager = manager;
@@ -7485,9 +7503,18 @@ class RemoteCore {
 
     this.privateNode = false;
     this.HOME_CHANNEL = '';
-    this.level = serverOption.defaultQuotaIndex;
-    this.quota = quotaTable[this.level];
-    this.isAdmin = false;
+    this.role = 'anonymous'; // set on authentication; see ROLES in BohoAuth
+    this.accountUid = null;  // counted in manager.accountConnections while authenticated with a uid
+    // Quota profile (a server.quotas entry, read live): the anonymous one until authenticated.
+    this.quotaName = manager.anonymousQuota;
+    this.quota = manager.quotas[this.quotaName];
+    this._rateAt = null; // token buckets of quota msgPerSec / bytesPerSec
+    this._msgTokens = 0;
+    this._byteTokens = 0;
+    // Largest message the peer can receive, if it said so in CID_REQ (e.g. an Arduino RX buffer);
+    // larger messages are skipped instead of sent. null: no limit beyond maxPayload.
+    this.peerRxLimit = null;
+    this.peerRxLimitSkipped = 0;
 
     this.state;
     this.stateLog = [];
@@ -7496,6 +7523,11 @@ class RemoteCore {
   }
 
   static ssid = 1;
+
+  /** Authenticated with role 'admin'. */
+  get isAdmin() {
+    return this.role === 'admin' && this.boho.isAuthorized === true;
+  }
 
   setState(state) {
     const previous = this.state;
@@ -7520,43 +7552,79 @@ class RemoteCore {
   }
 
 
-  showMessageLog(message, isBinary) {
-    let h = '->S ';
-    let from = this.boho.isAuthorized ? ` did: ${this.did} cid: ${this.cid}` : ` cid: ${this.cid}`;
-    let prnLimit = 20;
-    if (isBinary) {
-      let msgTypeName = IOMsg[message[0]];
-      if (!msgTypeName) msgTypeName = it.BohoMsg[message[0]];
-
-      msgTypeName = '[' + msgTypeName + ']';
-      let size = message.byteLength;
-      if (size < prnLimit) {
-        console.log( h + msgTypeName + from +` [${size}]`, message);
-      } else {
-        let elseLen = size - prnLimit;
-        let some = message.subarray(0,prnLimit);
-        console.log( h + msgTypeName + from +` [${size}]` , some , ' ... else: ', elseLen);
+  // logMessages: one line per received message after decryption: type, routing tag or RPC
+  // target, and size. Payloads are never printed; heartbeat PING/PONG are skipped.
+  logMessage(msgType, message, encrypted = false) {
+    if (msgType === IOMsg.PING || msgType === IOMsg.PONG) return
+    let detail = '';
+    try {
+      if ([IOMsg.SIGNAL, IOMsg.SIGNAL_E2E, IOMsg.SUBSCRIBE, IOMsg.UNSUBSCRIBE].includes(msgType)) {
+        detail = decoder$3.decode(message.subarray(2, 2 + message[1]));
+      } else if (msgType === IOMsg.SUBSCRIBE_REQ && message.byteLength >= 5) {
+        detail = decoder$3.decode(message.subarray(5, 5 + message.readUInt16BE(3)));
+      } else if (msgType === IOMsg.CALL) {
+        const req = $$1.unpack(message);
+        if (req) detail = `${req.target}.${req.topic}`;
       }
+    } catch { /* a malformed message is logged without detail */ }
+    const type = msgType === undefined ? 'TEXT'
+      : IOMsg[msgType] ?? it.BohoMsg[msgType] ?? '0x' + msgType.toString(16);
+    const transport = this.socketType === 'websocket' ? 'WS' : 'CS';
+    console.log(`[rx] #${this.ssid} ${this.cid || '-'} ${transport} ${type}${encrypted ? '(enc)' : ''}` +
+      `${detail ? ' ' + detail : ''} ${message.byteLength}B`);
+  }
 
-    } else {
-      console.log( h + ' [TEXT] %s' + from, message);
+  // Switches to a server.quotas profile; tell: send it to the client (QUOTA: its maxMessageBytes).
+  setQuota(name, tell) {
+    this.quotaName = name;
+    this.quota = this.manager.quotas[name];
+    // The CongSocket frame ceiling follows maxMessageBytes.
+    this.refreshRxFrameLimit?.();
+    if (tell) {
+      const packet = Buffer.alloc(5);
+      packet[0] = IOMsg.QUOTA;
+      packet.writeUInt32LE(this.quota.maxMessageBytes ?? 0, 1); // 0: unlimited
+      this.send(packet);
     }
+  }
+
+  // Quota msgPerSec / bytesPerSec: token buckets holding one second. A message larger than the
+  // byte bucket passes when the bucket is full and leaves a debt.
+  takeRateTokens(bytes) {
+    const { msgPerSec, bytesPerSec } = this.quota;
+    if (msgPerSec === null && bytesPerSec === null) return true;
+    const now = node_perf_hooks.performance.now();
+    if (this._rateAt === null) {
+      this._msgTokens = msgPerSec ?? 0;
+      this._byteTokens = bytesPerSec ?? 0;
+    } else {
+      const seconds = (now - this._rateAt) / 1000;
+      if (msgPerSec !== null) this._msgTokens = Math.min(msgPerSec, this._msgTokens + seconds * msgPerSec);
+      if (bytesPerSec !== null) this._byteTokens = Math.min(bytesPerSec, this._byteTokens + seconds * bytesPerSec);
+    }
+    this._rateAt = now;
+    if (msgPerSec !== null && this._msgTokens < 1) return false;
+    if (bytesPerSec !== null && this._byteTokens < Math.min(bytes, bytesPerSec)) return false;
+    if (msgPerSec !== null) this._msgTokens -= 1;
+    if (bytesPerSec !== null) this._byteTokens -= bytes;
+    return true;
   }
 
   rxQuotaChecker(message) {
     let rxBytes = message.byteLength;
-    this.manager.rxBytes += rxBytes;
-    if (this.manager.telemetry) { this.manager.telemetry.rxBytes += rxBytes; this.manager.telemetry.rxMessages++; }
+    this.manager.counters.rxBytes += rxBytes;
+    this.manager.counters.rxMessages++;
 
-    if (serverOption.useQuota.signalSize && (rxBytes > this.quota.signalSize)) {
-      console.log('## quota: size over');
+    const maxMessageBytes = this.quota.maxMessageBytes;
+    if (maxMessageBytes !== null && rxBytes > maxMessageBytes) {
+      this.manager.counters.oversizeRejected++;
       this.send(Buffer.from([IOMsg.OVER_SIZE]));
-      if (serverOption.useQuota.disconnect) this.close();
       return false;
     }
-
-    // todo:
-    // traffic rate :  
+    if (!this.takeRateTokens(rxBytes)) {
+      this.manager.counters.rateLimited++;
+      return false;
+    }
     return true;
   }
 
@@ -7570,7 +7638,7 @@ class RemoteCore {
     if (this._closing || this.state === STATE.CLOSED) return false;
     this.securityFailure = reason;
     this.boho.clearAuth();
-    this.isAdmin = false;
+    this.role = 'anonymous';
     this._replayBuckets.clear();
     this._replayEntries = 0;
     this.close(true);
@@ -7652,9 +7720,8 @@ class RemoteCore {
     this.receiveMonitor(); // rx-data, ping/pong and timeout check
     if (!this.rxQuotaChecker(message)) return
 
-    if (serverOption.showMessage === 'message') this.showMessageLog(message, isBinary);
-
-    let msgType, decoded;
+    const logMessages = this.manager.server?.logMessages;
+    let msgType, decoded, encrypted = false;
 
     if (isBinary) {
       msgType = message[0];
@@ -7666,6 +7733,7 @@ class RemoteCore {
         if (decoded) {
           msgType = decoded[0];
           message = decoded;
+          encrypted = true;
         } else {
           return
         }
@@ -7677,11 +7745,13 @@ class RemoteCore {
           msgType = decoded[0];
           message.set(decoded, it.MetaSize.ENC_488); // set decoded signal_e2e headaer.
           message = message.subarray(it.MetaSize.ENC_488); // reset offset.
+          encrypted = true;
         } else {
           return
         }
 
       } else ;
+      if (logMessages) this.logMessage(msgType, message, encrypted);
 
       switch (msgType) {
         case IOMsg.PING:
@@ -7700,6 +7770,13 @@ class RemoteCore {
             return;
           }
 
+          // Optional uint32 little endian after the type: the peer's RX buffer size. Set before
+          // anything else is sent, so CID_RES, retained messages and signals respect it.
+          if (message.byteLength >= 5) {
+            const size = (message[1] | message[2] << 8 | message[3] << 16) + message[4] * 0x1000000;
+            if (size > 0) this.peerRxLimit = size;
+          }
+
           if (!this.cid) {
             const cid = this.manager.issueAnonymousCid();
             if (!cid) {
@@ -7709,6 +7786,8 @@ class RemoteCore {
             }
             this.cid = cid;
             this.manager.cid2remote.set(this.cid, this);
+            // The client limits its own sends to its quota (an authenticated one is sent on AUTH).
+            this.setQuota(this.quotaName, true);
           }
 
           // console.log('<< SENDING CID_RES:', this.cid)
@@ -7812,11 +7891,10 @@ class RemoteCore {
 
 
         case IOMsg.CLOSE:
-          if (message.byteLength > 1) {
-            let reason = decoder$3.decode(message.subarray(1));
-            console.log('>> CLOSE reason:', reason);
-            this.close();
-          }
+          // The reason is only logged, so a CLOSE without one still closes.
+          this.closeReason = closeReason(message);
+          console.log(`>> CLOSE #${this.ssid} cid:${this.cid} reason: ${this.closeReason}`);
+          this.close();
           break;
 
 
@@ -7857,6 +7935,7 @@ class RemoteCore {
 
     } else {
       // TEXT FRAME
+      if (logMessages) this.logMessage(undefined, message);
       try {
         let textMessage = decoder$3.decode(message);
         // console.log('text buffer:',textMessage )
@@ -7939,7 +8018,8 @@ class RemoteCore {
         "cid": this.cid,
         "did": this.did,
         "uid": this.uid,
-        "level": this.level,
+        "role": this.role,
+        "quota": this.quotaName,
         "nick": this.nick,
         "ip": this.ip
         , 'tag': channels
@@ -7957,31 +8037,45 @@ class RemoteCore {
 
 }
 
-function isPrivateIP(ip) {
-  if (ip.indexOf("0.0.0.0") === 0) return true
-  if (ip.indexOf("127.0.0.1") === 0) return true
-  if (ip.indexOf("192.168.") === 0) return true
-  if (ip.indexOf("10.") === 0) return true
-  if (ip.indexOf("172.") === 0) {
-    if (ip.indexOf("172.16.") === 0) return true
-    if (ip.indexOf("172.17.") === 0) return true
-    if (ip.indexOf("172.18.") === 0) return true
-    if (ip.indexOf("172.19.") === 0) return true
-    if (ip.indexOf("172.20.") === 0) return true
-    if (ip.indexOf("172.21.") === 0) return true
-    if (ip.indexOf("172.22.") === 0) return true
-    if (ip.indexOf("172.23.") === 0) return true
-    if (ip.indexOf("172.24.") === 0) return true
-    if (ip.indexOf("172.25.") === 0) return true
-    if (ip.indexOf("172.26.") === 0) return true
-    if (ip.indexOf("172.27.") === 0) return true
-    if (ip.indexOf("172.28.") === 0) return true
-    if (ip.indexOf("172.29.") === 0) return true
-    if (ip.indexOf("172.30.") === 0) return true
-    if (ip.indexOf("172.31.") === 0) return true
+// 16 address bytes of an IPv6 string (with '::', an embedded IPv4 tail or a %zone), else null.
+function ipv6Bytes(ip) {
+  if (!net.isIPv6(ip)) return null
+  ip = ip.split('%')[0];
+  const tailStart = ip.lastIndexOf(':') + 1;
+  const tail = ip.slice(tailStart);
+  if (net.isIPv4(tail)) {
+    const [a, b, c, d] = tail.split('.').map(Number);
+    ip = ip.slice(0, tailStart) + ((a << 8) | b).toString(16) + ':' + ((c << 8) | d).toString(16);
   }
+  const words = s => s ? s.split(':').map(h => parseInt(h, 16)) : [];
+  const [head, rest] = ip.split('::');
+  const left = words(head), right = words(rest);
+  const all = [...left, ...new Array(8 - left.length - right.length).fill(0), ...right];
+  const bytes = Buffer.alloc(16);
+  all.forEach((word, i) => bytes.writeUInt16BE(word, i * 2));
+  return bytes
+}
 
-  return false
+function isPrivateIPv4(ip) {
+  const [a, b] = ip.split('.').map(Number);
+  return a === 0 || a === 127 || a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168)
+}
+
+// Unspecified, loopback, RFC 1918, IPv6 unique-local (fc00::/7) and link-local (fe80::/10).
+function isPrivateIP(ip) {
+  if (net.isIPv4(ip)) return isPrivateIPv4(ip)
+  const bytes = ipv6Bytes(ip);
+  if (!bytes) return false
+  if (bytes.subarray(0, 15).every(v => v === 0) && bytes[15] <= 1) return true // :: and ::1
+  if (bytes.subarray(0, 10).every(v => v === 0) && bytes[10] === 0xff && bytes[11] === 0xff) {
+    return isPrivateIPv4(bytes.subarray(12).join('.')) // IPv4-mapped
+  }
+  return (bytes[0] & 0xfe) === 0xfc || (bytes[0] === 0xfe && (bytes[1] & 0xc0) === 0x80)
+}
+
+// Hosts on one IPv6 network share the /64 prefix, not the address: hex of those 8 bytes.
+function getIPv6PrefixHexString(ip) {
+  return ipv6Bytes(ip)?.subarray(0, 8).toString('hex') ?? null
 }
 
 function numberWithCommas(x) {
@@ -8022,6 +8116,42 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 const decoder$2 = new TextDecoder();
 
+// Each proxy appends to a forwarding header, so the entry `hops` from the right was
+// written by the outermost trusted proxy; anything left of it came from the client.
+function forwardedValue(header, hops) {
+  if (!hops || typeof header !== 'string') return undefined
+  const values = header.split(',').map(v => v.trim()).filter(Boolean);
+  return values[Math.max(0, values.length - hops)]
+}
+
+// IPv4-mapped addresses as IPv4, '::1' as 127.0.0.1; undefined if not an IP address.
+function normalizeIP(ip) {
+  if (typeof ip !== 'string') return undefined
+  if (ip.startsWith('::ffff:') && node_net.isIPv4(ip.slice(7))) ip = ip.slice(7);
+  if (ip === '::1') ip = '127.0.0.1';
+  return node_net.isIP(ip) ? ip : undefined
+}
+
+// Number of reverse proxies whose forwarding headers are trusted (see serverOption.trustProxy).
+function trustedProxyHops(peerIP, trust = serverOption.trustProxy) {
+  if (trust === 'private') return peerIP && isPrivateIP(peerIP) ? 1 : 0
+  if (trust === true) return 1
+  return Number.isSafeInteger(trust) && trust > 0 ? trust : 0
+}
+
+// Client address and TLS of a WebSocket upgrade request; exported for other servers that
+// accept the same proxied connections.
+function getClientAddress(req, trust = serverOption.trustProxy) {
+  const peerIP = normalizeIP(req.socket?.remoteAddress);
+  const hops = trustedProxyHops(peerIP, trust);
+  return {
+    ip: normalizeIP(forwardedValue(req.headers['x-forwarded-for'], hops)) ?? peerIP ?? '0.0.0.0',
+    // X-Forwarded-Proto: https turns off server-side encryption (ENC_MODE.AUTO), so it is
+    // only honored from a trusted proxy, like the client address.
+    TLS: forwardedValue(req.headers['x-forwarded-proto'], hops) === 'https'
+  }
+}
+
 class Remote extends RemoteCore {
   constructor(socket, req, manager) {
     super(socket, manager);
@@ -8032,11 +8162,12 @@ class Remote extends RemoteCore {
     this.socketType = socket.socketType;
 
     if (this.socketType === 'websocket') {
-      this.TLS = req.headers["x-forwarded-proto"] === 'https' ? true : false;
-      this.ip = this.getRemoteIP(req);
+      const { ip, TLS } = getClientAddress(req, this.manager.server?.trustProxy);
+      this.ip = ip;
+      this.TLS = TLS;
     } else {
       this.TLS = false;
-      this.ip = this.getRemoteIP(socket.remoteAddress);
+      this.ip = normalizeIP(socket.remoteAddress) ?? '0.0.0.0';
     }
 
 
@@ -8044,6 +8175,9 @@ class Remote extends RemoteCore {
       // connection from local or private network has default private channel.
       this.HOME_CHANNEL = 'PRIVATE:';
       this.privateNode = true;
+    } else if (node_net.isIPv6(this.ip)) {
+      // An IPv6 network is its /64 prefix; each host there has its own address.
+      this.HOME_CHANNEL = 'IP6:' + getIPv6PrefixHexString(this.ip);
     } else {
       // The HOME_CHANNEL is defined by the global IP address value.
       this.HOME_CHANNEL = 'IP:' + getIPv4HexString(this.ip);
@@ -8070,10 +8204,11 @@ class Remote extends RemoteCore {
         this.txDrainMaxMs = Math.max(this.txDrainMaxMs, node_perf_hooks.performance.now() - this.txBlockedSince);
         this.txBlockedSince = null;
       });
-      this.congRx = new CongRx();
+      this.congRx = new CongRx({ maxFrameSize: this.rxFrameLimit() });
       socket.on('data', data => { this.congRx.write(data); });
 
       this.congRx.on('wrong', this.onWrongCongPacketMessage.bind(this));
+      this.congRx.on('oversize', this.onOversizeCongPacket.bind(this));
       // readable.pipe( destination )
       // tcpSocket -> congRx(parser) -> onMessage
       // socket.pipe( this.congRx )
@@ -8127,13 +8262,32 @@ class Remote extends RemoteCore {
   }
 
 
-  permissionChecker() {
-
-    this.socket.bytesWritten || this.socket._socket?.bytesWritten;
-    this.socket.bytesRead || this.socket._socket?.bytesRead;
-
+  // Largest CongSocket frame the parser buffers: maxPayload (as for WebSocket), or the quota's
+  // maxMessageBytes when smaller. A frame payload is the message rxQuotaChecker measures, so a
+  // larger frame would be rejected after buffering anyway.
+  rxFrameLimit() {
+    const maxPayload = this.manager.server?.maxPayload ?? serverOption.maxPayload;
+    const maxMessageBytes = this.quota?.maxMessageBytes ?? null;
+    return maxMessageBytes === null ? maxPayload : Math.min(maxPayload, maxMessageBytes);
   }
 
+  // Called after the quota changes (e.g. on successful auth).
+  refreshRxFrameLimit() {
+    if (this.congRx) this.congRx.maxFrameSize = this.rxFrameLimit();
+  }
+
+  // The frame was skipped unbuffered; same response as rxQuotaChecker, except that a
+  // connection without a CID is treated like a wrong packet (see onWrongCongPacketMessage).
+  onOversizeCongPacket(payloadSize) {
+    if (this._closing) return;
+    if (!this.cid) {
+      this.manager.attackLogger?.log(`> ${this.ssid} ${this.ip} OVERSIZE ${payloadSize}`);
+      this.close(true);
+      return;
+    }
+    this.manager.counters.oversizeRejected++;
+    this.send(Buffer.from([IOMsg.OVER_SIZE]));
+  }
 
   // any type of received messages:  message, ping, pong
   receiveMonitor() {
@@ -8142,27 +8296,9 @@ class Remote extends RemoteCore {
     this.socket.isAlive = true;
   }
 
-  isConnectionHTTPS(req) {
-    //In case of reverse proxy environment.  i.e. using nginx proxy_pass.
-    return req.headers["x-forwarded-proto"];   //https or undefined
-  }
-
-  getRemoteIP(req) { //req or ip string
-    let ip;
-    if (req && req.headers) {
-      ip = req.headers["x-forwarded-for"];
-      if (ip == undefined) ip = req.socket.remoteAddress;
-    } else {
-      ip = req;
-    }
-
-    if (ip) {
-      if (ip.indexOf("::ffff:") == 0) ip = ip.substring(7);
-      if (ip == "::1") ip = "127.0.0.1";
-    } else {
-      ip = "0.0.0.0";
-    }
-    return ip;
+  // Number of reverse proxies whose forwarding headers this server trusts.
+  trustedProxyHops(peerIP) {
+    return trustedProxyHops(peerIP, this.manager.server?.trustProxy)
   }
 
   ping() {
@@ -8184,15 +8320,15 @@ class Remote extends RemoteCore {
   }
 
   getTraffic() {
-    this.socket.bytesWritten || this.socket._socket?.bytesWritten;
-    this.socket.bytesRead || this.socket._socket?.bytesRead;
-    this.socket.txCounter;
-    this.socket.rxCounter;
+    let txb = this.socket.bytesWritten || this.socket._socket?.bytesWritten;
+    let rxb = this.socket.bytesRead || this.socket._socket?.bytesRead;
+    let tx = this.socket.txCounter;
+    let rx = this.socket.rxCounter;
+    return { tx, txb, rx, rxb }
   }
 
   close(terminateNow = false) {
     this._closing = true;
-    this.getTraffic();
     if (this.socketType === 'websocket') {
       if (terminateNow) this.socket.terminate();
       else this.socket.close();
@@ -8202,16 +8338,30 @@ class Remote extends RemoteCore {
     }
   }
 
+  // A peer that stops reading would otherwise grow its send queue without limit.
   recordTxQueue() {
     const queued = this.socket.bufferedAmount ?? this.socket.writableLength ?? 0;
     if (queued > this.txQueuePeakBytes) this.txQueuePeakBytes = queued;
+    const limit = this.manager.server?.maxBufferedBytes ?? serverOption.maxBufferedBytes;
+    if (queued > limit) {
+      console.log(`slow peer #${this.ssid} cid:${this.cid} has ${queued} unsent bytes: closing`);
+      this.close(true);
+    }
   }
 
   // node.js server side remote.
   send(message, isBinary) {
+    // Sending to a closing peer can only fail; skip instead of logging each attempt.
+    if (this._closing) return;
+    // The peer cannot receive it (see peerRxLimit); a CongSocket Arduino would have to discard it.
+    if (this.peerRxLimit !== null && message.byteLength > this.peerRxLimit) {
+      this.peerRxLimitSkipped++;
+      this.manager.counters.peerRxLimitSkipped++;
+      return;
+    }
     // console.log(`<-S [${IOMsg[ message[0]]}]`)
-    this.manager.txBytes += message.byteLength;
-    if (this.manager.telemetry) { this.manager.telemetry.txBytes += message.byteLength; this.manager.telemetry.txMessages++; }
+    this.manager.counters.txBytes += message.byteLength;
+    this.manager.counters.txMessages++;
     this.socket.txCounter++;
     if (this.socketType === 'websocket') {
       if (this.socket.readyState === 1) {
@@ -8273,93 +8423,80 @@ class FileLogger {
 
 }
 
-const MAX = 10;
-let period = 10000;
+const KIB = 1024, MIB = 1024 * 1024;
 
+function bytes(n) {
+  if (n >= MIB) return (n / MIB).toFixed(1) + 'MB'
+  if (n >= KIB) return (n / KIB).toFixed(1) + 'KB'
+  return Math.round(n) + 'B'
+}
+
+// Read-only views of the manager for logStats, Server.stats() and the sudo service.
+// Nothing here runs on a timer or resets the manager's counters.
 class Metrics {
   constructor(manager) {
     this.manager = manager;
-
-    this.metricsPack = {
-      remotes: [0],
-      channels: [0],
-      txBytes: [0],
-      rxBytes: [0],
-      unixTime: [Math.floor(Date.now() / 1000)],
-      period: 0
-    };
-
-    this.tickId = setInterval(e => {
-
-      this.metricsPack.remotes.push(this.manager.remotes.size);
-      if (this.metricsPack.remotes.length > MAX) this.metricsPack.remotes.shift();
-
-      this.metricsPack.channels.push(this.manager.channel_map.size);
-      if (this.metricsPack.channels.length > MAX) this.metricsPack.channels.shift();
-
-
-      this.metricsPack.txBytes.push(this.manager.txBytes);
-      if (this.metricsPack.txBytes.length > MAX) this.metricsPack.txBytes.shift();
-
-      this.metricsPack.rxBytes.push(this.manager.rxBytes);
-      if (this.metricsPack.rxBytes.length > MAX) this.metricsPack.rxBytes.shift();
-
-      this.metricsPack.unixTime = Math.floor(Date.now() / 1000);
-      this.metricsPack.period = period;
-      this.manager.txBytes = 0;
-      this.manager.rxBytes = 0;
-
-
-    }, 10000);
+    this.previous = null; // last summaryLine() sample, for rates
   }
-
-
 
   close() {
-    clearInterval(this.tickId);
-    this.tickId = null;
+    this.previous = null;
   }
 
-  oneline(prn) {
-    let memoryUse = process$1.memoryUsage();
-    let memoryInfo = [{
-      ...memoryUse
-    }];
+  // Current state; counters are cumulative since the server started. Enumerates connections once.
+  snapshot() {
+    const manager = this.manager;
+    let authenticated = 0, websocket = 0;
+    for (const remote of manager.remotes) {
+      if (remote.boho.isAuthorized) authenticated++;
+      if (remote.socketType === 'websocket') websocket++;
+    }
+    const total = manager.remotes.size;
+    const memory = process$1.memoryUsage();
+    return {
+      at: Date.now(),
+      connections: { total, authenticated, anonymous: total - authenticated, websocket, tcp: total - websocket },
+      channels: manager.channel_map.size,
+      retained: { channel: manager.retain_messages.size, bytes: manager.retainBytes },
+      counters: { ...manager.counters },
+      memory: { rss: memory.rss, heapUsed: memory.heapUsed }
+    }
+  }
 
-    if (prn) console.table(memoryInfo, ['rss', 'heapTotal', 'heapUsed', 'external', 'arrayBuffers']);
+  // One logStats line; rates are per second since the previous line.
+  summaryLine(now = node_perf_hooks.performance.now()) {
+    const s = this.snapshot(), previous = this.previous;
+    const rate = key => previous ? (s.counters[key] - previous.counters[key]) * 1000 / Math.max(1, now - previous.time) : 0;
+    this.previous = { time: now, counters: s.counters };
+    const c = s.connections;
+    return `[iosignal] conn ${c.total} (auth ${c.authenticated}, anon ${c.anonymous}, ws ${c.websocket}, tcp ${c.tcp})` +
+      ` ch ${s.channels} retained ${s.retained.channel}/${bytes(s.retained.bytes)}` +
+      ` | rx ${rate('rxMessages').toFixed(1)}/s ${bytes(rate('rxBytes'))}/s` +
+      ` tx ${rate('txMessages').toFixed(1)}/s ${bytes(rate('txBytes'))}/s pub ${rate('publishes').toFixed(1)}/s` +
+      ` | rss ${bytes(s.memory.rss)} heap ${bytes(s.memory.heapUsed)}`
+  }
 
-    let metric = [{
+  // Compact summary for metrics reports ('@$metrics'); byte counters are cumulative.
+  oneline() {
+    return {
       lastSSID: this.manager.lastSSID,
       remotes: this.manager.remotes.size,
       channels: this.manager.channel_map.size,
-      txBytes: this.manager.txBytes,
-      rxBytes: this.manager.rxBytes,
-    }];
-
-    if (prn) console.table(metric, ['lastSSID', 'remotes', 'channels', 'txBytes', 'rxBytes']);
-
-    return metric[0]
+      txBytes: this.manager.counters.txBytes,
+      rxBytes: this.manager.counters.rxBytes,
+    }
   }
 
-  getRemotes(prn) {
-    let remoteList = Array.from(this.manager.remotes.values());
-    let remoteStates = remoteList.map(v => {
-      return "#" + v.ssid + ":" + v.cid + "(" + v.state + ")"
-    });
-    if (prn) console.table(remoteStates);
-    return remoteStates
+  getRemotes() {
+    return Array.from(this.manager.remotes, v => "#" + v.ssid + ":" + v.cid + "(" + v.getStateName() + ")")
   }
 
-  getCIdList(prn) {
-    let CIdList = Array.from(this.manager.cid2remote.keys());
-    if (prn) console.table(CIdList);
-    return CIdList
+  getCIdList() {
+    return Array.from(this.manager.cid2remote.keys())
   }
 
-  getChannelList(prn) {
-    let chList = Array.from(this.manager.channel_map.keys());
-    if (prn) console.table(chList);
-    return chList
+  getChannelList() {
+    return Array.from(this.manager.channel_map.keys())
   }
 
   getSubscribers(ch) {
@@ -8370,7 +8507,6 @@ class Metrics {
         list.push(c.cid);
       });
     }
-    // console.log(list)
     return list
   }
 
@@ -8409,15 +8545,11 @@ class Metrics {
           encMode: ENC_MODE[remote.encMode]
         }
       } else if (mode == 4) {
-        let channels = Array.from(remote.channels.keys());
-        let set_memory = Array.from(remote.memory.keys());
-        let retain_signal = Array.from(remote.retain_signal.keys());
         return {
           ip: remote.ip,
           uptime: Math.trunc((Date.now() - remote.socket.openTime) / 1000),
-          channels: channels,
-          set: set_memory,
-          retain: retain_signal
+          channels: Array.from(remote.channels.keys()),
+          retain: Array.from(remote.retain_signal.keys())
         }
       }
 
@@ -8437,14 +8569,17 @@ class Manager {
 
   constructor(server, authManager) {
     this.server = server;
-    this.pingPeriod = serverOption.timeout;
-    this.pingGrace = serverOption.pingTimeoutGrace;
+    // This server's settings; a Manager made without a Server (tests, checks) uses the defaults.
+    this.pingPeriod = server?.heartbeatInterval ?? serverOption.heartbeatInterval;
+    this.pingGrace = server?.heartbeatGrace ?? serverOption.heartbeatGrace;
     if (!Number.isFinite(this.pingPeriod) || this.pingPeriod <= 0 ||
         !Number.isFinite(this.pingGrace) || this.pingGrace < 0) {
       throw new RangeError('Invalid heartbeat period or grace');
     }
-    this.txBytes = 0;
-    this.rxBytes = 0;
+    // Cumulative since the server started; never reset (readers compute rates from deltas).
+    this.counters = { rxMessages: 0, rxBytes: 0, txMessages: 0, txBytes: 0,
+      publishes: 0, deliveryAttempts: 0, quotaExcluded: 0, oversizeRejected: 0, rateLimited: 0,
+      peerRxLimitSkipped: 0 }; // messages not sent: larger than the peer's advertised RX buffer
 
     this.authManager = authManager;
 
@@ -8462,7 +8597,12 @@ class Manager {
 
     this.remotes = new Set();         // total remotes
     this.cid2remote = new Map();      // key: cid -> value: remote
+    this.accountConnectionCounts = new Map(); // uid -> authenticated connections
     this.retain_messages = new Map();  // key: tag, data: signalMessage
+    this.retain_owner = new Map();     // key: channel retain tag -> its owner record (see retainOwner)
+    this.retainOwners = new Map();     // key: 'cid:<cid>' | 'conn:<ssid>' | 'net:<HOME_CHANNEL>' -> owner
+    this.retainExpiry = new Map();     // key: channel retain tag in a grace pool -> expiry time
+    this.retainBytes = 0;              // all retained messages, channel and CID
     this.channel_map = new Map();      // key: channelName -> value: < remote : Set >
     this.CHANNEL_PREFIX = 'CH:';
     this.CID_PREFIX = 'CID:';
@@ -8484,18 +8624,49 @@ class Manager {
     };
     this.pingIntervalID = setTimeout(tick, this.pingTickMs);
 
-    if (serverOption.showMetric) {
-      this.monitIntervalID = setInterval((e) => {
-        this.monitor();
-      }, serverOption.monitorPeriod);
+    // logStats: one summary line per interval; it never clears the terminal, so other logs stay.
+    if (server.logStats) {
+      this.statsIntervalID = setInterval(() => console.log(this.metrics.summaryLine()), server.logStats);
     }
 
 
   }
 
 
+  get retainOptions() {
+    return this.server?.retain ?? serverOption.retain
+  }
+
+  get quotas() {
+    return this.server?.quotas ?? serverOption.quotas
+  }
+
+  get anonymousQuota() {
+    return this.server?.anonymousQuota ?? serverOption.anonymousQuota
+  }
+
+  // Authenticated connections per account (uid), for the quota's maxConnections.
+  accountConnections(uid) {
+    return this.accountConnectionCounts.get(uid) ?? 0
+  }
+
+  addAccountConnection(remote, uid) {
+    remote.accountUid = uid;
+    this.accountConnectionCounts.set(uid, this.accountConnections(uid) + 1);
+  }
+
+  removeAccountConnection(remote) {
+    const uid = remote.accountUid;
+    if (!uid) return
+    remote.accountUid = null;
+    const count = this.accountConnections(uid) - 1;
+    if (count > 0) this.accountConnectionCounts.set(uid, count);
+    else this.accountConnectionCounts.delete(uid);
+  }
+
   heartbeatTick() {
     const now = node_perf_hooks.performance.now();
+    if (this.retainExpiry.size) this.expireChannelRetains(now);
     // Process only expired requests, not every connected peer.
     for (const [remote, deadline] of this.heartbeatPending) {
       if (deadline > now) break;
@@ -8538,6 +8709,7 @@ class Manager {
   removeRemote(remote) {
 
     remote._closing = true;
+    this.removeAccountConnection(remote);
     this.pingGroups[remote.pingGroup]?.delete(remote);
     this.heartbeatPending.delete(remote);
     remote.setState(STATE.CLOSED);
@@ -8563,6 +8735,10 @@ class Manager {
 
     // retain message policy
     // type 1. ( isAuthorizedUser) ? keep : delete.
+    // Channel retains: an authenticated writer's belong to its account and stay; an anonymous
+    // connection's move to its network's grace pool and expire there.
+    this.orphanChannelRetains(remote);
+
     if (remote.boho.isAuthorized) ; else {
       // anonymouse: remove the cid publish channel
       for (let ch of remote.retain_signal.keys()) {
@@ -8574,6 +8750,10 @@ class Manager {
         }
       }
     }
+    // CID retains live in the remote and go with it (after the '@$state' close above).
+    for (const message of remote.retain_signal.values()) this.retainBytes -= message.byteLength;
+    remote.retain_signal.clear();
+    remote.retainBytes = 0;
 
 
     // Service lifecycle hook. Called directly: RPC permission/command checks do not apply to cleanup.
@@ -8645,9 +8825,7 @@ class Manager {
     let topic = tag.split('@')[1];
     if (cid && this.cid2remote.has(cid)) {
       let sigPack = getSignalPack('@' + topic, ...args);
-      let targetRemote = this.cid2remote.get(cid);
-      console.log('target', targetRemote.state, targetRemote.cid);
-      targetRemote.send_enc_mode(sigPack);
+      this.cid2remote.get(cid).send_enc_mode(sigPack);
       return
     } else {
       return "no cid"
@@ -8656,7 +8834,7 @@ class Manager {
 
   sender(tag, remote, message) {
     if (encoder.encode(tag).byteLength > SIZE_LIMIT.TAG_LEN1) return ['err', 'Tag exceeds 255 UTF-8 bytes']
-    if (serverOption.membersOnly && !remote.boho.isAuthorized) {
+    if ((this.server?.membersOnly ?? serverOption.membersOnly) && !remote.boho.isAuthorized) {
       // console.log("### server reject client signal reason: [membersOnly]" ,tag, remote.cid  )
       remote.send(Buffer.from([IOMsg.AUTH_CLEAR]));
       remote.close();
@@ -8710,35 +8888,26 @@ class Manager {
     // retain signal message
     if (tag.includes('$')
       // && remote.boho.isAuthorized
-      && serverOption.retain.isAvailable
-      && serverOption.retain.limitCounter > this.retain_messages.size
-      && serverOption.retain.limitSize > message.byteLength
+      && this.retainOptions.enabled
     ) {
-      // cid retain signal
       if (tag.includes('@')) {
-        // cid retain signal stored inside remote.
-        let retainTag = tag.split('@')[1];
-        remote.retain_signal.set(retainTag, message);
+        // cid retain signal stored inside remote, counted per remote.
+        this.storeCidRetain(tag.split('@')[1], message, remote);
       } else {
         // channel retain signal stored inside manager.
-        this.retain_messages.set(tag, message);
+        this.storeChannelRetain(tag, message, remote);
       }
-
     }
 
-    if (this.telemetry) this.telemetry.publishes++;
+    this.counters.publishes++;
     let sentCounter = 0;
     if (this.channel_map.has(tag)) {
       // console.log('raw channel_map matched tag:', tag)
       let remotes = this.channel_map.get(tag);
       if (remotes.size >= 1) {
-        let limit;
-        if (serverOption.useQuota.publishCounter) {
-          limit = Math.min(remote.quota.publishCounter, remotes.size);
-        } else {
-          limit = remotes.size;
-        }
-        if (this.telemetry) this.telemetry.quotaExcluded += remotes.size - limit;
+        const fanout = remote.quota.fanout;
+        const limit = fanout === null ? remotes.size : Math.min(fanout, remotes.size);
+        this.counters.quotaExcluded += remotes.size - limit;
         let peers = remotes.values();
         while (sentCounter < limit) {
           let c = peers.next().value;
@@ -8753,12 +8922,7 @@ class Manager {
           // }
         }
 
-        // if (serverOption.useQuota.publishCounter) {
-        //   // console.log(`pub >> [${tag}] sent: ${sentCounter} [use quota limit: ${remote.quota.publishCounter }] total: ${remotes.size} subscribers. ` )
-        // } else {
-        //   // console.log(`pub >> [${tag}] sent: ${sentCounter} [no quota limit] total: ${remotes.size} subscribers. ` )
-        // }
-        if (this.telemetry) this.telemetry.deliveryAttempts += sentCounter;
+        this.counters.deliveryAttempts += sentCounter;
         return ['ok', sentCounter]
       }
     }
@@ -8767,6 +8931,123 @@ class Manager {
   }
 
 
+
+  // Retained messages are stored as exact-size copies (a subarray would keep a whole socket chunk
+  // or 8 KiB Buffer pool slab alive), within an owner's budget and bytesTotal server-wide. A value
+  // that cannot be stored (size, count or budget) also removes the value it would replace, so a
+  // later subscriber never gets a stale one.
+  retainFits(message, freed, ownerBytes, budget) {
+    return this.retainOptions.limitSize > message.byteLength &&
+      ownerBytes + message.byteLength <= budget &&
+      this.retainBytes + message.byteLength - freed <= this.retainOptions.bytesTotal
+  }
+
+  retainCopy(message) {
+    const copy = Buffer.allocUnsafeSlow(message.byteLength);
+    copy.set(message);
+    this.retainBytes += copy.byteLength;
+    return copy
+  }
+
+  // A connection's CID retains go with it: within bytesPerConnection; limitCounter caps new tags.
+  storeCidRetain(key, message, remote) {
+    const map = remote.retain_signal;
+    const old = map.get(key);
+    const freed = old?.byteLength ?? 0;
+    if ((old || map.size < this.retainOptions.limitCounter) &&
+        this.retainFits(message, freed, remote.retainBytes - freed, this.retainOptions.bytesPerConnection)) {
+      map.set(key, this.retainCopy(message));
+      this.retainBytes -= freed;
+      remote.retainBytes += message.byteLength - freed;
+    } else if (old) {
+      map.delete(key);
+      this.retainBytes -= freed;
+      remote.retainBytes -= freed;
+    }
+  }
+
+  // Channel retain owner: the last writer's account (an authenticated CID, shared by its
+  // connections, so reconnecting does not reset its budget) or an anonymous writer's connection.
+  // Each owner holds at most tagsPerOwner tags and bytesPerOwner bytes.
+  retainOwner(key) {
+    let owner = this.retainOwners.get(key);
+    if (!owner) this.retainOwners.set(key, owner = { key, bytes: 0, tags: new Set() });
+    return owner
+  }
+
+  storeChannelRetain(tag, message, remote) {
+    const owner = this.retainOwner(remote.boho.isAuthorized ? 'cid:' + remote.cid : 'conn:' + remote.ssid);
+    const old = this.retain_messages.get(tag);
+    const freed = old?.byteLength ?? 0;
+    const room = old || (this.retain_messages.size < this.retainOptions.limitCounter &&
+      owner.tags.size < this.retainOptions.tagsPerOwner);
+    const ownerBytes = owner.bytes - (this.retain_owner.get(tag) === owner ? freed : 0);
+    if (room && this.retainFits(message, freed, ownerBytes, this.retainOptions.bytesPerOwner)) {
+      if (old) this.releaseChannelRetain(tag, freed);
+      this.retain_messages.set(tag, this.retainCopy(message));
+      owner.bytes += message.byteLength;
+      owner.tags.add(tag);
+      this.retain_owner.set(tag, owner);
+      this.retainOwners.set(owner.key, owner); // releasing may have removed it when it emptied
+    } else if (old) {
+      this.dropChannelRetain(tag);
+    }
+    if (owner.tags.size === 0) this.retainOwners.delete(owner.key);
+  }
+
+  // A closed anonymous connection's channel retains stay anonymousGraceMs in its network's pool
+  // (by HOME_CHANNEL), which has the same owner budget: reconnecting cannot pile values up, and
+  // when the pool is over budget the values closest to expiry go first, least recently written
+  // first among equals (an update moves its tag to the end of the owner's set).
+  orphanChannelRetains(remote) {
+    const conn = this.retainOwners.get('conn:' + remote.ssid);
+    if (!conn) return
+    const grace = this.retainOptions.anonymousGraceMs;
+    if (!(grace > 0)) {
+      for (const tag of [...conn.tags]) this.dropChannelRetain(tag);
+      return
+    }
+    this.retainOwners.delete(conn.key);
+    const pool = this.retainOwner('net:' + remote.HOME_CHANNEL);
+    const expires = node_perf_hooks.performance.now() + grace;
+    for (const tag of conn.tags) {
+      pool.tags.add(tag);
+      pool.bytes += this.retain_messages.get(tag).byteLength;
+      this.retain_owner.set(tag, pool);
+      this.retainExpiry.set(tag, expires);
+    }
+    while (pool.bytes > this.retainOptions.bytesPerOwner || pool.tags.size > this.retainOptions.tagsPerOwner) {
+      let first;
+      for (const tag of pool.tags) {
+        if (first === undefined || this.retainExpiry.get(tag) < this.retainExpiry.get(first)) first = tag;
+      }
+      this.dropChannelRetain(first);
+    }
+  }
+
+  expireChannelRetains(now = node_perf_hooks.performance.now()) {
+    for (const [tag, expires] of this.retainExpiry) {
+      if (expires <= now) this.dropChannelRetain(tag);
+    }
+  }
+
+  dropChannelRetain(tag) {
+    const old = this.retain_messages.get(tag);
+    if (!old) return
+    this.releaseChannelRetain(tag, old.byteLength);
+    this.retain_messages.delete(tag);
+  }
+
+  releaseChannelRetain(tag, size) {
+    const owner = this.retain_owner.get(tag);
+    this.retain_owner.delete(tag);
+    this.retainExpiry.delete(tag);
+    this.retainBytes -= size;
+    if (!owner) return
+    owner.tags.delete(tag);
+    owner.bytes -= size;
+    if (owner.tags.size === 0) this.retainOwners.delete(owner.key);
+  }
 
   subscribe(chArr, remote) {
     chArr.forEach(tag => {
@@ -8790,7 +9071,7 @@ class Manager {
 
       // 3. send retain message if available.
       if (tag.includes('$')
-        && serverOption.retain.isAvailable
+        && this.retainOptions.enabled
       ) {
         let retainMessage;
         if (tag.includes('@')) {
@@ -8856,31 +9137,6 @@ class Manager {
   }
 
 
-  monitor() {
-    if (process.stdout.isTTY) {
-      process.stdout.cursorTo(0, 0);
-      process.stdout.clearScreenDown();
-    }
-
-    if (serverOption.showChannel > 0) {
-      this.metrics.channels(serverOption.showChannel);
-    }
-    let mode = parseInt(serverOption.showMetric);
-    switch (mode) {
-      case 1:
-        this.metrics.oneline(true);
-        break;
-      case 2:
-        this.metrics.getRemotes(true);
-        break;
-      case 3:
-        this.metrics.getChannelList(true);
-        break;
-    }
-
-  }
-
-
   anonymousCidRandom(size) {
     return globalThis.crypto.getRandomValues(Buffer.alloc(size))
   }
@@ -8913,8 +9169,8 @@ class Manager {
     clearTimeout(this.pingIntervalID);
     this.heartbeatPending.clear();
     for (const group of this.pingGroups) group.clear();
-    if (this.monitIntervalID) {
-      clearInterval(this.monitIntervalID);
+    if (this.statsIntervalID) {
+      clearInterval(this.statsIntervalID);
     }
 
     this.remotes.forEach(remote => {
@@ -8924,6 +9180,10 @@ class Manager {
     this.remotes.clear();
     this.cid2remote.clear();
     this.retain_messages.clear();
+    this.retain_owner.clear();
+    this.retainOwners.clear();
+    this.retainExpiry.clear();
+    this.retainBytes = 0;
     this.channel_map.clear();
 
   }
@@ -8948,15 +9208,42 @@ function validateDuplicateLogin(policy) {
   return policy
 }
 
+// Connection roles, lowest to highest: what a connection may do. Its quota is separate.
+// 'anonymous' is the role of every connection until it authenticates.
+const ROLES = ['anonymous', 'device', 'service', 'admin'];
+
+/** Role of a login: the account's role, 'device' when it has none; undefined if unknown. */
+function resolveRole(role) {
+  if (role === undefined || role === null || role === '') return 'device'
+  return ROLES.includes(role) && role !== 'anonymous' ? role : undefined
+}
+
+/** True if the remote is authenticated with this role or a higher one ('anonymous': always). */
+function hasRole(remote, role) {
+  const wanted = ROLES.indexOf(role);
+  if (wanted < 0) throw new RangeError(`role must be one of: ${ROLES.join(', ')}`)
+  if (wanted === 0) return true
+  return remote?.boho?.isAuthorized === true && ROLES.indexOf(remote.role) >= wanted
+}
+
+/** Default quota profile of a login: the account's quota, else 'basic' for a device, 'unlimited' otherwise. */
+function defaultQuota(authInfo, role) {
+  return authInfo.quota || (role === 'device' ? 'basic' : 'unlimited')
+}
+
 class BohoAuth {
   /**
    * @param {object} keyProvider
-   * @param {{ duplicateLogin?: 'keepOld' | 'keepNew', onAuthEvent?: (event: object) => any }} [options]
+   * @param {{ duplicateLogin?: 'keepOld' | 'keepNew', onAuthEvent?: (event: object) => any,
+   *   resolveQuota?: (authInfo: object, role: string) => string | Promise<string> }} [options]
    *   duplicateLogin: unset follows serverOption.auth.duplicateLogin (default 'keepNew').
+   *   A Server's duplicateLogin option takes precedence for that Server's connections.
    *   onAuthEvent: called with { type, did, cid, uid, ip, oldIp, socketType, oldSocketType, reason, at }
    *   for 'replaced' (keepNew evicted the old connection) and 'duplicate_rejected' (keepOld).
    *   socketType/oldSocketType are 'websocket' or 'congsocket'.
    *   Errors and rejected promises are logged and never affect authentication.
+   *   resolveQuota: name of the Server quota profile for a login (default: defaultQuota), e.g. from
+   *   the account owner's plan. An unknown name fails the login.
    */
   constructor(keyProvider, options = {}) {
     if (!keyProvider) {
@@ -8966,6 +9253,7 @@ class BohoAuth {
     this._duplicateLogin = null;
     if (options.duplicateLogin !== undefined) this.duplicateLogin = options.duplicateLogin;
     this.onAuthEvent = options.onAuthEvent ?? null;
+    this.resolveQuota = options.resolveQuota ?? defaultQuota;
     this.authLogger;
     if (serverOption.fileLogger.auth.use) {
       this.authLogger = new FileLogger(serverOption.fileLogger.auth.path);
@@ -8981,6 +9269,11 @@ class BohoAuth {
   /** @param {'keepOld' | 'keepNew' | null} policy  null returns to the serverOption default. */
   set duplicateLogin(policy) {
     this._duplicateLogin = policy === null ? null : validateDuplicateLogin(policy);
+  }
+
+  /** Policy for a connection: its Server's duplicateLogin option, else this instance's policy. */
+  duplicateLoginFor(peer) {
+    return peer.manager?.server?.duplicateLogin ?? this.duplicateLogin;
   }
 
   // Backward-compatible boolean form of duplicateLogin.
@@ -9015,7 +9308,7 @@ class BohoAuth {
       if (!peer._closing && peer.state === STATE.AUTH_FAIL) {
         peer.send(Buffer.from([it.BohoMsg.AUTH_FAIL]));
       }
-    }, serverOption.auth.delay_auth_fail);
+    }, serverOption.auth.failDelay);
   }
 
 
@@ -9049,8 +9342,9 @@ class BohoAuth {
         return
       }
 
+      // Never the key: debug output ends up in shared logs.
       if (serverOption.debug.showAuthInfo) {
-        console.log('[debug]showAuthInfo', authInfo);
+        console.log('[debug]showAuthInfo', { id, cid: authInfo.cid, uid: authInfo.uid, role: authInfo.role, quota: authInfo.quota });
       }
 
       peer.boho.copy_id8(infoPack.id8);
@@ -9077,7 +9371,29 @@ class BohoAuth {
       // Reauthentication requires a new connection, never a replay-state reset.
       peer._challengeUsed = true;
 
-      //4. get info
+      //4. role and quota. Checked before a duplicate login replaces the old connection.
+      const role = resolveRole(authInfo.role);
+      if (role === undefined) {
+        this.send_auth_fail(peer, 'unknown auth.role: ' + authInfo.role);
+        return
+      }
+      const quotaName = await this.resolveQuota(authInfo, role);
+      const quota = Object.hasOwn(peer.manager.quotas, quotaName) ? peer.manager.quotas[quotaName] : undefined;
+      if (!quota) {
+        this.send_auth_fail(peer, 'unknown quota: ' + quotaName);
+        return
+      }
+      if (peer._closing) return; // closed while resolving
+      const uid = authInfo.uid || null;
+      if (uid && quota.maxConnections !== null) {
+        // A connection this login replaces (keepNew) frees its place.
+        const old = peer.manager.cid2remote.get(authInfo.cid);
+        const replaced = old && old !== peer && old.accountUid === uid && this.duplicateLoginFor(peer) === 'keepNew' ? 1 : 0;
+        if (peer.manager.accountConnections(uid) - replaced >= quota.maxConnections) {
+          this.send_auth_fail(peer, 'too many connections');
+          return
+        }
+      }
 
       //5. check duplicate login.
       if (peer.manager.cid2remote.has(authInfo.cid) && peer.manager.cid2remote.get(authInfo.cid) !== peer) {
@@ -9089,7 +9405,8 @@ class BohoAuth {
           $$1.MB('#MsgType', '8', IOMsg.AUTH_CLEAR),
           $$1.MB('#reason', 'duplicate login.')
         );
-        if (this.keepOldConnection) { // duplicateLogin 'keepOld'
+        const keepOld = this.duplicateLoginFor(peer) === 'keepOld';
+        if (keepOld) {
           peer.boho.isAuthorized = false;
           // keep old connection. reject new connection by sending auth_fail signal.
           // peer.send(authClearSignal)
@@ -9105,13 +9422,13 @@ class BohoAuth {
           old.close();
         }
         this.emitAuthEvent({
-          type: this.keepOldConnection ? 'duplicate_rejected' : 'replaced',
+          type: keepOld ? 'duplicate_rejected' : 'replaced',
           did: id, cid: authInfo.cid, uid: authInfo.uid || null,
           ip: peer.ip, oldIp: old.ip,
           socketType: transportOf(peer), oldSocketType: transportOf(old),
           reason: 'duplicate login', at: Date.now()
         });
-        if (this.keepOldConnection) return
+        if (keepOld) return
       }
 
       //6. delete current (or anonymouse)cid if exist.
@@ -9126,26 +9443,11 @@ class BohoAuth {
       peer.nick = authInfo.cid; // temporary: nick as cid
       if (authInfo.uid) peer.uid = authInfo.uid;
 
-      //8. setting quota level. 
-      let quotaLevel = serverOption.defaultQuotaIndex;
-      if (authInfo.level) quotaLevel = authInfo.level;
-      quotaLevel = parseInt(quotaLevel);
-      let newQuota = quotaTable[quotaLevel];
-      if (!newQuota) {
-        let err = 'no index quotaTable for auth.level: ' + quotaLevel;
-        this.send_auth_fail(peer, err);
-        return
-      } else {
-        peer.level = quotaLevel;
-        peer.quota = newQuota;
-      }
-
-      if (peer.level === serverOption.adminLevel) {
-        console.log('## LOGIN ADMIN CID:', peer.cid);
-        peer.isAdmin = true;
-      }
-      // send quota.level
-      peer.send(Buffer.from([IOMsg.QUOTA_LEVEL, quotaLevel]));
+      //8. role and quota; the client is told its quota.
+      peer.role = role;
+      if (role === 'admin') console.log('## LOGIN ADMIN CID:', peer.cid);
+      if (uid) peer.manager.addAccountConnection(peer, uid);
+      peer.setQuota(quotaName, true);
 
       //9. set cid2remote
       peer.manager.cid2remote.set(peer.cid, peer);
@@ -9174,9 +9476,9 @@ class BohoAuth {
     }
   }
 
-  async addAuth(id, keyStr, cid, level = 0) {
+  async addAuth(id, keyStr, cid, role, quota) {
     if (typeof this.keyProvider.addAuth === 'function') {
-      return this.keyProvider.addAuth(id, keyStr, cid, level);
+      return this.keyProvider.addAuth(id, keyStr, cid, role, quota);
     }
   }
 
@@ -9202,7 +9504,8 @@ class BohoAuth {
  *
  *  mode 'idKey':     the key equals the ID, e.g. io.auth('dev1', 'dev1').
  *  mode 'sharedKey': any ID with the one shared key, e.g. io.auth('dev1', 'lab2026').
- *  level: quota level of every login (a quotaTable index), default serverOption.defaultQuotaIndex.
+ *  role:  role of every login, default 'device' ('service' or 'admin' must be asked for).
+ *  quota: Server quotas profile of every login, default from BohoAuth resolveQuota.
  *
  * example => new BohoAuth(new LocalKeyProvider({ mode: 'sharedKey', key: 'lab2026' }))
  *
@@ -9215,23 +9518,27 @@ const hashKey = keyStr => Buffer.from(it.sha256.hash(keyStr)).toString('base64')
 
 class LocalKeyProvider {
   /**
-   * @param {'idKey' | { mode: 'idKey' | 'sharedKey', key?: string, level?: number }} options
+   * @param {'idKey' | { mode: 'idKey' | 'sharedKey', key?: string,
+   *   role?: 'device' | 'service' | 'admin', quota?: string }} options
    *   A string is the mode alone.
    */
   constructor(options) {
-    const { mode, key, level } = typeof options === 'string' ? { mode: options } : (options ?? {});
+    const { mode, key, role = 'device', quota } = typeof options === 'string' ? { mode: options } : (options ?? {});
     if (!MODES.includes(mode)) {
       throw new TypeError(`LocalKeyProvider mode must be one of: ${MODES.join(', ')}`)
     }
     if (mode === 'sharedKey' && (typeof key !== 'string' || key.length === 0)) {
       throw new TypeError("LocalKeyProvider mode 'sharedKey' needs a non-empty key")
     }
-    // BohoAuth fails every login whose level has no quotaTable entry, so reject it here instead.
-    if (level !== undefined && !(Number.isInteger(level) && quotaTable[level])) {
-      throw new RangeError(`LocalKeyProvider level must be a quotaTable index: ${Object.keys(quotaTable).join(', ')}`)
+    if (quota !== undefined && (typeof quota !== 'string' || !quota)) {
+      throw new TypeError('LocalKeyProvider quota must be a quotas profile name')
+    }
+    if (!ROLES.includes(role) || role === 'anonymous') {
+      throw new RangeError(`LocalKeyProvider role must be one of: ${ROLES.slice(1).join(', ')}`)
     }
     this.mode = mode;
-    this.level = level;
+    this.role = role;
+    this.quota = quota;
     // Hashed like StringKeyProvider, so a 44-character shared key is not mistaken for a stored hash.
     this.sharedKeyHash = mode === 'sharedKey' ? hashKey(key) : null;
   }
@@ -9241,9 +9548,98 @@ class LocalKeyProvider {
     return {
       key: this.sharedKeyHash ?? hashKey(id),
       cid: id,
-      level: this.level ?? serverOption.defaultQuotaIndex
+      role: this.role,
+      ...(this.quota && { quota: this.quota })
     }
   }
+}
+
+// Removed or renamed in 9.0, as Server options and as serverOption keys ('global': only as a
+// serverOption key). An error names the replacement instead of the setting silently doing nothing.
+const REMOVED = [
+  ['showMessage', 'logMessages: true'],
+  ['showMetric', "logStats: <interval ms> (for lists, the sudo service's remotes/channels commands)"],
+  ['monitorPeriod', 'logStats: <interval ms>'],
+  ['timeout', 'heartbeatInterval'],
+  ['pingTimeoutGrace', 'heartbeatGrace'],
+  ['retain.isAvailable', 'retain.enabled'],
+  ['useQuota', 'quotas: named quota profiles, always enforced (null: unlimited)'],
+  ['defaultQuotaIndex', "anonymousQuota: a quotas profile name; logins use their account's quota"],
+  ['auth.delay_auth_fail', 'auth.failDelay', 'global'],
+  ['adminLevel', "role: 'admin' in the account (key entry)", 'global'],
+  ['clientTracking', 'nothing: it was never used', 'global'],
+  ...['port', 'congPort', 'httpServer', 'wsPath'].map(name => [name, `new Server({ ${name} })`, 'global'])
+];
+const lookup = (object, path) => path.split('.').reduce((value, key) => value?.[key], object);
+
+function checkRemoved(options) {
+  for (const [path, replacement, scope] of REMOVED) {
+    const sources = scope === 'global' ? [['serverOption.', serverOption]] : [['', options], ['serverOption.', serverOption]];
+    for (const [prefix, source] of sources) {
+      if (lookup(source, path) !== undefined) {
+        throw new TypeError(`${prefix}${path} was removed in iosignal 9.0; use ${replacement}`)
+      }
+    }
+  }
+}
+
+const MAX_TIMER_MS = 2147483647; // setTimeout limit
+
+function integer(name, value, min, max = Number.MAX_SAFE_INTEGER) {
+  if (!Number.isSafeInteger(value) || value < min || value > max) {
+    throw new RangeError(`${name} must be an integer from ${min} to ${max}`)
+  }
+  return value
+}
+const positive = (name, value) => integer(name, value, 1);
+const nonNegative = (name, value) => integer(name, value, 0);
+const QUOTA_LIMITS = ['maxMessageBytes', 'fanout', 'msgPerSec', 'bytesPerSec', 'maxConnections'];
+
+// This Server's quota profiles: the defaults with each given profile merged over its default
+// (a new name starts from no limits). Every limit is a positive integer or null (unlimited).
+function quotaProfiles(given) {
+  if (given !== undefined && (given === null || typeof given !== 'object')) {
+    throw new TypeError('quotas must be an object')
+  }
+  const profiles = {};
+  for (const name of new Set([...Object.keys(serverOption.quotas), ...Object.keys(given ?? {})])) {
+    const profile = given?.[name];
+    if (profile !== undefined && (profile === null || typeof profile !== 'object')) {
+      throw new TypeError(`quotas.${name} must be an object`)
+    }
+    for (const key of Object.keys(profile ?? {})) {
+      if (!QUOTA_LIMITS.includes(key)) throw new TypeError(`unknown option quotas.${name}.${key}`)
+    }
+    const base = serverOption.quotas[name] ?? Object.fromEntries(QUOTA_LIMITS.map(key => [key, null]));
+    profiles[name] = { ...base, ...profile };
+    for (const key of QUOTA_LIMITS) {
+      if (profiles[name][key] !== null) positive(`quotas.${name}.${key}`, profiles[name][key]);
+    }
+  }
+  return profiles
+}
+function boolean(name, value) {
+  if (typeof value !== 'boolean') throw new TypeError(`${name} must be a boolean`)
+  return value
+}
+
+// A nested option group: this Server's own copy of the serverOption defaults with its options
+// applied. Unknown keys are errors, so a typo does not silently do nothing.
+function group(name, given, checks) {
+  if (given !== undefined && (given === null || typeof given !== 'object')) {
+    throw new TypeError(`${name} must be an object`)
+  }
+  for (const key of Object.keys(given ?? {})) {
+    if (!(key in checks)) throw new TypeError(`unknown option ${name}.${key}`)
+  }
+  const merged = { ...serverOption[name], ...given };
+  for (const [key, check] of Object.entries(checks)) check(`${name}.${key}`, merged[key]);
+  return merged
+}
+
+function resolveLogStats(value) {
+  if (value === 0 || value === false) return 0
+  return integer('logStats', value, 1000, MAX_TIMER_MS)
 }
 
 class Server extends require$$0$3 {
@@ -9251,8 +9647,29 @@ class Server extends require$$0$3 {
   /**
    * @param {object} options Server configuration.
    *   options.localAuth: login without a key list, for local testing. 'idKey' (key = ID) or
-   *   { mode: 'idKey' | 'sharedKey', key, level } (see LocalKeyProvider); the CID is the ID.
+   *   { mode: 'idKey' | 'sharedKey', key, role, quota } (see LocalKeyProvider); the CID is the ID.
    *   Cannot be combined with authManager.
+   *   Every other setting is this Server's own: given here, else the serverOption default, which is
+   *   never modified. Nested groups (security, retain, quotas) are merged over their defaults;
+   *   unknown or removed names are errors.
+   *   options.heartbeatInterval: ms between liveness checks (default 50000).
+   *   options.heartbeatGrace: extra ms a peer has to answer before it is closed (default 5000).
+   *   options.trustProxy: when X-Forwarded-For/-Proto are used. 'private' (default) only from a
+   *   loopback/private peer, true always, false never, or N trusted proxy hops.
+   *   options.maxPayload: largest WebSocket message and CongSocket frame in bytes (default 32 MiB).
+   *   options.maxBufferedBytes: close a peer whose unsent data exceeds this (default 64 MiB).
+   *   options.membersOnly: drop signals from connections that are not authenticated.
+   *   options.logMessages: log each received message after decryption: type and tag, never the payload.
+   *   options.logStats: print a one-line summary every N ms (>= 1000; 0 = off); see stats().
+   *   options.security: { maxClockSkewMs, authChallengeMaxAgeMs, maxReplayEntries }.
+   *   options.retain: retained message limits, see serverOption.retain; adjustable later on server.retain.
+   *   options.quotas: named quota profiles { name: { maxMessageBytes, fanout, msgPerSec, bytesPerSec,
+   *   maxConnections } }, merged over serverOption.quotas; always enforced, null is unlimited.
+   *   Adjustable later on server.quotas. The client is told its maxMessageBytes.
+   *   options.anonymousQuota: profile of a connection that has not authenticated (default 'anonymous').
+   *   options.duplicateLogin: 'keepOld' | 'keepNew' for this Server's connections; overrides the auth
+   *   manager's own policy without changing it, so an auth manager can be shared between servers.
+   *   A failed listen (e.g. EADDRINUSE) is emitted as 'error'.
    * @param {any} [authManager] Optional authentication manager.
    */
   constructor(options, authManager) {
@@ -9261,13 +9678,33 @@ class Server extends require$$0$3 {
       if (authManager) throw new TypeError('localAuth cannot be combined with an authManager')
       authManager = new BohoAuth(new LocalKeyProvider(options.localAuth));
     }
-    const security = { ...serverOption.security, ...options.security };
-    for (const name of ['maxClockSkewMs', 'authChallengeMaxAgeMs', 'maxReplayEntries']) {
-      if (!Number.isSafeInteger(security[name]) || security[name] <= 0) {
-        throw new RangeError(`security.${name} must be a positive safe integer`);
-      }
+    // Each Server resolves its settings once, here: serverOption only supplies the defaults and is
+    // never written, so servers in one process do not affect each other.
+    checkRemoved(options);
+    this.security = Object.freeze(group('security', options.security,
+      { maxClockSkewMs: positive, authChallengeMaxAgeMs: positive, maxReplayEntries: positive }));
+    // retain and quotas may be adjusted on a running server, e.g. server.quotas.basic.fanout = 50.
+    this.retain = group('retain', options.retain, {
+      enabled: boolean, limitSize: positive, limitCounter: positive, tagsPerOwner: positive,
+      bytesPerOwner: positive, anonymousGraceMs: nonNegative, bytesPerConnection: positive, bytesTotal: positive });
+    this.quotas = quotaProfiles(options.quotas);
+    this.anonymousQuota = options.anonymousQuota ?? serverOption.anonymousQuota;
+    if (!Object.hasOwn(this.quotas, this.anonymousQuota)) {
+      throw new RangeError(`anonymousQuota must be one of the quotas: ${Object.keys(this.quotas).join(', ')}`)
     }
-    this.security = Object.freeze(security);
+    this.heartbeatInterval = integer('heartbeatInterval',
+      options.heartbeatInterval ?? serverOption.heartbeatInterval, 1, MAX_TIMER_MS);
+    this.heartbeatGrace = integer('heartbeatGrace', options.heartbeatGrace ?? serverOption.heartbeatGrace, 0, MAX_TIMER_MS);
+    this.maxPayload = positive('maxPayload', options.maxPayload ?? serverOption.maxPayload);
+    this.maxBufferedBytes = positive('maxBufferedBytes', options.maxBufferedBytes ?? serverOption.maxBufferedBytes);
+    this.logMessages = boolean('logMessages', options.logMessages ?? serverOption.logMessages);
+    this.logStats = resolveLogStats(options.logStats ?? serverOption.logStats);
+    this.trustProxy = options.trustProxy ?? serverOption.trustProxy;
+    if (![true, false, 'private'].includes(this.trustProxy) &&
+        !(Number.isSafeInteger(this.trustProxy) && this.trustProxy > 0)) {
+      throw new RangeError("trustProxy must be true, false, 'private' or a positive integer");
+    }
+    this.membersOnly = boolean('membersOnly', options.membersOnly ?? serverOption.membersOnly);
     this.serviceNames = new Set();
     this.services = new Map();   // name -> service module (for lifecycle hooks)
     // Stays null for a CongSocket-only server, so close() does not wait on a WebSocket server.
@@ -9275,38 +9712,13 @@ class Server extends require$$0$3 {
     this.port = null;
     this.congPort = null;
 
-    if (options.pingTimeoutGrace !== undefined) {
-      if (!Number.isFinite(options.pingTimeoutGrace) || options.pingTimeoutGrace < 0) {
-        throw new RangeError('pingTimeoutGrace must be a finite non-negative number');
-      }
-      serverOption.pingTimeoutGrace = options.pingTimeoutGrace;
-    }
-
-    if (options.timeout) {
-      let pingT = parseInt(options.timeout);
-      if (pingT && pingT >= 1000) serverOption.timeout = pingT;
-    }
-    if (options.monitorPeriod) {
-      let monitorT = parseInt(options.monitorPeriod);
-      if (monitorT && monitorT >= 1000) serverOption.monitorPeriod = monitorT;
-    }
-    if (options.showMessage) {
-      serverOption.showMessage = options.showMessage;
-    }
-    if (options.showMetric) {
-      serverOption.showMetric = options.showMetric;
-    }
-    if (options.membersOnly) {
-      serverOption.membersOnly = options.membersOnly;
-    }
-    // Applies to this server's auth manager only; without auth there are no duplicate logins.
+    // Read by the auth manager for this server's connections; the auth manager itself is not
+    // changed, since it may be shared. null: the auth manager's own policy.
+    this.duplicateLogin = null;
     if (options.duplicateLogin !== undefined) {
-      validateDuplicateLogin(options.duplicateLogin);
-      if (authManager) {
-        if (!('duplicateLogin' in authManager)) {
-          throw new TypeError('duplicateLogin: the auth manager does not support this option')
-        }
-        authManager.duplicateLogin = options.duplicateLogin;
+      this.duplicateLogin = validateDuplicateLogin(options.duplicateLogin);
+      if (authManager && !('duplicateLogin' in authManager)) {
+        throw new TypeError('duplicateLogin: the auth manager does not support this option')
       }
     }
 
@@ -9347,9 +9759,9 @@ class Server extends require$$0$3 {
   startWSServer() {
     // console.log('optoins', options )
     if (this.port || this.port == 0) {
-      this.wss = new WebSocketServer({ port: this.port , path: this.wsPath });
+      this.wss = new WebSocketServer({ port: this.port , path: this.wsPath, maxPayload: this.maxPayload });
     } else if (this.httpServer ) {
-      this.wss = new WebSocketServer({ server: this.httpServer, path: this.wsPath });
+      this.wss = new WebSocketServer({ server: this.httpServer, path: this.wsPath, maxPayload: this.maxPayload });
     } else {
       throw new TypeError(
         'One and only one of the "port", "httpServer"' +
@@ -9367,12 +9779,7 @@ class Server extends require$$0$3 {
     });
 
     // this.wss.setMaxListeners(0)
-    this.wss.on('error', (err) => {
-      console.error('### ws server error:', err.message);
-      if (err.code == 'EADDRINUSE') {
-        process.exit();
-      }
-    });
+    this.wss.on('error', (err) => this.onListenerError('ws', err));
 
     this.wss.on('close', () => {
       // console.log('### WS server is closed.')
@@ -9392,12 +9799,8 @@ class Server extends require$$0$3 {
       socket.setNoDelay(true);
       this.manager.addRemote(socket);
     })
-      .on('error', (err) => {
-        console.log('### cong server error:', err.message);
-        if (err.code == 'EADDRINUSE') {
-          process.exit();
-        }
-      }).on('close', () => {
+      .on('error', (err) => this.onListenerError('cong', err))
+      .on('close', () => {
         // console.log('### congsocket server is closed.')
       }).listen(this.congPort, () => {
         this.congPort = this.congServer.address().port;
@@ -9407,6 +9810,26 @@ class Server extends require$$0$3 {
           this.emit('ready');
         }
       });
+  }
+
+  // A failed listen (e.g. EADDRINUSE) is the application's to handle: emitted as 'error',
+  // which, like any EventEmitter, throws when nothing listens. Other errors are logged.
+  onListenerError(name, err) {
+    console.error(`### ${name} server error:`, err.message);
+    if (err.syscall === 'listen') this.emit('error', err);
+  }
+
+  /**
+   * Current server state, for monitoring. counters are cumulative since the server started
+   * (rates are the reader's to compute from two snapshots). Enumerates connections once.
+   * @returns {{ at: number, connections: { total: number, authenticated: number, anonymous: number,
+   *   websocket: number, tcp: number }, channels: number, retained: { channel: number, bytes: number },
+   *   counters: { rxMessages: number, rxBytes: number, txMessages: number, txBytes: number,
+   *   publishes: number, deliveryAttempts: number, quotaExcluded: number, peerRxLimitSkipped: number },
+   *   memory: { rss: number, heapUsed: number } }}
+   */
+  stats() {
+    return this.manager.metrics.snapshot()
   }
 
 /**
@@ -9562,9 +9985,10 @@ class FileKeyProvider {
     return Array.from(this.AUTH.keys())
   }
 
-  addAuth(id, keyStr, cid, level = 0) {
+  // Each item: [id, key, cid, role?, quota?]; see StringKeyProvider.
+  addAuth(id, keyStr, cid, role, quota) {
     let Base64hashKey = Buffer.from(it.sha256.hash(keyStr)).toString('base64');
-    this.AUTH.set(id, { key: Base64hashKey, cid: cid, level: level });
+    this.AUTH.set(id, { key: Base64hashKey, cid, ...(role && { role }), ...(quota && { quota }) });
   }
 }
 
@@ -9599,9 +10023,13 @@ class RedisKeyProvider {
   }
 
   // add device auth info
-  async addAuth(id, keyStr, cid = '', level = 0) {
+  // role and quota are optional (see StringKeyProvider); an omitted one is not stored.
+  async addAuth(id, keyStr, cid = '', role, quota) {
     let Base64hashKey = Buffer.from(it.sha256.hash(keyStr)).toString('base64');
-    return this.redis.hSet(DEVICE_PREFIX + id, { 'key': Base64hashKey, 'cid': cid, 'level': level })
+    const fields = { 'key': Base64hashKey, 'cid': cid };
+    if (role) fields.role = role;
+    if (quota) fields.quota = quota;
+    return this.redis.hSet(DEVICE_PREFIX + id, fields)
   }
 
   //sudoService call
@@ -9616,43 +10044,39 @@ class RedisKeyProvider {
 
 /**
  * StringKeyProvider.js
- * 
- * authInfo <String>
- *  id: max 8chars
- *  key: ~44 base64 chars recomended
- *  cid: 
- *  level: range: 0~255
- *  separator: ',' for multiple devices.
- * 
- * example => authInfo = 'id1.key1.cid1.255,id2.key2.cid2.200'
+ *
+ * authInfo <String>: entries 'id.key.cid[.role[.quota]]' separated by ','.
+ *  id:    max 8 chars
+ *  key:   ~44 base64 chars recommended
+ *  cid:   client ID
+ *  role:  'device' (default) | 'service' | 'admin'
+ *  quota: a Server quotas profile name (default: BohoAuth resolveQuota)
+ *
+ * example => authInfo = 'id1.key1.cid1.admin,id2.key2.cid2.device.pro'
  */
 
 
+const ACCOUNT_ROLES = ROLES.filter(role => role !== 'anonymous');
+
+/** Parses one 'id.key.cid[.role[.quota]]' entry; a malformed one is a TypeError (naming only the id). */
+function parseKeyEntry(entry) {
+  const [id, key, cid, role, quota, ...rest] = entry.split('.');
+  if (!id || !key || !cid || rest.length > 0 || (role && !ACCOUNT_ROLES.includes(role))) {
+    throw new TypeError(`invalid key entry 'id.key.cid[.role[.quota]]' for id: ${id ?? ''}`)
+  }
+  return { id, key, cid, role: role || undefined, quota: quota || undefined }
+}
+
 class StringKeyProvider {
   constructor(authInfo) {
-
     if (!authInfo) {
       throw TypeError("StringKeyProvider constructor() missing authInfo.")
     }
-
-    let id_keys = authInfo.split(',');
-
     this.AUTH = new Map();
-
-    if (id_keys.length >= 1) {
-      id_keys.forEach(v => {
-        let [ did, key, cid, level ]  = v.split('.');
-        level = parseInt(level);
-        if (did && key && cid && typeof level == 'number') {
-          this.addAuth(did, key, cid, level);
-        } else {
-          throw TypeError("StringKeyProvider invalid authInfo.")
-        }
-      });
-    } else {
-      throw TypeError("StringKeyProvider invalid authInfo.")
+    for (const entry of authInfo.split(',')) {
+      const { id, key, cid, role, quota } = parseKeyEntry(entry);
+      this.addAuth(id, key, cid, role, quota);
     }
-
   }
 
   async getAuth(id) {
@@ -9662,17 +10086,17 @@ class StringKeyProvider {
     return Array.from(this.AUTH.keys())
   }
 
-  addAuth(id, keyStr, cid, level = 0) {
+  addAuth(id, keyStr, cid, role, quota) {
     let Base64hashKey = Buffer.from(it.sha256.hash(keyStr)).toString('base64');
-    this.AUTH.set(id, { key: Base64hashKey, cid: cid, level: level });
+    this.AUTH.set(id, { key: Base64hashKey, cid, ...(role && { role }), ...(quota && { quota }) });
   }
 }
 
 const commands$1 = ['echo', 'date', 'unixtime'];
 
-const MIN_LEVEL$2 = 0;
+// Open to every connection.
 function checkPermission$1(remote) {
-  return (remote.level >= MIN_LEVEL$2) ? true : false;
+  return true;
 }
 
 /**
@@ -9719,10 +10143,9 @@ const commands = [
   'adddevice', 'getdevice', 'deldevice'
 ];
 
-const MIN_LEVEL$1 = 255;
-// Only a Boho-authenticated device may use sudo; a raised level alone is not authentication.
+// Only a connection authenticated with role 'admin'.
 function checkPermission(remote) {
-  return remote.boho?.isAuthorized === true && remote.level >= MIN_LEVEL$1;
+  return hasRole(remote, 'admin');
 }
 
 async function call(remote, req) {
@@ -9749,13 +10172,11 @@ async function call(remote, req) {
       if (req.$[0]) result = remote.manager.closeRemoteByCId(req.$[0]);
 
     } else if (cmd == 'addauth' || cmd == 'adddevice') {
-      if (remote.manager.authManager && req.$.length == 4) {
+      // did, key, cid[, role[, quota]]
+      if (remote.manager.authManager && req.$.length >= 3 && req.$.length <= 5) {
         if (remote.manager.authManager.addAuth) {
-          let did = req.$[0];
-          let dkey = req.$[1];
-          let cid = req.$[2];
-          let level = req.$[3];
-          result = await remote.manager.authManager.addAuth(did, dkey, cid, level);
+          const [did, dkey, cid, role, quota] = req.$;
+          result = await remote.manager.authManager.addAuth(did, dkey, cid, role, quota);
         }
 
       }
@@ -9810,7 +10231,6 @@ var sudoService = /*#__PURE__*/Object.freeze({
  * 
  */
 
-const MIN_LEVEL = 200;
 const COMMANDS = [
   'GET', 'SET', 'HGETALL', 'HGET', 'HSET', 'SADD', 'SISMEMBER',
   'SMEMBERS', 'EXISTS', 'SREM', 'DEL', 'KEYS', 'SAVE',
@@ -9823,22 +10243,21 @@ const COMMANDS = [
 class RedisService {
   /**
    * @param {object} redisClient
-   * @param {number} [_minLevel=200]
-   * @param {{ requireAuth?: boolean }} [options] requireAuth (default true): allow Boho-authenticated remotes only.
+   * @param {'anonymous' | 'device' | 'service' | 'admin'} [minRole='service'] lowest role allowed;
+   *   'anonymous' allows every connection.
    */
-  constructor(redisClient, _minLevel, options = {}) {
+  constructor(redisClient, minRole = 'service') {
     if (!redisClient) {
       throw new Error("RedisService constructor: no redisClient")
     }
+    if (!ROLES.includes(minRole)) throw new RangeError(`minRole must be one of: ${ROLES.join(', ')}`)
     this.redisClient = redisClient;
-    this.minLevel = _minLevel ? _minLevel : MIN_LEVEL;
-    this.requireAuth = options.requireAuth !== false;
+    this.minRole = minRole;
     this.commands = COMMANDS;
   }
 
   checkPermission(remote, req) {
-    if (this.requireAuth && remote.boho?.isAuthorized !== true) return false;
-    return (remote.level >= this.minLevel) ? true : false;
+    return hasRole(remote, this.minRole);
   }
 
   async call(remote, req) {
@@ -9872,6 +10291,7 @@ exports.IOMsg = IOMsg;
 exports.LocalKeyProvider = LocalKeyProvider;
 exports.MBP = $$1;
 exports.PAYLOAD_TYPE = PAYLOAD_TYPE;
+exports.ROLES = ROLES;
 exports.RedisKeyProvider = RedisKeyProvider;
 exports.RedisService = RedisService;
 exports.SIZE_LIMIT = SIZE_LIMIT;
@@ -9879,11 +10299,14 @@ exports.STATE = STATE;
 exports.STATUS = STATUS$1;
 exports.Server = Server;
 exports.StringKeyProvider = StringKeyProvider;
+exports.defaultQuota = defaultQuota;
 exports.delay = delay;
 exports.getIPv4HexString = getIPv4HexString;
+exports.getIPv6PrefixHexString = getIPv6PrefixHexString;
 exports.getLocalAddress = getLocalAddress;
 exports.getPayloadFromSignalPack = getPayloadFromSignalPack;
 exports.getSignalPack = getSignalPack;
+exports.hasRole = hasRole;
 exports.isPrivateIP = isPrivateIP;
 exports.numberWithCommas = numberWithCommas;
 exports.pack = pack;

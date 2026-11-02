@@ -5,6 +5,9 @@ import { createRequire } from 'node:module';
 import { readFileSync } from 'node:fs';
 import { performance } from 'node:perf_hooks';
 import net from 'node:net';
+import { createHash } from 'node:crypto';
+import { networkInterfaces } from 'node:os';
+import { WebSocket } from 'ws';
 
 // Private source entry in development; package self-reference for public builds.
 const pkg = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url)));
@@ -31,13 +34,14 @@ function event(emitter, name, signal) {
   });
 }
 
-async function fixture(t, api, authenticated = false, tcp = false, security = {}, options = {}) {
+// options.authManager: use this auth manager (e.g. one shared between servers) instead of the fixture's.
+async function fixture(t, api, authenticated = false, tcp = false, security = {}, { authManager, ...options } = {}) {
   const http = createServer();
   const previousMembersOnly = api.serverOption.membersOnly;
   api.serverOption.membersOnly = authenticated;
-  const auth = authenticated
-    ? new api.BohoAuth(new api.StringKeyProvider('tester.fixture-key.fixture-client.3'))
-    : undefined;
+  const auth = authManager ?? (authenticated
+    ? new api.BohoAuth(new api.StringKeyProvider('tester.fixture-key.fixture-client'))
+    : undefined);
   const server = new api.Server({ httpServer: http, security, ...(tcp ? { congPort: 0 } : {}), ...options }, auth);
   const clients = [];
   const errors = [];
@@ -103,26 +107,20 @@ for (const [format, api] of variants) {
     });
   }
 
-  test(`${format}: invalid heartbeat grace is rejected without changing defaults`, () => {
-    const grace = api.serverOption.pingTimeoutGrace;
-    const timeout = api.serverOption.timeout;
-    for (const value of [-1, NaN, Infinity, -Infinity, '1000', '', null, false, {}]) {
-      assert.throws(() => new api.Server({ port: 0, timeout: 2000, pingTimeoutGrace: value }),
-        { name: 'RangeError', message: 'pingTimeoutGrace must be a finite non-negative number' });
-      assert.equal(api.serverOption.pingTimeoutGrace, grace);
-      assert.equal(api.serverOption.timeout, timeout);
+  test(`${format}: invalid heartbeat settings are rejected without changing defaults`, () => {
+    for (const value of [-1, 1.5, NaN, Infinity, -Infinity, '1000', '', false, {}, 2 ** 31]) {
+      assert.throws(() => new api.Server({ port: 0, heartbeatInterval: 2000, heartbeatGrace: value }),
+        { name: 'RangeError', message: 'heartbeatGrace must be an integer from 0 to 2147483647' });
+      assert.throws(() => new api.Server({ port: 0, heartbeatInterval: value === -1 ? 0 : value }),
+        { name: 'RangeError', message: 'heartbeatInterval must be an integer from 1 to 2147483647' });
     }
+    assert.deepEqual([api.serverOption.heartbeatInterval, api.serverOption.heartbeatGrace], [50000, 5000]);
   });
 
   for (const tcp of [false, true]) {
-    for (const grace of [undefined, 0, 1234.5]) {
+    for (const grace of [undefined, 0, 1234]) {
       test(`${format}: ${tcp ? 'TCP' : 'WS'} heartbeat deadline with grace ${grace ?? 'default'}`, async t => {
-        const previous = { timeout: api.serverOption.timeout, pingTimeoutGrace: api.serverOption.pingTimeoutGrace };
-        t.after(() => Object.assign(api.serverOption, previous));
-        assert.equal(previous.timeout, 50000);
-        assert.equal(previous.pingTimeoutGrace, 5000);
-        // Keep the existing timeout string parsing behavior for custom options.
-        const options = grace === undefined ? {} : { timeout: '2000', pingTimeoutGrace: grace };
+        const options = grace === undefined ? {} : { heartbeatInterval: 2000, heartbeatGrace: grace };
         const { server, connect } = await fixture(t, api, false, tcp, {}, options);
         const manager = server.manager;
         clearTimeout(manager.pingIntervalID);
@@ -138,7 +136,7 @@ for (const [format, api] of variants) {
         const expectedGrace = grace ?? 5000;
         assert.equal(manager.pingPeriod, period);
         assert.equal(manager.pingGrace, expectedGrace);
-        assert.equal(api.serverOption.pingTimeoutGrace, expectedGrace);
+        assert.equal(api.serverOption.heartbeatGrace, 5000, 'the default is not changed');
         manager.pingGroupCursor = remote.pingGroup;
         manager.heartbeatTick();
         const deadline = 100 + period + expectedGrace;
@@ -469,7 +467,7 @@ for (const [format, api] of variants) {
   });
 
   test(`${format}: duplicate login policy defaults to keepNew and validates overrides`, () => {
-    const provider = new api.StringKeyProvider('tester.fixture-key.fixture-client.3');
+    const provider = new api.StringKeyProvider('tester.fixture-key.fixture-client');
     assert.equal(api.serverOption.auth.duplicateLogin, 'keepNew');
     const auth = new api.BohoAuth(provider);
     assert.deepEqual([auth.duplicateLogin, auth.keepOldConnection], ['keepNew', false]);
@@ -539,6 +537,45 @@ for (const [format, api] of variants) {
       if (peer !== remote) assert.equal(peer.boho.isAuthorized, false);
     }
     assert.deepEqual((await old.call('reply', 'echo', 'kept')).body, ['kept']);
+  });
+
+  test(`${format}: Server duplicateLogin applies to its own connections and leaves a shared auth manager unchanged`, { timeout: 10000 }, async t => {
+    const auth = new api.BohoAuth(new api.StringKeyProvider('tester.fixture-key.fixture-client'));
+    // Created first: a policy written into the shared auth manager would be overwritten by the next server.
+    const keepOld = await fixture(t, api, false, false, {}, { authManager: auth, duplicateLogin: 'keepOld' });
+    const keepNew = await fixture(t, api, false, false, {}, { authManager: auth, duplicateLogin: 'keepNew' });
+    const followsAuth = await fixture(t, api, false, false, {}, { authManager: auth });
+    assert.deepEqual([keepOld.server.duplicateLogin, keepNew.server.duplicateLogin, followsAuth.server.duplicateLogin],
+      ['keepOld', 'keepNew', null]);
+    assert.equal(auth.duplicateLogin, api.serverOption.auth.duplicateLogin);
+
+    const kept = await keepOld.connect(['tester', 'fixture-key']);
+    const keptRemote = keepOld.server.manager.cid2remote.get(kept.cid);
+    const duplicate = keepOld.client(['tester', 'fixture-key']);
+    duplicate.autoReconnect = false;
+    const rejected = event(duplicate, 'auth_fail', t.signal);
+    duplicate.open(keepOld.url);
+    await rejected;
+    assert.equal(keepOld.server.manager.cid2remote.get(kept.cid), keptRemote);
+
+    const old = await keepNew.connect(['tester', 'fixture-key']);
+    old.autoReconnect = false;
+    const oldRemote = keepNew.server.manager.cid2remote.get(old.cid);
+    const closed = event(oldRemote.socket, 'close', t.signal);
+    const replacement = await keepNew.connect(['tester', 'fixture-key']);
+    await closed;
+    assert.notEqual(keepNew.server.manager.cid2remote.get(replacement.cid), oldRemote);
+
+    // Without the option a server follows the auth manager, now set to keepOld.
+    auth.duplicateLogin = 'keepOld';
+    const first = await followsAuth.connect(['tester', 'fixture-key']);
+    const second = followsAuth.client(['tester', 'fixture-key']);
+    second.autoReconnect = false;
+    const refused = event(second, 'auth_fail', t.signal);
+    second.open(followsAuth.url);
+    await refused;
+    assert.ok(followsAuth.server.manager.cid2remote.get(first.cid));
+    assert.equal(auth.duplicateLogin, 'keepOld');
   });
 }
 
@@ -1074,6 +1111,469 @@ for (const [format, api] of variants) {
     await new Promise(resolve => server.close(resolve));
     closed = true;
   });
+
+  test(`${format}: CongSocket closes a connection without a CID that announces an oversized frame`, { timeout: 10000 }, async t => {
+    const server = new api.Server({ congPort: 0 });
+    t.after(() => new Promise(resolve => server.close(resolve)));
+    await event(server, 'ready', t.signal);
+    const accepted = event(server.congServer, 'connection', t.signal);
+    const socket = net.connect(server.congPort, '127.0.0.1');
+    socket.on('error', () => {}); // the server may reset while we write
+    t.after(() => socket.destroy());
+    const [serverSocket] = await accepted;
+    const remote = [...server.manager.remotes].find(r => r.socket === serverSocket);
+    const removed = event(serverSocket, 'close', t.signal);
+    // The length header advertises 4 GiB; nothing of it may be buffered.
+    socket.write(Buffer.concat([Buffer.from([4, 0xff, 0xff, 0xff, 0xff]), Buffer.alloc(1024)]));
+    await removed;
+    assert.equal(remote.congRx.buffer.byteLength, 0);
+    assert.equal(server.manager.remotes.has(remote), false);
+  });
+
+  test(`${format}: CongSocket CLOSE closes with or without a reason and names reason codes`, { timeout: 10000 }, async t => {
+    const server = new api.Server({ congPort: 0 });
+    t.after(() => new Promise(resolve => server.close(resolve)));
+    await event(server, 'ready', t.signal);
+    // As the Arduino library sends it: [CLOSE, reason], each in a CongSocket frame.
+    async function closeWith(...frames) {
+      const accepted = event(server.congServer, 'connection', t.signal);
+      const socket = net.connect(server.congPort, '127.0.0.1');
+      socket.on('error', () => {});
+      socket.resume(); // read to the server's FIN, so the client side ends too
+      t.after(() => socket.destroy());
+      const [serverSocket] = await accepted;
+      const remote = [...server.manager.remotes].find(r => r.socket === serverSocket);
+      const closed = event(serverSocket, 'close', t.signal);
+      for (const frame of frames) socket.write(api.pack(Buffer.from(frame)));
+      await closed;
+      return remote.closeReason;
+    }
+    const { CLOSE, AUTH_CLEAR, SERVER_REDIRECT } = api.IOMsg;
+    assert.equal(await closeWith([CLOSE, AUTH_CLEAR]), 'AUTH_CLEAR(0xc4)');
+    assert.equal(await closeWith([CLOSE, SERVER_REDIRECT]), 'SERVER_REDIRECT(0xc5)');
+    assert.equal(await closeWith([CLOSE, 253]), 'CONG_UNKNOWN_TYPE(0xfd)');
+    assert.equal(await closeWith([CLOSE, 0x10]), '0x10');
+    assert.equal(await closeWith([CLOSE, ...Buffer.from('bye')]), 'bye');
+    // The reason is optional: a bare CLOSE closes too.
+    assert.equal(await closeWith([CLOSE]), 'none');
+  });
+
+  test(`${format}: CongSocket skips an oversized frame and keeps the connection`, { timeout: 10000 }, async t => {
+    assert.throws(() => new api.Server({ port: 0, maxPayload: 0 }), RangeError);
+    const { server, connect } = await fixture(t, api, false, true, {}, { maxPayload: 1024 });
+    assert.equal(server.wss.options.maxPayload, 1024);
+    assert.equal(api.serverOption.maxPayload, 32 * 1024 * 1024, 'the default is not changed');
+    const subscriber = await connect(), publisher = await connect();
+    const messages = [];
+    subscriber.on('message', (tag, value) => messages.push([tag, value]));
+    subscriber.subscribe('room');
+    await subscriber.call('reply', 'echo', 'subscribed');
+    const overSize = event(publisher, 'over_size', t.signal);
+    publisher.signal('room', 'x'.repeat(4096));
+    await overSize;
+    const received = event(subscriber, 'message', t.signal);
+    publisher.signal('room', 'small');
+    await received;
+    assert.deepEqual(messages, [['room', 'small']]);
+  });
+
+  test(`${format}: a port in use is reported as an 'error' event instead of exiting`, { timeout: 10000 }, async t => {
+    const first = new api.Server({ port: 0, congPort: 0 });
+    t.after(() => new Promise(resolve => first.close(resolve)));
+    await event(first, 'ready', t.signal);
+    for (const options of [{ port: first.port }, { congPort: first.congPort }]) {
+      const second = new api.Server(options);
+      const [error] = await event(second, 'error', t.signal);
+      assert.equal(error.code, 'EADDRINUSE');
+      await new Promise(resolve => second.close(resolve));
+    }
+  });
+
+  // Raw WebSocket so the test can send proxy headers; resolves to the server-side Remote.
+  async function remoteWithHeaders(t, server, url, headers) {
+    const accepted = event(server.wss, 'connection', t.signal);
+    const ws = new WebSocket(url, { headers });
+    ws.on('error', () => {});
+    t.after(() => ws.terminate());
+    const [socket] = await accepted;
+    return [...server.manager.remotes].find(remote => remote.socket === socket);
+  }
+
+  test(`${format}: forwarding headers are trusted only from a private proxy, rightmost entry first`, { timeout: 10000 }, async t => {
+    assert.throws(() => new api.Server({ port: 0, trustProxy: 'yes' }), RangeError);
+    const { server, url } = await fixture(t, api);
+    assert.equal(server.trustProxy, 'private');
+    // A client-supplied entry left of the proxy's own is ignored.
+    const proxied = await remoteWithHeaders(t, server, url,
+      { 'x-forwarded-for': '10.9.9.9, 203.0.113.7', 'x-forwarded-proto': 'https' });
+    assert.equal(proxied.ip, '203.0.113.7');
+    assert.equal(proxied.HOME_CHANNEL, 'IP:cb007107');
+    assert.equal(proxied.TLS, true);
+    assert.equal(proxied.privateNode, false);
+    // Only a loopback/private peer counts as a proxy.
+    assert.equal(proxied.trustedProxyHops('127.0.0.1'), 1);
+    assert.equal(proxied.trustedProxyHops('203.0.113.7'), 0);
+    const invalid = await remoteWithHeaders(t, server, url, { 'x-forwarded-for': 'unknown' });
+    assert.equal(invalid.ip, '127.0.0.1');
+    assert.equal(invalid.HOME_CHANNEL, 'PRIVATE:');
+  });
+
+  test(`${format}: trustProxy false ignores and a hop count selects forwarding headers`, { timeout: 10000 }, async t => {
+    const headers = { 'x-forwarded-for': '198.51.100.1, 203.0.113.7, 10.0.0.2', 'x-forwarded-proto': 'https' };
+    const direct = await fixture(t, api, false, false, {}, { trustProxy: false });
+    const ignored = await remoteWithHeaders(t, direct.server, direct.url, headers);
+    assert.deepEqual([ignored.ip, ignored.TLS, ignored.HOME_CHANNEL], ['127.0.0.1', false, 'PRIVATE:']);
+    const chain = await fixture(t, api, false, false, {}, { trustProxy: 2 });
+    const second = await remoteWithHeaders(t, chain.server, chain.url, headers);
+    assert.equal(second.ip, '203.0.113.7');
+  });
+
+  test(`${format}: IPv6 clients get a home channel per /64 network`, { timeout: 10000 }, async t => {
+    assert.equal(api.isPrivateIP('fd00::1'), true);
+    assert.equal(api.isPrivateIP('fe80::1%en0'), true);
+    assert.equal(api.isPrivateIP('::ffff:192.168.1.2'), true);
+    assert.equal(api.isPrivateIP('2001:db8::1'), false);
+    assert.equal(api.getIPv6PrefixHexString('2001:db8:1:2::5'), '20010db800010002');
+    const { server, url } = await fixture(t, api);
+    const homes = [];
+    for (const ip of ['2001:db8:1:2::5', '2001:db8:1:2:aaaa:bbbb:cccc:dddd', '2001:db8:1:3::5']) {
+      homes.push((await remoteWithHeaders(t, server, url, { 'x-forwarded-for': ip })).HOME_CHANNEL);
+    }
+    assert.deepEqual(homes, ['IP6:20010db800010002', 'IP6:20010db800010002', 'IP6:20010db800010003']);
+  });
+
+  for (const tcp of [false, true]) {
+    test(`${format}: ${tcp ? 'TCP' : 'WS'} closes a peer whose unsent data exceeds maxBufferedBytes`, { timeout: 10000 }, async t => {
+      assert.throws(() => new api.Server({ port: 0, maxBufferedBytes: 0 }), RangeError);
+      const { server, connect } = await fixture(t, api, false, tcp, {}, { maxBufferedBytes: 4096 });
+      const slow = await connect(), publisher = await connect();
+      slow.subscribe('room');
+      await slow.call('reply', 'echo', 'subscribed');
+      const remote = server.manager.cid2remote.get(slow.cid);
+      // As if the peer stopped reading: the transport reports a queue over the limit.
+      Object.defineProperty(remote.socket, tcp ? 'writableLength' : 'bufferedAmount', { configurable: true, get: () => 4097 });
+      const closed = event(remote.socket, 'close', t.signal);
+      publisher.signal('room', 'x');
+      await closed;
+      assert.equal(server.manager.cid2remote.has(slow.cid), false);
+      assert.ok(server.manager.cid2remote.has(publisher.cid), 'other peers are unaffected');
+    });
+  }
+
+  function captureLog(t) {
+    const lines = [];
+    t.mock.method(console, 'log', (...args) => {
+      lines.push(args.map(arg => typeof arg === 'string' ? arg : JSON.stringify(arg)).join(' '));
+    });
+    return lines;
+  }
+
+  test(`${format}: logMessages logs decrypted message types and tags, never payloads`, { timeout: 10000 }, async t => {
+    const { connect } = await fixture(t, api, true, false, {}, { logMessages: true });
+    const lines = captureLog(t);
+    const io = await connect(['tester', 'fixture-key']);
+    io.subscribe('room');
+    io.signal('room', 'secret-payload');
+    io.ping();
+    await io.call('reply', 'echo', 'done');
+    const rx = lines.filter(line => line.startsWith('[rx] '));
+    // The authenticated connection is encrypted; the log shows what was inside.
+    assert.ok(rx.some(line => /^\[rx\] #\d+ fixture-client WS SIGNAL\(enc\) room \d+B$/.test(line)), rx.join('\n'));
+    assert.ok(rx.some(line => / SUBSCRIBE(_REQ)?\(enc\) room /.test(line)), rx.join('\n'));
+    assert.ok(rx.some(line => / CALL\(enc\) reply\.echo /.test(line)), rx.join('\n'));
+    assert.equal(rx.some(line => / PING| PONG/.test(line)), false, 'heartbeat is not logged');
+    assert.equal(lines.some(line => line.includes('secret-payload') || line.includes('done')), false);
+  });
+
+  test(`${format}: logMessages/logStats are per server; removed showMessage/showMetric/monitorPeriod name them`, { timeout: 10000 }, async t => {
+    assert.throws(() => new api.Server({ port: 0, logStats: 500 }), RangeError);
+    assert.throws(() => new api.Server({ port: 0, logMessages: 'yes' }), TypeError);
+    for (const [name, value, replacement] of [['showMessage', 'message', /logMessages: true/],
+      ['showMetric', 1, /logStats/], ['monitorPeriod', 5000, /logStats/]]) {
+      assert.throws(() => new api.Server({ port: 0, [name]: value }),
+        error => error instanceof TypeError && error.message.includes(name) && replacement.test(error.message));
+    }
+    for (const name of ['showMessage', 'showMetric', 'monitorPeriod']) assert.equal(name in api.serverOption, false);
+    t.mock.method(console, 'log', () => {});
+    const logging = new api.Server({ port: 0, logMessages: true, logStats: 2000 });
+    const plain = new api.Server({ port: 0 });
+    t.after(() => Promise.all([logging, plain].map(server => new Promise(resolve => server.close(resolve)))));
+    await Promise.all([logging, plain].map(server => event(server, 'ready', t.signal)));
+    assert.deepEqual([logging.logMessages, logging.logStats], [true, 2000]);
+    assert.deepEqual([plain.logMessages, plain.logStats], [false, 0], 'another server is not affected');
+  });
+
+  test(`${format}: stats() and logStats report cumulative counters and per-second rates`, { timeout: 10000 }, async t => {
+    t.mock.method(console, 'log', () => {});
+    const { server, connect } = await fixture(t, api, false, false, {}, { localAuth: 'idKey', logStats: 60000 });
+    assert.ok(server.manager.statsIntervalID, 'the summary timer runs');
+    const member = await connect(['dev1', 'dev1']), anonymous = await connect();
+    anonymous.subscribe('room');
+    await anonymous.call('reply', 'echo', 'subscribed');
+    const before = server.stats();
+    assert.deepEqual(before.connections, { total: 2, authenticated: 1, anonymous: 1, websocket: 2, tcp: 0 });
+    const received = event(anonymous, 'message', t.signal);
+    member.signal('room', 'x');
+    await received;
+    const after = server.stats();
+    assert.equal(after.counters.publishes - before.counters.publishes, 1);
+    assert.equal(after.counters.deliveryAttempts - before.counters.deliveryAttempts, 1);
+    assert.ok(after.counters.rxMessages > before.counters.rxMessages && after.counters.txBytes > before.counters.txBytes);
+    assert.ok(after.memory.rss > 0 && after.channels >= 1);
+    const metrics = server.manager.metrics;
+    metrics.summaryLine(0);
+    const line = metrics.summaryLine(1000);
+    assert.match(line, /^\[iosignal\] conn 2 \(auth 1, anon 1, ws 2, tcp 0\) ch \d+ retained 0\/0B \| rx [\d.]+\/s \S+\/s tx [\d.]+\/s \S+\/s pub [\d.]+\/s \| rss \S+ heap \S+$/);
+    // The sudo views still work: state names, and mode 4 no longer throws.
+    assert.match(metrics.getRemotes()[0], /^#\d+:\S+\([a-z_]+\)$/);
+    assert.deepEqual(metrics.getRemoteByCId(anonymous.cid, 4).channels, ['CH:room']);
+    assert.equal(metrics.oneline().remotes, 2);
+  });
+
+  test(`${format}: showAuthInfo never logs the key`, { timeout: 10000 }, async t => {
+    const showAuthInfo = api.serverOption.debug.showAuthInfo;
+    t.after(() => { api.serverOption.debug.showAuthInfo = showAuthInfo; });
+    api.serverOption.debug.showAuthInfo = true;
+    const { connect } = await fixture(t, api, true);
+    const lines = captureLog(t);
+    await connect(['tester', 'fixture-key']);
+    assert.ok(lines.some(line => line.startsWith('[debug]showAuthInfo') && line.includes('fixture-client')), lines.join('\n'));
+    // The stored hash is the authentication key itself, so it must not appear either.
+    const storedKey = Buffer.from(api.Boho.sha256.hash('fixture-key')).toString('base64');
+    for (const secret of ['fixture-key', storedKey, '"key"']) {
+      assert.equal(lines.some(line => line.includes(secret)), false, secret);
+    }
+  });
+
+  test(`${format}: every server keeps its own settings; serverOption is never modified`, { timeout: 10000 }, async t => {
+    const defaults = JSON.stringify(api.serverOption);
+    const servers = [
+      new api.Server({ port: 0, heartbeatInterval: 2000, heartbeatGrace: 0, maxPayload: 1024,
+        retain: { limitSize: 50 }, quotas: { basic: { fanout: 5 } }, security: { maxReplayEntries: 10 } }),
+      new api.Server({ port: 0 })
+    ];
+    t.after(() => Promise.all(servers.map(server => new Promise(resolve => server.close(resolve)))));
+    await Promise.all(servers.map(server => event(server, 'ready', t.signal)));
+    const [custom, plain] = servers;
+    assert.deepEqual([custom.manager.pingPeriod, custom.manager.pingGrace, custom.wss.options.maxPayload], [2000, 0, 1024]);
+    assert.deepEqual([plain.manager.pingPeriod, plain.manager.pingGrace, plain.wss.options.maxPayload], [50000, 5000, 32 * 1024 * 1024]);
+    assert.deepEqual([custom.retain.limitSize, custom.retain.limitCounter, plain.retain.limitSize], [50, 1000, 100000]);
+    assert.deepEqual([custom.quotas.basic.fanout, custom.quotas.basic.maxMessageBytes, plain.quotas.basic.fanout], [5, 1024 * 1024, 1000]);
+    assert.equal(custom.manager.retainOptions, custom.retain);
+    // A running server's retain/quotas can be adjusted without touching others or the defaults.
+    plain.retain.bytesTotal = 1;
+    plain.quotas.basic.fanout = 1;
+    assert.deepEqual([custom.retain.bytesTotal, custom.quotas.basic.fanout], [256 * 1024 * 1024, 5]);
+    assert.equal(Object.isFrozen(custom.security), true);
+    assert.equal(JSON.stringify(api.serverOption), defaults);
+  });
+
+  test(`${format}: removed, renamed and unknown settings are errors that name the replacement`, t => {
+    for (const [options, pattern] of [
+      [{ timeout: 2000 }, /^timeout was removed in iosignal 9\.0; use heartbeatInterval$/],
+      [{ pingTimeoutGrace: 0 }, /^pingTimeoutGrace .* use heartbeatGrace$/],
+      [{ retain: { isAvailable: false } }, /^retain\.isAvailable .* use retain\.enabled$/],
+      [{ useQuota: { publishCounter: true } }, /^useQuota was removed in iosignal 9\.0; use quotas: /],
+      [{ retain: { limitSise: 1 } }, /^unknown option retain\.limitSise$/],
+      [{ retain: 5 }, /^retain must be an object$/],
+      [{ quotas: { basic: { fanuot: 1 } } }, /^unknown option quotas\.basic\.fanuot$/],
+      [{ quotas: { basic: 5 } }, /^quotas\.basic must be an object$/],
+      [{ membersOnly: 1 }, /^membersOnly must be a boolean$/],
+    ]) {
+      assert.throws(() => new api.Server({ port: 0, ...options }), error => error instanceof TypeError && pattern.test(error.message),
+        JSON.stringify(options));
+    }
+    assert.throws(() => new api.Server({ port: 0, retain: { limitSize: 0 } }), RangeError);
+    // Old global keys, e.g. set by older tools, fail too instead of silently doing nothing.
+    for (const [path, replacement] of [['timeout', 'heartbeatInterval'], ['port', 'new Server({ port })'],
+      ['auth.delay_auth_fail', 'auth.failDelay'], ['retain.isAvailable', 'retain.enabled']]) {
+      const [group, key] = path.includes('.') ? path.split('.') : [null, path];
+      const target = group ? api.serverOption[group] : api.serverOption;
+      target[key] = 1;
+      t.after(() => { delete target[key]; });
+      assert.throws(() => new api.Server({ port: 0 }), { name: 'TypeError', message: `serverOption.${path} was removed in iosignal 9.0; use ${replacement}` });
+      delete target[key];
+    }
+  });
+
+  test(`${format}: localAuth logins are devices unless a role is given`, { timeout: 10000 }, async t => {
+    for (const [localAuth, role] of [['idKey', 'device'], [{ mode: 'idKey', role: 'admin' }, 'admin']]) {
+      const { server, connect } = await fixture(t, api, false, false, {}, { localAuth });
+      const io = await connect(['dev1', 'dev1']);
+      const remote = server.manager.cid2remote.get(io.cid);
+      assert.deepEqual([remote.role, remote.isAdmin], [role, role === 'admin']);
+    }
+    assert.throws(() => new api.LocalKeyProvider({ mode: 'idKey', role: 'anonymous' }), RangeError);
+  });
+
+  test(`${format}: membersOnly is per server and can be turned off`, { timeout: 10000 }, async t => {
+    const servers = [{ membersOnly: true }, { membersOnly: false }, {}].map(options => new api.Server({ port: 0, ...options }));
+    t.after(() => Promise.all(servers.map(server => new Promise(resolve => server.close(resolve)))));
+    await Promise.all(servers.map(server => event(server, 'ready', t.signal)));
+    assert.deepEqual(servers.map(server => server.membersOnly), [true, false, false]);
+    assert.equal(api.serverOption.membersOnly, false, 'the default is not changed');
+  });
+
+  // Retain limits are given per Server, or adjusted on the running server's server.retain.
+  async function disconnect(t, server, io) {
+    const remote = server.manager.cid2remote.get(io.cid);
+    const closed = event(remote.socket, 'close', t.signal);
+    io.stop();
+    await closed;
+    return remote;
+  }
+  const retainedKeys = manager => [...manager.retain_messages.keys()].sort();
+
+  test(`${format}: a closed anonymous writer's channel retains expire after a grace period, an account's stay`, { timeout: 10000 }, async t => {
+    const { server, connect } = await fixture(t, api, false, false, {}, { localAuth: 'idKey' });
+    const manager = server.manager;
+    const a = await connect(), b = await connect(), member = await connect(['dev1', 'dev1']);
+    a.signal('room$a', 'from a');
+    a.signal('room$shared', 'from a');
+    b.signal('room$shared', 'from b'); // the last writer owns the tag
+    member.signal('room$member', 'kept');
+    for (const io of [a, b, member]) await io.call('reply', 'echo', 'published');
+    await disconnect(t, server, a);
+    // Within the grace period a later subscriber still gets a's value.
+    const late = await connect();
+    const received = [];
+    late.on('message', (tag, value) => received.push([tag, value]));
+    late.subscribe('room$a,room$shared');
+    await late.call('reply', 'echo', 'subscribed');
+    assert.deepEqual(received, [['room$a', 'from a'], ['room$shared', 'from b']]);
+    assert.deepEqual([...manager.retainOwners.get('net:PRIVATE:').tags], ['CH:room$a']);
+    const afterGrace = () => performance.now() + server.retain.anonymousGraceMs + 1;
+    // The heartbeat tick sweeps expired values.
+    manager.retainExpiry.set('CH:room$a', performance.now() - 1);
+    manager.heartbeatTick();
+    assert.deepEqual(retainedKeys(manager), ['CH:room$member', 'CH:room$shared']);
+    await disconnect(t, server, b);
+    await disconnect(t, server, member);
+    manager.expireChannelRetains(afterGrace());
+    assert.deepEqual(retainedKeys(manager), ['CH:room$member']);
+    assert.deepEqual([...manager.retainOwners.keys()], ['cid:dev1'], 'no closed connection stays referenced');
+    // anonymousGraceMs 0 removes them as the connection closes.
+    server.retain.anonymousGraceMs = 0;
+    const c = await connect();
+    c.signal('room$c', 'gone');
+    await c.call('reply', 'echo', 'published');
+    await disconnect(t, server, c);
+    assert.deepEqual(retainedKeys(manager), ['CH:room$member']);
+  });
+
+  test(`${format}: retained messages are exact-size copies within byte budgets, never stale`, { timeout: 10000 }, async t => {
+    const { server, connect } = await fixture(t, api);
+    const manager = server.manager;
+    const barrier = io => io.call('reply', 'echo', 'barrier');
+    const a = await connect(), b = await connect();
+    const remoteA = manager.cid2remote.get(a.cid);
+    const ownerA = () => manager.retainOwners.get('conn:' + remoteA.ssid);
+    a.signal('m$s', 'x');
+    a.signal('@$m', 'y');
+    await barrier(a);
+    // Own memory: not a slice of a socket chunk or of the shared 8 KiB pool.
+    const channel = manager.retain_messages.get('CH:m$s'), cid = remoteA.retain_signal.get('$m');
+    for (const message of [channel, cid]) assert.equal(message.buffer.byteLength, message.byteLength);
+    assert.equal(remoteA.retainBytes, cid.byteLength);
+    assert.equal(ownerA().bytes, channel.byteLength);
+    assert.equal(manager.retainBytes, channel.byteLength + cid.byteLength);
+
+    // Per owner: room for exactly one more message of this size.
+    const payload = 'x'.repeat(100);
+    a.signal('b1$s', payload);
+    await barrier(a);
+    const size = manager.retain_messages.get('CH:b1$s').byteLength;
+    server.retain.bytesPerOwner = ownerA().bytes + size;
+    a.signal('b2$s', payload);
+    a.signal('b3$s', payload); // over the owner budget
+    a.signal('b1$s', payload + payload); // a larger update over budget drops the old value
+    await barrier(a);
+    assert.deepEqual(retainedKeys(manager), ['CH:b2$s', 'CH:m$s']);
+    b.signal('b4$s', payload); // another connection has its own budget
+    await barrier(b);
+    assert.ok(retainedKeys(manager).includes('CH:b4$s'));
+
+    // CID retains have a per-connection budget of their own.
+    server.retain.bytesPerConnection = remoteA.retainBytes;
+    a.signal('@$m2', 'over');
+    a.signal('@$m', 'yy'); // a larger update over budget drops the old value
+    await barrier(a);
+    assert.deepEqual([...remoteA.retain_signal.keys()], []);
+
+    // Server-wide: full, so a new tag is refused while a same-size update fits.
+    server.retain.bytesTotal = manager.retainBytes;
+    b.signal('b5$s', payload);
+    b.signal('b4$s', payload.replace('x', 'y'));
+    await barrier(b);
+    assert.equal(retainedKeys(manager).includes('CH:b5$s'), false);
+    const late = await connect();
+    const updated = event(late, 'message', t.signal);
+    late.subscribe('b4$s');
+    assert.deepEqual(await updated, ['b4$s', payload.replace('x', 'y')]);
+
+    // A message over limitSize also drops the value it would replace.
+    server.retain.limitSize = 50;
+    a.signal('m$s', payload);
+    await barrier(a);
+    assert.equal(retainedKeys(manager).includes('CH:m$s'), false);
+
+    for (const io of [a, b]) await disconnect(t, server, io);
+    manager.expireChannelRetains(performance.now() + server.retain.anonymousGraceMs + 1);
+    assert.equal(manager.retain_messages.size, 0);
+    assert.equal(manager.retainBytes, 0, 'all bytes are released');
+  });
+
+  test(`${format}: no owner takes the whole channel retain store, even by reconnecting`, { timeout: 10000 }, async t => {
+    const { server, connect } = await fixture(t, api, false, false, {}, { localAuth: 'idKey', retain: { tagsPerOwner: 2 } });
+    const manager = server.manager;
+    const a = await connect(), b = await connect();
+    for (const [tag, value] of [['t1$s', 'a'], ['t2$s', 'a'], ['t3$s', 'over'], ['t1$s', 'updated']]) a.signal(tag, value);
+    b.signal('t4$s', 'b');
+    await a.call('reply', 'echo', 'published');
+    await b.call('reply', 'echo', 'published');
+    assert.deepEqual(retainedKeys(manager), ['CH:t1$s', 'CH:t2$s', 'CH:t4$s']);
+    const late = await connect();
+    const received = event(late, 'message', t.signal);
+    late.subscribe('t1$s');
+    assert.deepEqual(await received, ['t1$s', 'updated']);
+
+    // Closed anonymous connections share their network's grace pool and its budget: when b's
+    // value joins, the value closest to expiry goes, a's (closed first) least recently written.
+    await disconnect(t, server, a);
+    await disconnect(t, server, b);
+    assert.deepEqual(retainedKeys(manager), ['CH:t1$s', 'CH:t4$s']);
+
+    // An account keeps one budget across its connections.
+    let member = await connect(['dev1', 'dev1']);
+    member.signal('m1$s', '1');
+    member.signal('m2$s', '2');
+    await member.call('reply', 'echo', 'published');
+    await disconnect(t, server, member);
+    member = await connect(['dev1', 'dev1']);
+    member.signal('m3$s', 'over');
+    member.signal('m1$s', 'updated');
+    await member.call('reply', 'echo', 'published');
+    assert.deepEqual(retainedKeys(manager), ['CH:m1$s', 'CH:m2$s', 'CH:t1$s', 'CH:t4$s']);
+    assert.equal(manager.retainOwners.get('cid:dev1').tags.size, 2);
+  });
+
+  test(`${format}: a full retain store still replaces stored tags and counts CID tags per publisher`, { timeout: 10000 }, async t => {
+    const { connect } = await fixture(t, api, false, false, {}, { retain: { limitCounter: 2 } });
+    const publisher = await connect(), other = await connect();
+    for (const [tag, value] of [['r1$s', 'old'], ['r2$s', 'kept'], ['r1$s', 'new'], ['r3$s', 'over'],
+      ['@$c1', 'old'], ['@$c2', 'kept'], ['@$c1', 'new'], ['@$c3', 'over']]) publisher.signal(tag, value);
+    other.signal('@$c1', 'other'); // another publisher's CID store is not full
+    await publisher.call('reply', 'echo', 'published'); // ordered after the signals
+    await other.call('reply', 'echo', 'published');
+    const subscriber = await connect();
+    const received = [];
+    subscriber.on('message', (tag, value) => received.push([tag, value]));
+    const p = publisher.cid;
+    subscriber.subscribe(`r1$s,r2$s,r3$s,${p}@$c1,${p}@$c2,${p}@$c3,${other.cid}@$c1`);
+    await subscriber.call('reply', 'echo', 'subscribed'); // retained replies precede it
+    assert.deepEqual(received, [['r1$s', 'new'], ['r2$s', 'kept'],
+      [`${p}@$c1`, 'new'], [`${p}@$c2`, 'kept'], [`${other.cid}@$c1`, 'other']]);
+  });
 }
 
 for (const [format, api] of variants) {
@@ -1158,7 +1658,7 @@ for (const [format, api] of variants) {
       assert.equal(io.cid, 'dev1');
       assert.equal(io.boho.isAuthorized, true);
       const remote = server.manager.cid2remote.get('dev1');
-      assert.deepEqual([remote.did, remote.level], ['dev1', api.serverOption.defaultQuotaIndex]);
+      assert.deepEqual([remote.did, remote.role, remote.quotaName], ['dev1', 'device', 'basic']);
       // Anonymous clients are still served unless membersOnly is set.
       assert.match((await connect()).cid, /^\?/);
     });
@@ -1166,11 +1666,11 @@ for (const [format, api] of variants) {
     test(`${format}: ${tcp ? 'TCP' : 'WS'} localAuth sharedKey logs in any ID with the shared key`, { timeout: 10000 }, async t => {
       // 44 characters: the length of a stored base64 hash, which must still be read as a plain key.
       const key = 'k'.repeat(44);
-      const { server, connect } = await fixture(t, api, false, tcp, {}, { localAuth: { mode: 'sharedKey', key, level: 2 } });
+      const { server, connect } = await fixture(t, api, false, tcp, {}, { localAuth: { mode: 'sharedKey', key, quota: 'pro' } });
       const [a, b] = [await connect(['devA', key]), await connect(['devB', key])];
       assert.deepEqual([a.cid, b.cid], ['devA', 'devB']);
       assert.equal(a.boho.isAuthorized && b.boho.isAuthorized, true);
-      assert.equal(server.manager.cid2remote.get('devA').level, 2);
+      assert.equal(server.manager.cid2remote.get('devA').quotaName, 'pro');
       // Authenticated CIDs work as unicast addresses.
       const got = event(b, '@', t.signal);
       a.signal('devB@hello', 'hi');
@@ -1197,8 +1697,253 @@ for (const [format, api] of variants) {
     for (const localAuth of ['shared', { mode: 'sharedKey' }, { mode: 'sharedKey', key: '' }]) {
       assert.throws(() => new api.Server({ port: 0, localAuth }), TypeError);
     }
-    for (const level of [5, 256, -1, 1.5, '3']) {
-      assert.throws(() => new api.LocalKeyProvider({ mode: 'idKey', level }), RangeError);
+    assert.throws(() => new api.LocalKeyProvider({ mode: 'idKey', role: 'root' }), RangeError);
+    assert.throws(() => new api.LocalKeyProvider({ mode: 'idKey', quota: 3 }), TypeError);
+  });
+}
+
+// The AUTH_FAIL delay (600 ms by default) for one test: tests that expect a failed login need not wait.
+function quickAuthFail(t, api) {
+  const failDelay = api.serverOption.auth.failDelay;
+  api.serverOption.auth.failDelay = 10;
+  t.after(() => { api.serverOption.auth.failDelay = failDelay; });
+}
+
+for (const [format, api] of variants) {
+  const quotaKey = createHash('sha256').update('quota-key').digest('base64');
+  // Logins 'q1'... with the given account fields; every account belongs to uid 'u1'.
+  const quotaAuth = (fields = {}, options) => new api.BohoAuth({
+    async getAuth(id) { return /^q\d$/.test(id) ? { key: quotaKey, cid: id + '-client', uid: 'u1', ...fields } : undefined }
+  }, options);
+
+  for (const tcp of [false, true]) {
+    test(`${format}: ${tcp ? 'TCP' : 'WS'} anonymous connections use anonymousQuota and are told maxMessageBytes`, { timeout: 10000 }, async t => {
+      const { server, connect } = await fixture(t, api, false, tcp, {}, { anonymousQuota: 'tiny', quotas: { tiny: { maxMessageBytes: 2000 } } });
+      const subscriber = await connect(), publisher = await connect();
+      const remote = server.manager.cid2remote.get(publisher.cid);
+      assert.deepEqual([remote.role, remote.quotaName, remote.quota], ['anonymous', 'tiny', server.quotas.tiny]);
+      assert.deepEqual(server.quotas.tiny, { maxMessageBytes: 2000, fanout: null, msgPerSec: null, bytesPerSec: null, maxConnections: null });
+      // QUOTA is sent before CID_RES, so the client knows its limit once ready.
+      assert.deepEqual(publisher.quota, { maxMessageBytes: 2000 });
+      if (tcp) assert.equal(remote.congRx.maxFrameSize, 2000);
+
+      subscriber.subscribe('room,barrier');
+      await subscriber.call('reply', 'echo', 'subscribed');
+      // The client refuses to send over its limit...
+      const refused = event(publisher, 'over_size', t.signal);
+      publisher.signal('room', 'x'.repeat(3000));
+      await refused;
+      // ...and the server rejects it when a client sends it anyway.
+      publisher.quota = { maxMessageBytes: null };
+      const before = server.stats().counters.oversizeRejected;
+      const rejected = event(publisher, 'over_size', t.signal);
+      const received = event(subscriber, 'message', t.signal);
+      publisher.signal('room', 'x'.repeat(3000));
+      await rejected;
+      publisher.signal('barrier', 'small');
+      assert.deepEqual(await received, ['barrier', 'small']);
+      assert.equal(server.stats().counters.oversizeRejected - before, 1);
+    });
+  }
+
+  for (const [label, fields, options, expected] of [
+    ['a device defaults to basic', {}, undefined, ['device', 'basic', 1024 * 1024]],
+    ['an admin defaults to unlimited', { role: 'admin' }, undefined, ['admin', 'unlimited', null]],
+    ["the account's quota", { quota: 'pro' }, undefined, ['device', 'pro', 4 * 1024 * 1024]],
+    ['an async resolveQuota', {}, { resolveQuota: async (authInfo, role) => role === 'device' ? 'pro' : 'basic' }, ['device', 'pro', 4 * 1024 * 1024]],
+  ]) {
+    test(`${format}: login quota: ${label}`, { timeout: 10000 }, async t => {
+      const { server, connect } = await fixture(t, api, false, false, {}, { authManager: quotaAuth(fields, options) });
+      const io = await connect(['q1', 'quota-key']);
+      const remote = server.manager.cid2remote.get('q1-client');
+      const [role, quotaName, maxMessageBytes] = expected;
+      assert.deepEqual([remote.role, remote.quotaName, remote.quota], [role, quotaName, server.quotas[quotaName]]);
+      assert.deepEqual(io.quota, { maxMessageBytes });
+    });
+  }
+
+  test(`${format}: a login with an unknown quota fails without replacing the online login`, { timeout: 10000 }, async t => {
+    quickAuthFail(t, api);
+    let quota = 'basic';
+    const authManager = new api.BohoAuth({ async getAuth(id) { return id === 'q1' ? { key: quotaKey, cid: 'q1-client', quota } : undefined } });
+    const { server, connect, client, url } = await fixture(t, api, false, false, {}, { authManager });
+    const online = await connect(['q1', 'quota-key']);
+    const onlineRemote = server.manager.cid2remote.get('q1-client');
+    quota = 'gold';
+    const bad = client(['q1', 'quota-key']);
+    bad.autoReconnect = false;
+    const failed = event(bad, 'auth_fail', t.signal);
+    bad.open(url);
+    await failed;
+    assert.equal(server.manager.cid2remote.get('q1-client'), onlineRemote);
+    assert.deepEqual((await online.call('reply', 'echo', 'still')).body, ['still']);
+  });
+
+  test(`${format}: fanout limits the subscribers a publish reaches`, { timeout: 10000 }, async t => {
+    const { server, connect } = await fixture(t, api, false, false, {}, { quotas: { anonymous: { fanout: 2 } } });
+    const subscribers = [await connect(), await connect(), await connect()];
+    for (const io of subscribers) {
+      io.subscribe('room');
+      await io.call('reply', 'echo', 'subscribed');
     }
+    const publisher = await connect();
+    const before = server.stats().counters;
+    assert.deepEqual(publisher.signal('room', 'hi') ?? null, null);
+    await publisher.call('reply', 'echo', 'published');
+    const after = server.stats().counters;
+    assert.deepEqual([after.deliveryAttempts - before.deliveryAttempts, after.quotaExcluded - before.quotaExcluded], [2, 1]);
+    server.quotas.anonymous.fanout = null; // adjustable on a running server
+    const received = Promise.all(subscribers.map(io => event(io, 'message', t.signal)));
+    publisher.signal('room', 'all');
+    assert.equal((await received).length, 3);
+  });
+
+  test(`${format}: msgPerSec drops messages over the rate`, { timeout: 10000 }, async t => {
+    const { server, connect } = await fixture(t, api, false, false, {}, { quotas: { anonymous: { msgPerSec: 5 } } });
+    const subscriber = await connect();
+    subscriber.subscribe('room');
+    await subscriber.call('reply', 'echo', 'subscribed');
+    const publisher = await connect();
+    let received = 0;
+    subscriber.on('message', () => received++);
+    const before = server.stats().counters.rateLimited;
+    for (let i = 0; i < 30; i++) publisher.signal('room', i);
+    // 5/s refills one token per 200 ms; then a message that must pass.
+    await new Promise(resolve => setTimeout(resolve, 300));
+    const last = event(subscriber, 'message', t.signal);
+    publisher.signal('room', 'last');
+    await last;
+    const limited = server.stats().counters.rateLimited - before;
+    assert.ok(limited >= 15 && received - 1 + limited === 30, `received ${received}, limited ${limited}`);
+  });
+
+  test(`${format}: maxConnections limits an account's connections and frees them on close`, { timeout: 10000 }, async t => {
+    quickAuthFail(t, api);
+    const { server, connect, client, url } = await fixture(t, api, false, false, {},
+      { authManager: quotaAuth(), quotas: { basic: { maxConnections: 2 } } });
+    const first = await connect(['q1', 'quota-key']);
+    await connect(['q2', 'quota-key']);
+    assert.equal(server.manager.accountConnections('u1'), 2);
+    const third = client(['q3', 'quota-key']);
+    third.autoReconnect = false;
+    const refused = event(third, 'auth_fail', t.signal);
+    third.open(url);
+    await refused;
+    // A duplicate login that replaces (keepNew) an account connection takes its place.
+    const firstRemote = server.manager.cid2remote.get('q1-client');
+    const replaced = event(firstRemote.socket, 'close', t.signal);
+    first.autoReconnect = false;
+    await connect(['q1', 'quota-key']);
+    await replaced;
+    assert.equal(server.manager.accountConnections('u1'), 2);
+  });
+
+  test(`${format}: quota options are validated`, () => {
+    for (const quotas of [{ basic: { fanout: 0 } }, { basic: { maxMessageBytes: 1.5 } }, { basic: { msgPerSec: '5' } }]) {
+      assert.throws(() => new api.Server({ port: 0, quotas }), RangeError, JSON.stringify(quotas));
+    }
+    assert.throws(() => new api.Server({ port: 0, anonymousQuota: 'gold' }), /anonymousQuota must be one of the quotas/);
+    assert.throws(() => new api.Server({ port: 0, quotas: 5 }), /quotas must be an object/);
+    assert.deepEqual(Object.keys(api.serverOption.quotas), ['anonymous', 'basic', 'pro', 'unlimited']);
+  });
+}
+
+for (const [format, api] of variants) {
+  for (const tcp of [false, true]) {
+    test(`${format}: ${tcp ? 'TCP' : 'WS'} messages over the RX size advertised in CID_REQ are not sent`, { timeout: 10000 }, async t => {
+      const { server, client, connect, url } = await fixture(t, api, false, tcp);
+      // An Arduino sends CID_REQ followed by its RX buffer size (uint32 little endian).
+      const small = client();
+      const send = small.send.bind(small);
+      small.send = data => send(data.length === 1 && data[0] === api.IOMsg.CID_REQ
+        ? Buffer.from([api.IOMsg.CID_REQ, 160, 0, 0, 0]) : data);
+      const ready = event(small, 'ready', t.signal);
+      small.open(url);
+      await ready;
+      const publisher = await connect();
+      const smallRemote = server.manager.cid2remote.get(small.cid);
+      assert.deepEqual([smallRemote.peerRxLimit, server.manager.cid2remote.get(publisher.cid).peerRxLimit], [160, null]);
+
+      small.subscribe('room,barrier');
+      await small.call('reply', 'echo', 'subscribed');
+      const before = server.stats().counters.peerRxLimitSkipped;
+      const received = event(small, 'message', t.signal);
+      publisher.signal('room', 'x'.repeat(400));
+      publisher.signal('barrier', 'fits');
+      assert.deepEqual(await received, ['barrier', 'fits']);
+      assert.equal(server.stats().counters.peerRxLimitSkipped - before, 1);
+      assert.equal(smallRemote.peerRxLimitSkipped, 1);
+    });
+  }
+}
+
+const hasIPv6Loopback = Object.values(networkInterfaces()).flat().some(entry => entry?.address === '::1');
+
+for (const [format, api] of variants) {
+  test(`${format}: TCP client connects to an IPv6 literal URL`, { timeout: 10000, skip: !hasIPv6Loopback && 'no IPv6 loopback' }, async t => {
+    const { server, client } = await fixture(t, api, false, true);
+    const io = client();
+    const ready = event(io, 'ready', t.signal);
+    io.open(`cong://[::1]:${server.congPort}`);
+    await ready;
+    assert.equal(io.socket.remoteAddress, '::1');
+    assert.ok(server.manager.cid2remote.get(io.cid));
+  });
+}
+
+for (const [format, api] of variants) {
+  const key = createHash('sha256').update('role-key').digest('base64');
+  const providerWith = info => ({ async getAuth(id) { return id === 'rl' ? { key, cid: 'rl-client', ...info } : undefined } });
+
+  for (const [label, info, role] of [
+    ['admin', { role: 'admin' }, 'admin'],
+    ['service', { role: 'service' }, 'service'],
+    ['device', { role: 'device' }, 'device'],
+    ['no role is a device', {}, 'device'],
+    ['an unlimited quota does not make an admin', { quota: 'unlimited' }, 'device'],
+  ]) {
+    test(`${format}: login role: ${label}`, { timeout: 10000 }, async t => {
+      const { server, connect } = await fixture(t, api, false, false, {}, { authManager: new api.BohoAuth(providerWith(info)) });
+      server.attach('sudo', api.sudoService);
+      const io = await connect(['rl', 'role-key']);
+      const remote = server.manager.cid2remote.get('rl-client');
+      assert.deepEqual([remote.role, remote.isAdmin], [role, role === 'admin']);
+      // sudo needs role 'admin'; the quota does not matter.
+      assert.equal((await io.call('sudo', 'cid').then(() => true, () => false)), role === 'admin');
+    });
+  }
+
+  test(`${format}: an unknown role fails the login; anonymous connections have no role rights`, { timeout: 10000 }, async t => {
+    quickAuthFail(t, api);
+    const { server, connect, client, url } = await fixture(t, api, false, false, {}, { authManager: new api.BohoAuth(providerWith({ role: 'root' })) });
+    const bad = client(['rl', 'role-key']);
+    bad.autoReconnect = false;
+    const failed = event(bad, 'auth_fail', t.signal);
+    bad.open(url);
+    await failed;
+    server.attach('sudo', api.sudoService);
+    const anon = await connect();
+    const remote = server.manager.cid2remote.get(anon.cid);
+    assert.equal(remote.role, 'anonymous');
+    remote.role = 'admin'; // without authentication this grants nothing
+    assert.equal(remote.isAdmin, false);
+    assert.equal(await anon.call('sudo', 'cid').then(() => true, () => false), false);
+  });
+
+  test(`${format}: StringKeyProvider role and quota fields; adminLevel and RedisService minLevel are gone`, async () => {
+    const provider = new api.StringKeyProvider('a.k.ca.device.pro,b.k.cb.admin,c.k.cc');
+    const entries = await Promise.all(['a', 'b', 'c'].map(id => provider.getAuth(id)));
+    assert.deepEqual(entries.map(({ role, quota }) => [role, quota]), [['device', 'pro'], ['admin', undefined], [undefined, undefined]]);
+    for (const authInfo of ['d.k.cd.root', 'd.k.cd.3', 'd.k', 'd.k.cd.device.pro.x']) {
+      assert.throws(() => new api.StringKeyProvider(authInfo), TypeError, authInfo);
+    }
+    api.serverOption.adminLevel = 255;
+    try {
+      assert.throws(() => new api.Server({ port: 0 }), /serverOption.adminLevel was removed in iosignal 9.0; use role: 'admin' in the account/);
+    } finally {
+      delete api.serverOption.adminLevel;
+    }
+    for (const minRole of [200, -1, 'root']) assert.throws(() => new api.RedisService({}, minRole), RangeError);
+    assert.equal(new api.RedisService({}).minRole, 'service');
   });
 }

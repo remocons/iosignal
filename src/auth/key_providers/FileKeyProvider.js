@@ -52,8 +52,9 @@ export class FileKeyProvider {
     return Array.from(this.AUTH.keys())
   }
 
-  addAuth(id, keyStr, cid, level = 0) {
+  // Each item: [id, key, cid, role?, quota?]; see StringKeyProvider.
+  addAuth(id, keyStr, cid, role, quota) {
     let Base64hashKey = Buffer.from(Boho.sha256.hash(keyStr)).toString('base64')
-    this.AUTH.set(id, { key: Base64hashKey, cid: cid, level: level })
+    this.AUTH.set(id, { key: Base64hashKey, cid, ...(role && { role }), ...(quota && { quota }) })
   }
 }

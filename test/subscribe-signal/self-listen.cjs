@@ -6,7 +6,7 @@ console.log(version )
 const tag = 'channel1'
 const s = new Server({
     port:0,
-    showMessage: 'message'
+    logMessages: true
 });
 
 

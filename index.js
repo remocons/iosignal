@@ -15,7 +15,7 @@ export { default as MBP } from 'meta-buffer-pack'
 
 // boho auth
 export { default as Boho} from 'boho'
-export { BohoAuth } from './src/auth/BohoAuth.js'
+export { BohoAuth, ROLES, hasRole, defaultQuota } from './src/auth/BohoAuth.js'
 export { FileKeyProvider } from './src/auth/key_providers/FileKeyProvider.js'
 export { RedisKeyProvider } from './src/auth/key_providers/RedisKeyProvider.js'
 export { StringKeyProvider } from './src/auth/key_providers/StringKeyProvider.js'

@@ -5,7 +5,8 @@
  *
  *  mode 'idKey':     the key equals the ID, e.g. io.auth('dev1', 'dev1').
  *  mode 'sharedKey': any ID with the one shared key, e.g. io.auth('dev1', 'lab2026').
- *  level: quota level of every login (a quotaTable index), default serverOption.defaultQuotaIndex.
+ *  role:  role of every login, default 'device' ('service' or 'admin' must be asked for).
+ *  quota: Server quotas profile of every login, default from BohoAuth resolveQuota.
  *
  * example => new BohoAuth(new LocalKeyProvider({ mode: 'sharedKey', key: 'lab2026' }))
  *
@@ -13,31 +14,34 @@
  */
 
 import Boho from 'boho'
-import { serverOption } from '../../server/serverOption.js'
-import { quotaTable } from '../../common/quotaTable.js'
+import { ROLES } from '../BohoAuth.js'
 
 const MODES = ['idKey', 'sharedKey']
 const hashKey = keyStr => Buffer.from(Boho.sha256.hash(keyStr)).toString('base64')
 
 export class LocalKeyProvider {
   /**
-   * @param {'idKey' | { mode: 'idKey' | 'sharedKey', key?: string, level?: number }} options
+   * @param {'idKey' | { mode: 'idKey' | 'sharedKey', key?: string,
+   *   role?: 'device' | 'service' | 'admin', quota?: string }} options
    *   A string is the mode alone.
    */
   constructor(options) {
-    const { mode, key, level } = typeof options === 'string' ? { mode: options } : (options ?? {})
+    const { mode, key, role = 'device', quota } = typeof options === 'string' ? { mode: options } : (options ?? {})
     if (!MODES.includes(mode)) {
       throw new TypeError(`LocalKeyProvider mode must be one of: ${MODES.join(', ')}`)
     }
     if (mode === 'sharedKey' && (typeof key !== 'string' || key.length === 0)) {
       throw new TypeError("LocalKeyProvider mode 'sharedKey' needs a non-empty key")
     }
-    // BohoAuth fails every login whose level has no quotaTable entry, so reject it here instead.
-    if (level !== undefined && !(Number.isInteger(level) && quotaTable[level])) {
-      throw new RangeError(`LocalKeyProvider level must be a quotaTable index: ${Object.keys(quotaTable).join(', ')}`)
+    if (quota !== undefined && (typeof quota !== 'string' || !quota)) {
+      throw new TypeError('LocalKeyProvider quota must be a quotas profile name')
+    }
+    if (!ROLES.includes(role) || role === 'anonymous') {
+      throw new RangeError(`LocalKeyProvider role must be one of: ${ROLES.slice(1).join(', ')}`)
     }
     this.mode = mode
-    this.level = level
+    this.role = role
+    this.quota = quota
     // Hashed like StringKeyProvider, so a 44-character shared key is not mistaken for a stored hash.
     this.sharedKeyHash = mode === 'sharedKey' ? hashKey(key) : null
   }
@@ -47,7 +51,8 @@ export class LocalKeyProvider {
     return {
       key: this.sharedKeyHash ?? hashKey(id),
       cid: id,
-      level: this.level ?? serverOption.defaultQuotaIndex
+      role: this.role,
+      ...(this.quota && { quota: this.quota })
     }
   }
 }

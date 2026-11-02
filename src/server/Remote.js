@@ -1,4 +1,5 @@
 import { performance } from 'node:perf_hooks';
+import { isIP, isIPv4, isIPv6 } from 'node:net';
 import { pack, CongRx } from '../client/CongPacket.js'
 import { RemoteCore } from './RemoteCore.js';
 import { serverOption } from './serverOption.js';
@@ -6,6 +7,42 @@ import { IOMsg } from '../common/constants.js';
 import * as util from '../common/util.js'
 
 const decoder = new TextDecoder()
+
+// Each proxy appends to a forwarding header, so the entry `hops` from the right was
+// written by the outermost trusted proxy; anything left of it came from the client.
+function forwardedValue(header, hops) {
+  if (!hops || typeof header !== 'string') return undefined
+  const values = header.split(',').map(v => v.trim()).filter(Boolean)
+  return values[Math.max(0, values.length - hops)]
+}
+
+// IPv4-mapped addresses as IPv4, '::1' as 127.0.0.1; undefined if not an IP address.
+export function normalizeIP(ip) {
+  if (typeof ip !== 'string') return undefined
+  if (ip.startsWith('::ffff:') && isIPv4(ip.slice(7))) ip = ip.slice(7)
+  if (ip === '::1') ip = '127.0.0.1'
+  return isIP(ip) ? ip : undefined
+}
+
+// Number of reverse proxies whose forwarding headers are trusted (see serverOption.trustProxy).
+export function trustedProxyHops(peerIP, trust = serverOption.trustProxy) {
+  if (trust === 'private') return peerIP && util.isPrivateIP(peerIP) ? 1 : 0
+  if (trust === true) return 1
+  return Number.isSafeInteger(trust) && trust > 0 ? trust : 0
+}
+
+// Client address and TLS of a WebSocket upgrade request; exported for other servers that
+// accept the same proxied connections.
+export function getClientAddress(req, trust = serverOption.trustProxy) {
+  const peerIP = normalizeIP(req.socket?.remoteAddress)
+  const hops = trustedProxyHops(peerIP, trust)
+  return {
+    ip: normalizeIP(forwardedValue(req.headers['x-forwarded-for'], hops)) ?? peerIP ?? '0.0.0.0',
+    // X-Forwarded-Proto: https turns off server-side encryption (ENC_MODE.AUTO), so it is
+    // only honored from a trusted proxy, like the client address.
+    TLS: forwardedValue(req.headers['x-forwarded-proto'], hops) === 'https'
+  }
+}
 
 export class Remote extends RemoteCore {
   constructor(socket, req, manager) {
@@ -17,11 +54,12 @@ export class Remote extends RemoteCore {
     this.socketType = socket.socketType
 
     if (this.socketType === 'websocket') {
-      this.TLS = req.headers["x-forwarded-proto"] === 'https' ? true : false;
-      this.ip = this.getRemoteIP(req);
+      const { ip, TLS } = getClientAddress(req, this.manager.server?.trustProxy);
+      this.ip = ip;
+      this.TLS = TLS;
     } else {
       this.TLS = false;
-      this.ip = this.getRemoteIP(socket.remoteAddress)
+      this.ip = normalizeIP(socket.remoteAddress) ?? '0.0.0.0'
     }
 
 
@@ -29,6 +67,9 @@ export class Remote extends RemoteCore {
       // connection from local or private network has default private channel.
       this.HOME_CHANNEL = 'PRIVATE:'
       this.privateNode = true
+    } else if (isIPv6(this.ip)) {
+      // An IPv6 network is its /64 prefix; each host there has its own address.
+      this.HOME_CHANNEL = 'IP6:' + util.getIPv6PrefixHexString(this.ip)
     } else {
       // The HOME_CHANNEL is defined by the global IP address value.
       this.HOME_CHANNEL = 'IP:' + util.getIPv4HexString(this.ip)
@@ -55,10 +96,11 @@ export class Remote extends RemoteCore {
         this.txDrainMaxMs = Math.max(this.txDrainMaxMs, performance.now() - this.txBlockedSince);
         this.txBlockedSince = null;
       });
-      this.congRx = new CongRx();
+      this.congRx = new CongRx({ maxFrameSize: this.rxFrameLimit() });
       socket.on('data', data => { this.congRx.write(data) })
 
       this.congRx.on('wrong', this.onWrongCongPacketMessage.bind(this))
+      this.congRx.on('oversize', this.onOversizeCongPacket.bind(this))
       // readable.pipe( destination )
       // tcpSocket -> congRx(parser) -> onMessage
       // socket.pipe( this.congRx )
@@ -115,19 +157,32 @@ export class Remote extends RemoteCore {
   }
 
 
-  permissionChecker() {
-    // type1.
-    // accept some traffic before authorize.
-    const limitBytes = 100
-
-    let txBytes = this.socket.bytesWritten || this.socket._socket?.bytesWritten
-    let rxBytes = this.socket.bytesRead || this.socket._socket?.bytesRead
-
-    if (txBytes == undefined) txBytes = 0
-    if (rxBytes == undefined) rxBytes = 0
-
+  // Largest CongSocket frame the parser buffers: maxPayload (as for WebSocket), or the quota's
+  // maxMessageBytes when smaller. A frame payload is the message rxQuotaChecker measures, so a
+  // larger frame would be rejected after buffering anyway.
+  rxFrameLimit() {
+    const maxPayload = this.manager.server?.maxPayload ?? serverOption.maxPayload;
+    const maxMessageBytes = this.quota?.maxMessageBytes ?? null;
+    return maxMessageBytes === null ? maxPayload : Math.min(maxPayload, maxMessageBytes);
   }
 
+  // Called after the quota changes (e.g. on successful auth).
+  refreshRxFrameLimit() {
+    if (this.congRx) this.congRx.maxFrameSize = this.rxFrameLimit();
+  }
+
+  // The frame was skipped unbuffered; same response as rxQuotaChecker, except that a
+  // connection without a CID is treated like a wrong packet (see onWrongCongPacketMessage).
+  onOversizeCongPacket(payloadSize) {
+    if (this._closing) return;
+    if (!this.cid) {
+      this.manager.attackLogger?.log(`> ${this.ssid} ${this.ip} OVERSIZE ${payloadSize}`)
+      this.close(true);
+      return;
+    }
+    this.manager.counters.oversizeRejected++;
+    this.send(Buffer.from([IOMsg.OVER_SIZE]))
+  }
 
   // any type of received messages:  message, ping, pong
   receiveMonitor() {
@@ -136,27 +191,9 @@ export class Remote extends RemoteCore {
     this.socket.isAlive = true;
   }
 
-  isConnectionHTTPS(req) {
-    //In case of reverse proxy environment.  i.e. using nginx proxy_pass.
-    return req.headers["x-forwarded-proto"];   //https or undefined
-  }
-
-  getRemoteIP(req) { //req or ip string
-    let ip;
-    if (req && req.headers) {
-      ip = req.headers["x-forwarded-for"];
-      if (ip == undefined) ip = req.socket.remoteAddress;
-    } else {
-      ip = req;
-    }
-
-    if (ip) {
-      if (ip.indexOf("::ffff:") == 0) ip = ip.substring(7);
-      if (ip == "::1") ip = "127.0.0.1";
-    } else {
-      ip = "0.0.0.0";
-    }
-    return ip;
+  // Number of reverse proxies whose forwarding headers this server trusts.
+  trustedProxyHops(peerIP) {
+    return trustedProxyHops(peerIP, this.manager.server?.trustProxy)
   }
 
   ping() {
@@ -182,12 +219,11 @@ export class Remote extends RemoteCore {
     let rxb = this.socket.bytesRead || this.socket._socket?.bytesRead
     let tx = this.socket.txCounter
     let rx = this.socket.rxCounter
-    let traffic = { tx, txb, rx, rxb }
+    return { tx, txb, rx, rxb }
   }
 
   close(terminateNow = false) {
     this._closing = true;
-    this.getTraffic()
     if (this.socketType === 'websocket') {
       if (terminateNow) this.socket.terminate();
       else this.socket.close();
@@ -197,16 +233,30 @@ export class Remote extends RemoteCore {
     }
   }
 
+  // A peer that stops reading would otherwise grow its send queue without limit.
   recordTxQueue() {
     const queued = this.socket.bufferedAmount ?? this.socket.writableLength ?? 0;
     if (queued > this.txQueuePeakBytes) this.txQueuePeakBytes = queued;
+    const limit = this.manager.server?.maxBufferedBytes ?? serverOption.maxBufferedBytes;
+    if (queued > limit) {
+      console.log(`slow peer #${this.ssid} cid:${this.cid} has ${queued} unsent bytes: closing`)
+      this.close(true);
+    }
   }
 
   // node.js server side remote.
   send(message, isBinary) {
+    // Sending to a closing peer can only fail; skip instead of logging each attempt.
+    if (this._closing) return;
+    // The peer cannot receive it (see peerRxLimit); a CongSocket Arduino would have to discard it.
+    if (this.peerRxLimit !== null && message.byteLength > this.peerRxLimit) {
+      this.peerRxLimitSkipped++;
+      this.manager.counters.peerRxLimitSkipped++;
+      return;
+    }
     // console.log(`<-S [${IOMsg[ message[0]]}]`)
-    this.manager.txBytes += message.byteLength;
-    if (this.manager.telemetry) { this.manager.telemetry.txBytes += message.byteLength; this.manager.telemetry.txMessages++; }
+    this.manager.counters.txBytes += message.byteLength;
+    this.manager.counters.txMessages++;
     this.socket.txCounter++;
     if (this.socketType === 'websocket') {
       if (this.socket.readyState === 1) {

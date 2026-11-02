@@ -1,4 +1,5 @@
 import { STATUS } from './constant.js'
+import { hasRole } from '../auth/BohoAuth.js'
 
 export const commands = [
   'cid', 'remotes', 'clients',
@@ -9,10 +10,9 @@ export const commands = [
   'adddevice', 'getdevice', 'deldevice'
 ]
 
-const MIN_LEVEL = 255;
-// Only a Boho-authenticated device may use sudo; a raised level alone is not authentication.
+// Only a connection authenticated with role 'admin'.
 export function checkPermission(remote) {
-  return remote.boho?.isAuthorized === true && remote.level >= MIN_LEVEL;
+  return hasRole(remote, 'admin');
 }
 
 export async function call(remote, req) {
@@ -39,13 +39,11 @@ export async function call(remote, req) {
       if (req.$[0]) result = remote.manager.closeRemoteByCId(req.$[0])
 
     } else if (cmd == 'addauth' || cmd == 'adddevice') {
-      if (remote.manager.authManager && req.$.length == 4) {
+      // did, key, cid[, role[, quota]]
+      if (remote.manager.authManager && req.$.length >= 3 && req.$.length <= 5) {
         if (remote.manager.authManager.addAuth) {
-          let did = req.$[0]
-          let dkey = req.$[1]
-          let cid = req.$[2]
-          let level = req.$[3]
-          result = await remote.manager.authManager.addAuth(did, dkey, cid, level)
+          const [did, dkey, cid, role, quota] = req.$
+          result = await remote.manager.authManager.addAuth(did, dkey, cid, role, quota)
         }
 
       }

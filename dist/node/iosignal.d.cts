@@ -3,6 +3,7 @@ import Boho__default from 'boho';
 export { default as Boho } from 'boho';
 import * as buffer from 'buffer';
 import { EventEmitter } from 'eventemitter3';
+import * as stream from 'stream';
 import { Transform } from 'stream';
 import EventEmitter$1 from 'events';
 export { default as MBP } from 'meta-buffer-pack';
@@ -87,7 +88,7 @@ type IOMsg = {
     SERVER_READY: number;
     CID_REQ: number;
     CID_RES: number;
-    QUOTA_LEVEL: number;
+    QUOTA: number;
     AUTH_CLEAR: number;
     SERVER_REDIRECT: number;
     LOOP: number;
@@ -123,10 +124,10 @@ declare namespace IOMsg {
     export { CID_REQ_1 as CID_REQ };
     let CID_RES_1: number;
     export { CID_RES_1 as CID_RES };
-    export let QUOTA_LEVEL: number;
     let AUTH_CLEAR_1: number;
     export { AUTH_CLEAR_1 as AUTH_CLEAR };
     export let SERVER_REDIRECT: number;
+    export let QUOTA: number;
     export let LOOP: number;
     export let ECHO: number;
     export let PING: number;
@@ -283,15 +284,13 @@ declare class IOCore extends EventEmitter<string | symbol, any> {
      */
     mid: number;
     /**
-     * Quota level.
-     * @type {number}
+     * This connection's quota as told by the server (QUOTA). maxMessageBytes: largest message
+     * send() passes on; null: no limit (also until the server tells).
+     * @type {{ maxMessageBytes: number | null }}
      */
-    level: number;
-    /**
-     * Quota table for current level.
-     * @type {object}
-     */
-    quota: object;
+    quota: {
+        maxMessageBytes: number | null;
+    };
     /**
      * Server settings.
      * @type {object}
@@ -595,10 +594,20 @@ type Buffer$1 = Boho.Buffer;
 
 declare function pack(payload: any): Buffer<ArrayBufferLike>;
 declare class CongRx extends Transform {
+    /**
+     * @param {import('stream').TransformOptions & { maxFrameSize?: number }} [options] Stream options.
+     *   maxFrameSize: largest payload to buffer (default unlimited). A larger frame is
+     *   skipped without buffering and reported by an 'oversize' event (payloadSize).
+     */
+    constructor(options?: stream.TransformOptions & {
+        maxFrameSize?: number;
+    });
     buffer: Buffer<ArrayBuffer>;
     frames: any[];
     rxi: number;
     rxi_zero: number;
+    maxFrameSize: number;
+    skipBytes: number;
     _transform(chunk: any, encoding: any, callback: any): void;
     addData(chunk: any): void;
     parse(): void;
@@ -630,26 +639,42 @@ declare class FileLogger {
 declare class Metrics {
     constructor(manager: any);
     manager: any;
-    metricsPack: {
-        remotes: number[];
-        channels: number[];
-        txBytes: number[];
-        rxBytes: number[];
-        unixTime: number[];
-        period: number;
-    };
-    tickId: number;
+    previous: {
+        time: number;
+        counters: any;
+    } | null;
     close(): void;
-    oneline(prn: any): {
+    snapshot(): {
+        at: number;
+        connections: {
+            total: any;
+            authenticated: number;
+            anonymous: number;
+            websocket: number;
+            tcp: number;
+        };
+        channels: any;
+        retained: {
+            channel: any;
+            bytes: any;
+        };
+        counters: any;
+        memory: {
+            rss: number;
+            heapUsed: number;
+        };
+    };
+    summaryLine(now?: number): string;
+    oneline(): {
         lastSSID: any;
         remotes: any;
         channels: any;
         txBytes: any;
         rxBytes: any;
     };
-    getRemotes(prn: any): string[];
-    getCIdList(prn: any): any[];
-    getChannelList(prn: any): any[];
+    getRemotes(): string[];
+    getCIdList(): any[];
+    getChannelList(): any[];
     getSubscribers(ch: any): any[];
     getRemoteByCId(cid: any, mode?: number): {
         ip: any;
@@ -667,7 +692,6 @@ declare class Metrics {
         isAuth?: undefined;
         encMode?: undefined;
         channels?: undefined;
-        set?: undefined;
         retain?: undefined;
         result?: undefined;
     } | {
@@ -686,7 +710,6 @@ declare class Metrics {
         isAuth?: undefined;
         encMode?: undefined;
         channels?: undefined;
-        set?: undefined;
         retain?: undefined;
         result?: undefined;
     } | {
@@ -705,14 +728,12 @@ declare class Metrics {
         txBytes?: undefined;
         rxBytes?: undefined;
         channels?: undefined;
-        set?: undefined;
         retain?: undefined;
         result?: undefined;
     } | {
         ip: any;
         uptime: number;
         channels: any[];
-        set: any[];
         retain: any[];
         id?: undefined;
         ssid?: undefined;
@@ -744,7 +765,6 @@ declare class Metrics {
         isAuth?: undefined;
         encMode?: undefined;
         channels?: undefined;
-        set?: undefined;
         retain?: undefined;
     } | undefined;
 }
@@ -752,16 +772,31 @@ declare class Metrics {
 declare class Manager {
     constructor(server: any, authManager: any);
     server: any;
-    pingPeriod: number;
-    pingGrace: number;
-    txBytes: number;
-    rxBytes: number;
+    pingPeriod: any;
+    pingGrace: any;
+    counters: {
+        rxMessages: number;
+        rxBytes: number;
+        txMessages: number;
+        txBytes: number;
+        publishes: number;
+        deliveryAttempts: number;
+        quotaExcluded: number;
+        oversizeRejected: number;
+        rateLimited: number;
+        peerRxLimitSkipped: number;
+    };
     authManager: any;
     connectionLogger: FileLogger | undefined;
     attackLogger: FileLogger | undefined;
     remotes: Set<any>;
     cid2remote: Map<any, any>;
+    accountConnectionCounts: Map<any, any>;
     retain_messages: Map<any, any>;
+    retain_owner: Map<any, any>;
+    retainOwners: Map<any, any>;
+    retainExpiry: Map<any, any>;
+    retainBytes: number;
     channel_map: Map<any, any>;
     CHANNEL_PREFIX: string;
     CID_PREFIX: string;
@@ -774,7 +809,13 @@ declare class Manager {
     pingTickMs: number;
     heartbeatStopped: boolean;
     pingIntervalID: NodeJS.Timeout;
-    monitIntervalID: number | undefined;
+    statsIntervalID: NodeJS.Timeout | undefined;
+    get retainOptions(): any;
+    get quotas(): any;
+    get anonymousQuota(): any;
+    accountConnections(uid: any): any;
+    addAccountConnection(remote: any, uid: any): void;
+    removeAccountConnection(remote: any): void;
     heartbeatTick(): void;
     addRemote(socket: any, req: any): void;
     removeRemote(remote: any): void;
@@ -785,9 +826,17 @@ declare class Manager {
     adminSignal(cid: any, message: any): "no cid" | undefined;
     serverSignalTo(tag: any, ...args: any[]): "no cid" | undefined;
     sender(tag: any, remote: any, message: any): (string | number)[];
+    retainFits(message: any, freed: any, ownerBytes: any, budget: any): boolean;
+    retainCopy(message: any): Buffer<ArrayBuffer>;
+    storeCidRetain(key: any, message: any, remote: any): void;
+    retainOwner(key: any): any;
+    storeChannelRetain(tag: any, message: any, remote: any): void;
+    orphanChannelRetains(remote: any): void;
+    expireChannelRetains(now?: number): void;
+    dropChannelRetain(tag: any): void;
+    releaseChannelRetain(tag: any, size: any): void;
     subscribe(chArr: any, remote: any): any;
     unsubscribe(chArr: any, remote: any): void;
-    monitor(): void;
     anonymousCidRandom(size: any): Buffer<ArrayBuffer>;
     issueAnonymousCid(): string | null;
     closeRemoteByCId(cid: any): 0 | 1;
@@ -798,17 +847,50 @@ declare class Server extends EventEmitter$1<[never]> {
     /**
      * @param {object} options Server configuration.
      *   options.localAuth: login without a key list, for local testing. 'idKey' (key = ID) or
-     *   { mode: 'idKey' | 'sharedKey', key, level } (see LocalKeyProvider); the CID is the ID.
+     *   { mode: 'idKey' | 'sharedKey', key, role, quota } (see LocalKeyProvider); the CID is the ID.
      *   Cannot be combined with authManager.
+     *   Every other setting is this Server's own: given here, else the serverOption default, which is
+     *   never modified. Nested groups (security, retain, quotas) are merged over their defaults;
+     *   unknown or removed names are errors.
+     *   options.heartbeatInterval: ms between liveness checks (default 50000).
+     *   options.heartbeatGrace: extra ms a peer has to answer before it is closed (default 5000).
+     *   options.trustProxy: when X-Forwarded-For/-Proto are used. 'private' (default) only from a
+     *   loopback/private peer, true always, false never, or N trusted proxy hops.
+     *   options.maxPayload: largest WebSocket message and CongSocket frame in bytes (default 32 MiB).
+     *   options.maxBufferedBytes: close a peer whose unsent data exceeds this (default 64 MiB).
+     *   options.membersOnly: drop signals from connections that are not authenticated.
+     *   options.logMessages: log each received message after decryption: type and tag, never the payload.
+     *   options.logStats: print a one-line summary every N ms (>= 1000; 0 = off); see stats().
+     *   options.security: { maxClockSkewMs, authChallengeMaxAgeMs, maxReplayEntries }.
+     *   options.retain: retained message limits, see serverOption.retain; adjustable later on server.retain.
+     *   options.quotas: named quota profiles { name: { maxMessageBytes, fanout, msgPerSec, bytesPerSec,
+     *   maxConnections } }, merged over serverOption.quotas; always enforced, null is unlimited.
+     *   Adjustable later on server.quotas. The client is told its maxMessageBytes.
+     *   options.anonymousQuota: profile of a connection that has not authenticated (default 'anonymous').
+     *   options.duplicateLogin: 'keepOld' | 'keepNew' for this Server's connections; overrides the auth
+     *   manager's own policy without changing it, so an auth manager can be shared between servers.
+     *   A failed listen (e.g. EADDRINUSE) is emitted as 'error'.
      * @param {any} [authManager] Optional authentication manager.
      */
     constructor(options: object, authManager?: any);
     security: any;
+    retain: any;
+    quotas: {};
+    anonymousQuota: any;
+    heartbeatInterval: any;
+    heartbeatGrace: any;
+    maxPayload: any;
+    maxBufferedBytes: any;
+    logMessages: boolean;
+    logStats: any;
+    trustProxy: any;
+    membersOnly: boolean;
     serviceNames: Set<any>;
     services: Map<any, any>;
     wss: any;
     port: number | null;
     congPort: number | null;
+    duplicateLogin: any;
     httpServer: any;
     wsPath: any;
     manager: Manager;
@@ -817,6 +899,45 @@ declare class Server extends EventEmitter$1<[never]> {
     startWSServer(): void;
     startCongServer(): void;
     congServer: any;
+    onListenerError(name: any, err: any): void;
+    /**
+     * Current server state, for monitoring. counters are cumulative since the server started
+     * (rates are the reader's to compute from two snapshots). Enumerates connections once.
+     * @returns {{ at: number, connections: { total: number, authenticated: number, anonymous: number,
+     *   websocket: number, tcp: number }, channels: number, retained: { channel: number, bytes: number },
+     *   counters: { rxMessages: number, rxBytes: number, txMessages: number, txBytes: number,
+     *   publishes: number, deliveryAttempts: number, quotaExcluded: number, peerRxLimitSkipped: number },
+     *   memory: { rss: number, heapUsed: number } }}
+     */
+    stats(): {
+        at: number;
+        connections: {
+            total: number;
+            authenticated: number;
+            anonymous: number;
+            websocket: number;
+            tcp: number;
+        };
+        channels: number;
+        retained: {
+            channel: number;
+            bytes: number;
+        };
+        counters: {
+            rxMessages: number;
+            rxBytes: number;
+            txMessages: number;
+            txBytes: number;
+            publishes: number;
+            deliveryAttempts: number;
+            quotaExcluded: number;
+            peerRxLimitSkipped: number;
+        };
+        memory: {
+            rss: number;
+            heapUsed: number;
+        };
+    };
     /**
      * RPC service register.
      * service: service_name <string>
@@ -831,17 +952,75 @@ declare class Server extends EventEmitter$1<[never]> {
 }
 
 declare namespace serverOption {
-    export let clientTracking: boolean;
-    export let port: null;
-    export let congPort: null;
-    export let httpServer: null;
-    export let wsPath: null;
-    export let timeout: number;
-    export let pingTimeoutGrace: number;
-    export let showMessage: string;
-    export let showMetric: number;
-    export let showChannel: number;
-    export let monitorPeriod: number;
+    export let heartbeatInterval: number;
+    export let heartbeatGrace: number;
+    export let maxPayload: number;
+    export let trustProxy: string;
+    export let maxBufferedBytes: number;
+    export let membersOnly: boolean;
+    export let logMessages: boolean;
+    export let logStats: number;
+    export namespace security {
+        let maxClockSkewMs: number;
+        let authChallengeMaxAgeMs: number;
+        let maxReplayEntries: number;
+    }
+    export namespace quotas {
+        namespace anonymous {
+            let maxMessageBytes: number;
+            let fanout: number;
+            let msgPerSec: number;
+            let bytesPerSec: number;
+            let maxConnections: null;
+        }
+        namespace basic {
+            let maxMessageBytes_1: number;
+            export { maxMessageBytes_1 as maxMessageBytes };
+            let fanout_1: number;
+            export { fanout_1 as fanout };
+            let msgPerSec_1: number;
+            export { msgPerSec_1 as msgPerSec };
+            let bytesPerSec_1: number;
+            export { bytesPerSec_1 as bytesPerSec };
+            let maxConnections_1: number;
+            export { maxConnections_1 as maxConnections };
+        }
+        namespace pro {
+            let maxMessageBytes_2: number;
+            export { maxMessageBytes_2 as maxMessageBytes };
+            let fanout_2: number;
+            export { fanout_2 as fanout };
+            let msgPerSec_2: number;
+            export { msgPerSec_2 as msgPerSec };
+            let bytesPerSec_2: number;
+            export { bytesPerSec_2 as bytesPerSec };
+            let maxConnections_2: number;
+            export { maxConnections_2 as maxConnections };
+        }
+        namespace unlimited {
+            let maxMessageBytes_3: null;
+            export { maxMessageBytes_3 as maxMessageBytes };
+            let fanout_3: null;
+            export { fanout_3 as fanout };
+            let msgPerSec_3: null;
+            export { msgPerSec_3 as msgPerSec };
+            let bytesPerSec_3: null;
+            export { bytesPerSec_3 as bytesPerSec };
+            let maxConnections_3: null;
+            export { maxConnections_3 as maxConnections };
+        }
+    }
+    export let anonymousQuota: string;
+    export namespace retain {
+        let enabled: boolean;
+        let limitSize: number;
+        let limitCounter: number;
+        let tagsPerOwner: number;
+        let bytesPerOwner: number;
+        let anonymousGraceMs: number;
+        let bytesPerConnection: number;
+        let bytesTotal: number;
+    }
     export namespace fileLogger {
         namespace connection {
             let use: boolean;
@@ -860,76 +1039,24 @@ declare namespace serverOption {
             export { path_2 as path };
         }
     }
-    export namespace useQuota {
-        let signalSize: boolean;
-        let publishCounter: boolean;
-        let trafficRate: boolean;
-        let disconnect: boolean;
+    export namespace auth_1 {
+        let failDelay: number;
+        let duplicateLogin: string;
     }
-    export let defaultQuotaIndex: number;
-    export let adminLevel: number;
+    export { auth_1 as auth };
     export namespace debug {
         let slow: boolean;
         let delay: number;
         let showAuthInfo: boolean;
     }
-    export namespace retain {
-        let isAvailable: boolean;
-        let limitSize: number;
-        let limitCounter: number;
-    }
-    export namespace security {
-        let maxClockSkewMs: number;
-        let authChallengeMaxAgeMs: number;
-        let maxReplayEntries: number;
-    }
-    export namespace auth_1 {
-        let delay_auth_fail: number;
-        let duplicateLogin: string;
-    }
-    export { auth_1 as auth };
-    export let membersOnly: boolean;
 }
 
 declare function isPrivateIP(ip: any): boolean;
+declare function getIPv6PrefixHexString(ip: any): string | null;
 declare function numberWithCommas(x: any): any;
 declare function getIPv4HexString(ipStr: any): string;
 declare function getLocalAddress(): string;
 declare function delay(ms: any): Promise<any>;
-
-declare class BohoAuth {
-    /**
-     * @param {object} keyProvider
-     * @param {{ duplicateLogin?: 'keepOld' | 'keepNew', onAuthEvent?: (event: object) => any }} [options]
-     *   duplicateLogin: unset follows serverOption.auth.duplicateLogin (default 'keepNew').
-     *   onAuthEvent: called with { type, did, cid, uid, ip, oldIp, socketType, oldSocketType, reason, at }
-     *   for 'replaced' (keepNew evicted the old connection) and 'duplicate_rejected' (keepOld).
-     *   socketType/oldSocketType are 'websocket' or 'congsocket'.
-     *   Errors and rejected promises are logged and never affect authentication.
-     */
-    constructor(keyProvider: object, options?: {
-        duplicateLogin?: "keepOld" | "keepNew";
-        onAuthEvent?: (event: object) => any;
-    });
-    keyProvider: object;
-    _duplicateLogin: any;
-    /** @param {'keepOld' | 'keepNew' | null} policy  null returns to the serverOption default. */
-    set duplicateLogin(policy: "keepOld" | "keepNew" | null);
-    /** Effective duplicate login policy: this instance's setting, else serverOption.auth.duplicateLogin. */
-    get duplicateLogin(): "keepOld" | "keepNew" | null;
-    onAuthEvent: ((event: object) => any) | null;
-    authLogger: FileLogger | undefined;
-    set keepOldConnection(keepOld: boolean);
-    get keepOldConnection(): boolean;
-    emitAuthEvent(event: any): void;
-    send_auth_fail(peer: any, reason: any): void;
-    verify_auth_req(auth_req: any, peer: any): Promise<any>;
-    getAuth(id: any): Promise<any>;
-    getAuthIdList(): Promise<any>;
-    addAuth(id: any, keyStr: any, cid: any, level?: number): Promise<any>;
-    delAuth(id: any): Promise<any>;
-    save(): Promise<any>;
-}
 
 declare class FileKeyProvider {
     constructor(_path: any);
@@ -939,7 +1066,7 @@ declare class FileKeyProvider {
     loadAuthInfoFile_JSON(path: any): void;
     getAuth(id: any): Promise<any>;
     getAuthIdList(): Promise<any[]>;
-    addAuth(id: any, keyStr: any, cid: any, level?: number): void;
+    addAuth(id: any, keyStr: any, cid: any, role: any, quota: any): void;
 }
 
 declare class RedisKeyProvider {
@@ -947,7 +1074,7 @@ declare class RedisKeyProvider {
     redis: any;
     getAuth(id: any): Promise<any>;
     getAuthIdList(): Promise<any>;
-    addAuth(id: any, keyStr: any, cid?: string, level?: number): Promise<any>;
+    addAuth(id: any, keyStr: any, cid: string | undefined, role: any, quota: any): Promise<any>;
     delAuth(id: any): Promise<any>;
     save(id: any): Promise<any>;
 }
@@ -957,26 +1084,30 @@ declare class StringKeyProvider {
     AUTH: Map<any, any>;
     getAuth(id: any): Promise<any>;
     getAuthIdList(): Promise<any[]>;
-    addAuth(id: any, keyStr: any, cid: any, level?: number): void;
+    addAuth(id: any, keyStr: any, cid: any, role: any, quota: any): void;
 }
 
 declare class LocalKeyProvider {
     /**
-     * @param {'idKey' | { mode: 'idKey' | 'sharedKey', key?: string, level?: number }} options
+     * @param {'idKey' | { mode: 'idKey' | 'sharedKey', key?: string,
+     *   role?: 'device' | 'service' | 'admin', quota?: string }} options
      *   A string is the mode alone.
      */
     constructor(options: "idKey" | {
         mode: "idKey" | "sharedKey";
         key?: string;
-        level?: number;
+        role?: "device" | "service" | "admin";
+        quota?: string;
     });
     mode: "idKey" | "sharedKey";
-    level: number | undefined;
+    role: "device" | "service" | "admin";
+    quota: string | undefined;
     sharedKeyHash: string | null;
     getAuth(id: any): Promise<{
+        quota?: string | undefined;
         key: string;
         cid: any;
-        level: number;
+        role: "device" | "service" | "admin";
     } | undefined>;
 }
 
@@ -1026,15 +1157,12 @@ declare namespace sudoService {
 declare class RedisService {
     /**
      * @param {object} redisClient
-     * @param {number} [_minLevel=200]
-     * @param {{ requireAuth?: boolean }} [options] requireAuth (default true): allow Boho-authenticated remotes only.
+     * @param {'anonymous' | 'device' | 'service' | 'admin'} [minRole='service'] lowest role allowed;
+     *   'anonymous' allows every connection.
      */
-    constructor(redisClient: object, _minLevel?: number, options?: {
-        requireAuth?: boolean;
-    });
+    constructor(redisClient: object, minRole?: "anonymous" | "device" | "service" | "admin");
     redisClient: object;
-    minLevel: number;
-    requireAuth: boolean;
+    minRole: "anonymous" | "device" | "service" | "admin";
     commands: string[];
     checkPermission(remote: any, req: any): boolean;
     call(remote: any, req: any): Promise<void>;
@@ -1047,6 +1175,53 @@ declare function parsePayload(args: any): {
 };
 declare function getPayloadFromSignalPack(signalPack: any): any;
 
+/** True if the remote is authenticated with this role or a higher one ('anonymous': always). */
+declare function hasRole(remote: any, role: any): boolean;
+/** Default quota profile of a login: the account's quota, else 'basic' for a device, 'unlimited' otherwise. */
+declare function defaultQuota(authInfo: any, role: any): any;
+declare const ROLES: string[];
+declare class BohoAuth {
+    /**
+     * @param {object} keyProvider
+     * @param {{ duplicateLogin?: 'keepOld' | 'keepNew', onAuthEvent?: (event: object) => any,
+     *   resolveQuota?: (authInfo: object, role: string) => string | Promise<string> }} [options]
+     *   duplicateLogin: unset follows serverOption.auth.duplicateLogin (default 'keepNew').
+     *   A Server's duplicateLogin option takes precedence for that Server's connections.
+     *   onAuthEvent: called with { type, did, cid, uid, ip, oldIp, socketType, oldSocketType, reason, at }
+     *   for 'replaced' (keepNew evicted the old connection) and 'duplicate_rejected' (keepOld).
+     *   socketType/oldSocketType are 'websocket' or 'congsocket'.
+     *   Errors and rejected promises are logged and never affect authentication.
+     *   resolveQuota: name of the Server quota profile for a login (default: defaultQuota), e.g. from
+     *   the account owner's plan. An unknown name fails the login.
+     */
+    constructor(keyProvider: object, options?: {
+        duplicateLogin?: "keepOld" | "keepNew";
+        onAuthEvent?: (event: object) => any;
+        resolveQuota?: (authInfo: object, role: string) => string | Promise<string>;
+    });
+    keyProvider: object;
+    _duplicateLogin: any;
+    /** @param {'keepOld' | 'keepNew' | null} policy  null returns to the serverOption default. */
+    set duplicateLogin(policy: "keepOld" | "keepNew" | null);
+    /** Effective duplicate login policy: this instance's setting, else serverOption.auth.duplicateLogin. */
+    get duplicateLogin(): "keepOld" | "keepNew" | null;
+    onAuthEvent: ((event: object) => any) | null;
+    resolveQuota: typeof defaultQuota | ((authInfo: object, role: string) => string | Promise<string>);
+    authLogger: FileLogger | undefined;
+    /** Policy for a connection: its Server's duplicateLogin option, else this instance's policy. */
+    duplicateLoginFor(peer: any): any;
+    set keepOldConnection(keepOld: boolean);
+    get keepOldConnection(): boolean;
+    emitAuthEvent(event: any): void;
+    send_auth_fail(peer: any, reason: any): void;
+    verify_auth_req(auth_req: any, peer: any): Promise<any>;
+    getAuth(id: any): Promise<any>;
+    getAuthIdList(): Promise<any>;
+    addAuth(id: any, keyStr: any, cid: any, role: any, quota: any): Promise<any>;
+    delAuth(id: any): Promise<any>;
+    save(): Promise<any>;
+}
+
 declare const version: string;
 
-export { BohoAuth, CongRx, ENC_MODE, FileKeyProvider, FileLogger, IOWS as IO, IOCongSocket, IOMsg, LocalKeyProvider, PAYLOAD_TYPE, RedisKeyProvider, RedisService, SIZE_LIMIT, STATE, STATUS, Server, StringKeyProvider, delay, getIPv4HexString, getLocalAddress, getPayloadFromSignalPack, getSignalPack, isPrivateIP, numberWithCommas, pack, parsePayload, replyService, serverOption, sudoService, version };
+export { BohoAuth, CongRx, ENC_MODE, FileKeyProvider, FileLogger, IOWS as IO, IOCongSocket, IOMsg, LocalKeyProvider, PAYLOAD_TYPE, ROLES, RedisKeyProvider, RedisService, SIZE_LIMIT, STATE, STATUS, Server, StringKeyProvider, defaultQuota, delay, getIPv4HexString, getIPv6PrefixHexString, getLocalAddress, getPayloadFromSignalPack, getSignalPack, hasRole, isPrivateIP, numberWithCommas, pack, parsePayload, replyService, serverOption, sudoService, version };

@@ -17,13 +17,13 @@ A cid publish -> C
 
 */
 import { Server , IO, MBP , StringKeyProvider, BohoAuth} from 'iosignal'
-const stringKey = 'A.akey.A.3,B.bkey.B.3,C.ckey.C.3'
+const stringKey = 'A.akey.A,B.bkey.B,C.ckey.C'
 const authManager = new BohoAuth(new StringKeyProvider(stringKey) )
 const tag = 'channel'
 const s = new Server({
     port: 0,
     // congPort: 55488,
-    // showMessage: 'message'
+    // logMessages: true
 }, authManager);
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));

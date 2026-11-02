@@ -9,8 +9,8 @@
  * 
  */
 import { STATUS } from './constant.js'
+import { ROLES, hasRole } from '../auth/BohoAuth.js'
 
-const MIN_LEVEL = 200;
 const COMMANDS = [
   'GET', 'SET', 'HGETALL', 'HGET', 'HSET', 'SADD', 'SISMEMBER',
   'SMEMBERS', 'EXISTS', 'SREM', 'DEL', 'KEYS', 'SAVE',
@@ -23,22 +23,21 @@ const COMMANDS = [
 export class RedisService {
   /**
    * @param {object} redisClient
-   * @param {number} [_minLevel=200]
-   * @param {{ requireAuth?: boolean }} [options] requireAuth (default true): allow Boho-authenticated remotes only.
+   * @param {'anonymous' | 'device' | 'service' | 'admin'} [minRole='service'] lowest role allowed;
+   *   'anonymous' allows every connection.
    */
-  constructor(redisClient, _minLevel, options = {}) {
+  constructor(redisClient, minRole = 'service') {
     if (!redisClient) {
       throw new Error("RedisService constructor: no redisClient")
     }
+    if (!ROLES.includes(minRole)) throw new RangeError(`minRole must be one of: ${ROLES.join(', ')}`)
     this.redisClient = redisClient
-    this.minLevel = _minLevel ? _minLevel : MIN_LEVEL
-    this.requireAuth = options.requireAuth !== false
+    this.minRole = minRole
     this.commands = COMMANDS
   }
 
   checkPermission(remote, req) {
-    if (this.requireAuth && remote.boho?.isAuthorized !== true) return false;
-    return (remote.level >= this.minLevel) ? true : false;
+    return hasRole(remote, this.minRole);
   }
 
   async call(remote, req) {

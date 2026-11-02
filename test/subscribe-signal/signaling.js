@@ -3,7 +3,7 @@ import { IO, Server } from 'iosignal'
 let url = 'ws://localhost:5555'
 let server = new Server({
   port: 5555
-  //  ,showMessage: 'message'
+  //  ,logMessages: true
 })
 let done = false;
 

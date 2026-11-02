@@ -3,12 +3,32 @@ import MBP from 'meta-buffer-pack'
 import Boho from 'boho'
 import { serverOption } from './serverOption.js';
 import { IOMsg, ENC_MODE, STATE } from '../common/constants.js'
-import { quotaTable } from '../common/quotaTable.js'
 
 const decoder = new TextDecoder()
 
 const NB = MBP.NB
 const MB = MBP.MB
+
+// A one-byte CLOSE reason is a code, not text (Arduino IOSignal::close(uint8_t)): the message
+// that made the client close, or its CongPacket reader error state (ReadingState >= 250).
+// Its own table, because IOMsg gives 253 another meaning (TIME_OUT).
+const CLOSE_REASON = {
+  [IOMsg.AUTH_CLEAR]: 'AUTH_CLEAR',
+  [IOMsg.SERVER_REDIRECT]: 'SERVER_REDIRECT',
+  253: 'CONG_UNKNOWN_TYPE',
+  254: 'CONG_OVER_SIZE',
+  255: 'CONG_OVER_FLOW'
+}
+
+// Readable reason of a CLOSE message, e.g. 'AUTH_CLEAR(0xc4)'; longer reasons are text.
+export function closeReason(message) {
+  if (message.byteLength < 2) return 'none'
+  if (message.byteLength === 2) {
+    const code = '0x' + message[1].toString(16).padStart(2, '0')
+    return CLOSE_REASON[message[1]] ? `${CLOSE_REASON[message[1]]}(${code})` : code
+  }
+  return decoder.decode(message.subarray(1))
+}
 
 
 export class RemoteCore {
@@ -28,9 +48,11 @@ export class RemoteCore {
     this._replayEntries = 0;
     this._replayExpiredBefore = 0;
     this.securityFailure = null;
+    this.closeReason = null; // reason of the client's CLOSE message, see closeReason()
     this.encMode = ENC_MODE.AUTO;
     this.channels = new Set();  //  subscribed tags
     this.retain_signal = new Map();
+    this.retainBytes = 0; // bytes of its CID retains (retain_signal)
 
     this.ssid = RemoteCore.ssid++;  // ordered index number
     this.manager = manager;
@@ -42,9 +64,18 @@ export class RemoteCore {
 
     this.privateNode = false
     this.HOME_CHANNEL = ''
-    this.level = serverOption.defaultQuotaIndex;
-    this.quota = quotaTable[this.level];
-    this.isAdmin = false;
+    this.role = 'anonymous'; // set on authentication; see ROLES in BohoAuth
+    this.accountUid = null;  // counted in manager.accountConnections while authenticated with a uid
+    // Quota profile (a server.quotas entry, read live): the anonymous one until authenticated.
+    this.quotaName = manager.anonymousQuota;
+    this.quota = manager.quotas[this.quotaName];
+    this._rateAt = null; // token buckets of quota msgPerSec / bytesPerSec
+    this._msgTokens = 0;
+    this._byteTokens = 0;
+    // Largest message the peer can receive, if it said so in CID_REQ (e.g. an Arduino RX buffer);
+    // larger messages are skipped instead of sent. null: no limit beyond maxPayload.
+    this.peerRxLimit = null;
+    this.peerRxLimitSkipped = 0;
 
     this.state;
     this.stateLog = [];
@@ -53,6 +84,11 @@ export class RemoteCore {
   }
 
   static ssid = 1;
+
+  /** Authenticated with role 'admin'. */
+  get isAdmin() {
+    return this.role === 'admin' && this.boho.isAuthorized === true;
+  }
 
   setState(state) {
     const previous = this.state;
@@ -77,43 +113,79 @@ export class RemoteCore {
   }
 
 
-  showMessageLog(message, isBinary) {
-    let h = '->S '
-    let from = this.boho.isAuthorized ? ` did: ${this.did} cid: ${this.cid}` : ` cid: ${this.cid}`
-    let prnLimit = 20
-    if (isBinary) {
-      let msgTypeName = IOMsg[message[0]]
-      if (!msgTypeName) msgTypeName = Boho.BohoMsg[message[0]]
-
-      msgTypeName = '[' + msgTypeName + ']';
-      let size = message.byteLength;
-      if (size < prnLimit) {
-        console.log( h + msgTypeName + from +` [${size}]`, message);
-      } else {
-        let elseLen = size - prnLimit
-        let some = message.subarray(0,prnLimit)
-        console.log( h + msgTypeName + from +` [${size}]` , some , ' ... else: ', elseLen);
+  // logMessages: one line per received message after decryption: type, routing tag or RPC
+  // target, and size. Payloads are never printed; heartbeat PING/PONG are skipped.
+  logMessage(msgType, message, encrypted = false) {
+    if (msgType === IOMsg.PING || msgType === IOMsg.PONG) return
+    let detail = ''
+    try {
+      if ([IOMsg.SIGNAL, IOMsg.SIGNAL_E2E, IOMsg.SUBSCRIBE, IOMsg.UNSUBSCRIBE].includes(msgType)) {
+        detail = decoder.decode(message.subarray(2, 2 + message[1]))
+      } else if (msgType === IOMsg.SUBSCRIBE_REQ && message.byteLength >= 5) {
+        detail = decoder.decode(message.subarray(5, 5 + message.readUInt16BE(3)))
+      } else if (msgType === IOMsg.CALL) {
+        const req = MBP.unpack(message)
+        if (req) detail = `${req.target}.${req.topic}`
       }
+    } catch { /* a malformed message is logged without detail */ }
+    const type = msgType === undefined ? 'TEXT'
+      : IOMsg[msgType] ?? Boho.BohoMsg[msgType] ?? '0x' + msgType.toString(16)
+    const transport = this.socketType === 'websocket' ? 'WS' : 'CS'
+    console.log(`[rx] #${this.ssid} ${this.cid || '-'} ${transport} ${type}${encrypted ? '(enc)' : ''}` +
+      `${detail ? ' ' + detail : ''} ${message.byteLength}B`)
+  }
 
-    } else {
-      console.log( h + ' [TEXT] %s' + from, message);
+  // Switches to a server.quotas profile; tell: send it to the client (QUOTA: its maxMessageBytes).
+  setQuota(name, tell) {
+    this.quotaName = name;
+    this.quota = this.manager.quotas[name];
+    // The CongSocket frame ceiling follows maxMessageBytes.
+    this.refreshRxFrameLimit?.();
+    if (tell) {
+      const packet = Buffer.alloc(5);
+      packet[0] = IOMsg.QUOTA;
+      packet.writeUInt32LE(this.quota.maxMessageBytes ?? 0, 1); // 0: unlimited
+      this.send(packet);
     }
+  }
+
+  // Quota msgPerSec / bytesPerSec: token buckets holding one second. A message larger than the
+  // byte bucket passes when the bucket is full and leaves a debt.
+  takeRateTokens(bytes) {
+    const { msgPerSec, bytesPerSec } = this.quota;
+    if (msgPerSec === null && bytesPerSec === null) return true;
+    const now = performance.now();
+    if (this._rateAt === null) {
+      this._msgTokens = msgPerSec ?? 0;
+      this._byteTokens = bytesPerSec ?? 0;
+    } else {
+      const seconds = (now - this._rateAt) / 1000;
+      if (msgPerSec !== null) this._msgTokens = Math.min(msgPerSec, this._msgTokens + seconds * msgPerSec);
+      if (bytesPerSec !== null) this._byteTokens = Math.min(bytesPerSec, this._byteTokens + seconds * bytesPerSec);
+    }
+    this._rateAt = now;
+    if (msgPerSec !== null && this._msgTokens < 1) return false;
+    if (bytesPerSec !== null && this._byteTokens < Math.min(bytes, bytesPerSec)) return false;
+    if (msgPerSec !== null) this._msgTokens -= 1;
+    if (bytesPerSec !== null) this._byteTokens -= bytes;
+    return true;
   }
 
   rxQuotaChecker(message) {
     let rxBytes = message.byteLength
-    this.manager.rxBytes += rxBytes;
-    if (this.manager.telemetry) { this.manager.telemetry.rxBytes += rxBytes; this.manager.telemetry.rxMessages++; }
+    this.manager.counters.rxBytes += rxBytes;
+    this.manager.counters.rxMessages++;
 
-    if (serverOption.useQuota.signalSize && (rxBytes > this.quota.signalSize)) {
-      console.log('## quota: size over')
+    const maxMessageBytes = this.quota.maxMessageBytes;
+    if (maxMessageBytes !== null && rxBytes > maxMessageBytes) {
+      this.manager.counters.oversizeRejected++;
       this.send(Buffer.from([IOMsg.OVER_SIZE]))
-      if (serverOption.useQuota.disconnect) this.close();
       return false;
     }
-
-    // todo:
-    // traffic rate :  
+    if (!this.takeRateTokens(rxBytes)) {
+      this.manager.counters.rateLimited++;
+      return false;
+    }
     return true;
   }
 
@@ -127,7 +199,7 @@ export class RemoteCore {
     if (this._closing || this.state === STATE.CLOSED) return false;
     this.securityFailure = reason;
     this.boho.clearAuth();
-    this.isAdmin = false;
+    this.role = 'anonymous';
     this._replayBuckets.clear();
     this._replayEntries = 0;
     this.close(true);
@@ -209,9 +281,8 @@ export class RemoteCore {
     this.receiveMonitor() // rx-data, ping/pong and timeout check
     if (!this.rxQuotaChecker(message)) return
 
-    if (serverOption.showMessage === 'message') this.showMessageLog(message, isBinary)
-
-    let msgType, decoded
+    const logMessages = this.manager.server?.logMessages
+    let msgType, decoded, encrypted = false
 
     if (isBinary) {
       msgType = message[0]
@@ -223,6 +294,7 @@ export class RemoteCore {
         if (decoded) {
           msgType = decoded[0]
           message = decoded
+          encrypted = true
         } else {
           return
         }
@@ -234,6 +306,7 @@ export class RemoteCore {
           msgType = decoded[0]
           message.set(decoded, Boho.MetaSize.ENC_488) // set decoded signal_e2e headaer.
           message = message.subarray(Boho.MetaSize.ENC_488) // reset offset.
+          encrypted = true
         } else {
           return
         }
@@ -241,6 +314,7 @@ export class RemoteCore {
       } else {
         // console.log( `[P] ${ IOMsg[ msgType] || Boho.BohoMsg[cmd]}  LEN: ${message.byteLength}` )
       }
+      if (logMessages) this.logMessage(msgType, message, encrypted)
 
       switch (msgType) {
         case IOMsg.PING:
@@ -259,6 +333,13 @@ export class RemoteCore {
             return;
           }
 
+          // Optional uint32 little endian after the type: the peer's RX buffer size. Set before
+          // anything else is sent, so CID_RES, retained messages and signals respect it.
+          if (message.byteLength >= 5) {
+            const size = (message[1] | message[2] << 8 | message[3] << 16) + message[4] * 0x1000000
+            if (size > 0) this.peerRxLimit = size
+          }
+
           if (!this.cid) {
             const cid = this.manager.issueAnonymousCid()
             if (!cid) {
@@ -268,6 +349,8 @@ export class RemoteCore {
             }
             this.cid = cid
             this.manager.cid2remote.set(this.cid, this)
+            // The client limits its own sends to its quota (an authenticated one is sent on AUTH).
+            this.setQuota(this.quotaName, true)
           }
 
           // console.log('<< SENDING CID_RES:', this.cid)
@@ -371,11 +454,10 @@ export class RemoteCore {
 
 
         case IOMsg.CLOSE:
-          if (message.byteLength > 1) {
-            let reason = decoder.decode(message.subarray(1))
-            console.log('>> CLOSE reason:', reason)
-            this.close();
-          }
+          // The reason is only logged, so a CLOSE without one still closes.
+          this.closeReason = closeReason(message)
+          console.log(`>> CLOSE #${this.ssid} cid:${this.cid} reason: ${this.closeReason}`)
+          this.close();
           break;
 
 
@@ -418,6 +500,7 @@ export class RemoteCore {
 
     } else {
       // TEXT FRAME
+      if (logMessages) this.logMessage(undefined, message)
       try {
         let textMessage = decoder.decode(message)
         // console.log('text buffer:',textMessage )
@@ -502,7 +585,8 @@ export class RemoteCore {
         "cid": this.cid,
         "did": this.did,
         "uid": this.uid,
-        "level": this.level,
+        "role": this.role,
+        "quota": this.quotaName,
         "nick": this.nick,
         "ip": this.ip
         , 'tag': channels

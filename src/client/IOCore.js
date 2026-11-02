@@ -1,7 +1,6 @@
 import MBP from 'meta-buffer-pack'
 import { EventEmitter } from "eventemitter3";
 import { IOMsg, PAYLOAD_TYPE, SIZE_LIMIT, ENC_MODE, STATE } from '../common/constants.js'
-import { quotaTable } from '../common/quotaTable.js'
 import { getSignalPack } from '../common/payload.js';
 import Boho from "boho";
 
@@ -11,7 +10,6 @@ import Boho from "boho";
  * @typedef {import('../common/constants.js').SIZE_LIMIT} SIZE_LIMIT
  * @typedef {import('../common/constants.js').ENC_MODE} ENC_MODE
  * @typedef {import('../common/constants.js').STATE} STATE
- * @typedef {import('../common/quotaTable.js').quotaTable} quotaTable
  
  * @typedef {import('boho').Buffer} Buffer
  */
@@ -185,15 +183,11 @@ export class IOCore extends EventEmitter {
     this.mid = 0  // promise message id 
 
     /**
-     * Quota level.
-     * @type {number}
+     * This connection's quota as told by the server (QUOTA). maxMessageBytes: largest message
+     * send() passes on; null: no limit (also until the server tells).
+     * @type {{ maxMessageBytes: number | null }}
      */
-    this.level = 3; // also defaultQuotaLevel
-    /**
-     * Quota table for current level.
-     * @type {object}
-     */
-    this.quota = quotaTable[this.level];
+    this.quota = { maxMessageBytes: null };
     /**
      * Server settings.
      * @type {object}
@@ -516,12 +510,12 @@ export class IOCore extends EventEmitter {
         this.subscribe_channels() 
         break;
 
-      case IOMsg.QUOTA_LEVEL:
-        let quotaLevel = buffer[1]
-        this.level = quotaLevel;
-        this.quota = quotaTable[quotaLevel];
-        // console.log('[QUOTA_LEVEL]', JSON.stringify(this.quota))
+      case IOMsg.QUOTA: {
+        if (buffer.byteLength < 5) break;
+        const maxMessageBytes = (buffer[1] | buffer[2] << 8 | buffer[3] << 16) + buffer[4] * 0x1000000;
+        this.quota = { maxMessageBytes: maxMessageBytes || null };
         break;
+      }
 
       case IOMsg.AUTH_CLEAR:
         this.useAuth = false;
@@ -786,10 +780,10 @@ export class IOCore extends EventEmitter {
    * @param {Buffer} data - The data buffer to send.
    */
   send(data) {
-    if (data.byteLength > this.quota.signalSize) {
+    const maxMessageBytes = this.quota.maxMessageBytes;
+    if (maxMessageBytes !== null && data.byteLength > maxMessageBytes) {
       this.emit('over_size')
-      console.log('## QUOTA LIMIT OVER!! \nsignal message.byteLength: ', data.byteLength)
-      console.log('## your maximum signalSize(bytes) is:', this.quota.signalSize)
+      console.log(`## quota: ${data.byteLength} bytes is over this connection's maxMessageBytes ${maxMessageBytes}`)
       return
     }
     // console.log(`C->[${IOMsg[ data[0]]}]`)

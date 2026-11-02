@@ -127,15 +127,13 @@ declare class IOCore extends EventEmitter<string | symbol, any> {
      */
     mid: number;
     /**
-     * Quota level.
-     * @type {number}
+     * This connection's quota as told by the server (QUOTA). maxMessageBytes: largest message
+     * send() passes on; null: no limit (also until the server tells).
+     * @type {{ maxMessageBytes: number | null }}
      */
-    level: number;
-    /**
-     * Quota table for current level.
-     * @type {object}
-     */
-    quota: object;
+    quota: {
+        maxMessageBytes: number | null;
+    };
     /**
      * Server settings.
      * @type {object}

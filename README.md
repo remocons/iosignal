@@ -182,6 +182,8 @@ for more options.
 | `BohoAuth` | Server authentication manager |
 | `StringKeyProvider`, `FileKeyProvider`, `RedisKeyProvider` | Authentication key providers |
 | `LocalKeyProvider` | Key-list-free logins for local tests (`localAuth` server option) |
+| `ROLES`, `hasRole(remote, role)` | Connection roles for service permission checks |
+| `server.stats()` | Connection, channel, retain and traffic counters |
 
 ## Authentication and encryption
 
@@ -202,6 +204,59 @@ new Server({ port: 7777, localAuth: { mode: 'sharedKey', key: 'lab2026' } })  //
 
 Add `membersOnly: true` to drop signals from anonymous connections. See
 [Local test logins](https://github.com/remocons/iosignal/blob/main/docs/boho.md#local-test-logins-localauth).
+
+## Roles and quotas
+
+A connection's **role** decides what it may do; its **quota profile** decides
+how much it may send. They are independent.
+
+- Roles, lowest first: `anonymous` (not logged in), `device` (default for a
+  login), `service`, `admin`. A key entry gives the role:
+  `id.key.cid[.role[.quota]]`, e.g. `'dev1.k1.dev1'` or `'cli.k2.cli.admin'`.
+  Services check it with `hasRole(remote, 'admin')`; `sudoService` needs
+  `admin`, `RedisService(client, minRole)` defaults to `service`.
+- Quota profiles are named sets of limits in the `quotas` server option:
+  `maxMessageBytes`, `fanout` (subscribers one publish reaches), `msgPerSec`,
+  `bytesPerSec` and `maxConnections` per account. `null` means unlimited.
+  The server always enforces them. Unauthenticated connections use
+  `anonymousQuota`; a login uses its key entry's quota, or the result of the
+  `BohoAuth` `resolveQuota(authInfo, role)` option.
+- The built-in profiles (`anonymous`, `basic`, `pro`, `unlimited` in
+  `serverOption.quotas`) are starting points for the operator to tune, not
+  values to rely on. Clients read `io.quota.maxMessageBytes` after `ready`.
+
+```js
+const server = new Server({
+  port: 7777,
+  quotas: { anonymous: { maxMessageBytes: 64 * 1024 }, basic: { fanout: 200 } },
+  anonymousQuota: 'anonymous'
+}, new BohoAuth(new StringKeyProvider('dev1.k1.dev1,cli.k2.cli.admin')));
+```
+
+## Upgrading from 8.x
+
+9.0 removes the quota level table and changes settings without a
+compatibility layer. Old setting names throw an error that names the
+replacement.
+
+- Key entries use roles and quota names instead of levels:
+  `id.key.cid.255` becomes `id.key.cid.admin`, `id.key.cid.3` becomes
+  `id.key.cid`. `addAuth(id, key, cid, role, quota)` and file entries
+  `[id, key, cid, role, quota]` follow the same order. A level is no longer read.
+- Removed: `quotaTable`, `serverOption.useQuota`, `defaultQuotaIndex`,
+  `adminLevel`, `remote.level`, `io.level`, the `QUOTA_LEVEL` message, and
+  `RedisService`'s `minLevel`/`requireAuth` arguments.
+- Every setting is per server and `serverOption` only holds defaults that a
+  Server never changes. Renamed: `timeout` → `heartbeatInterval`,
+  `pingTimeoutGrace` → `heartbeatGrace`, `retain.isAvailable` →
+  `retain.enabled`, `auth.delay_auth_fail` → `auth.failDelay`. Removed
+  `showMessage`, `showMetric` and `monitorPeriod`; use `logMessages`,
+  `logStats` and `server.stats()`.
+- New server options: `maxPayload`, `maxBufferedBytes`, `trustProxy`,
+  per-server `membersOnly` and `duplicateLogin`, and retained-message budgets
+  per owner in `retain`.
+- The quota is sent in a new `QUOTA` message; older clients ignore it and
+  keep their previous local size limit.
 
 ## Detailed guides
 

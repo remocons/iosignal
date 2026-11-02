@@ -78,7 +78,7 @@ export type IOMsg = {
     SERVER_READY: number;
     CID_REQ: number;
     CID_RES: number;
-    QUOTA_LEVEL: number;
+    QUOTA: number;
     AUTH_CLEAR: number;
     SERVER_REDIRECT: number;
     LOOP: number;
@@ -114,10 +114,10 @@ export namespace IOMsg {
     export { CID_REQ_1 as CID_REQ };
     let CID_RES_1: number;
     export { CID_RES_1 as CID_RES };
-    export let QUOTA_LEVEL: number;
     let AUTH_CLEAR_1: number;
     export { AUTH_CLEAR_1 as AUTH_CLEAR };
     export let SERVER_REDIRECT: number;
+    export let QUOTA: number;
     export let LOOP: number;
     export let ECHO: number;
     export let PING: number;

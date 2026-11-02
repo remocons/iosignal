@@ -6,9 +6,9 @@
 import { STATUS } from './constant.js'
 export const commands = ['echo', 'date', 'unixtime'];
 
-const MIN_LEVEL = 0;
+// Open to every connection.
 export function checkPermission(remote) {
-  return (remote.level >= MIN_LEVEL) ? true : false;
+  return true;
 }
 
 /**

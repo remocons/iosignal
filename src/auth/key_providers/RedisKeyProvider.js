@@ -30,9 +30,13 @@ export class RedisKeyProvider {
   }
 
   // add device auth info
-  async addAuth(id, keyStr, cid = '', level = 0) {
+  // role and quota are optional (see StringKeyProvider); an omitted one is not stored.
+  async addAuth(id, keyStr, cid = '', role, quota) {
     let Base64hashKey = Buffer.from(Boho.sha256.hash(keyStr)).toString('base64')
-    return this.redis.hSet(DEVICE_PREFIX + id, { 'key': Base64hashKey, 'cid': cid, 'level': level })
+    const fields = { 'key': Base64hashKey, 'cid': cid }
+    if (role) fields.role = role
+    if (quota) fields.quota = quota
+    return this.redis.hSet(DEVICE_PREFIX + id, fields)
   }
 
   //sudoService call

@@ -21,8 +21,8 @@ redisClient.on('end', ()=>{
     console.log('redisClient is end.')
 })
 
-const server = new Server({port:0, showMessage: 'message'})
-                    .attach('redis', new RedisService( redisClient , -1, { requireAuth: false }))
+const server = new Server({port:0, logMessages: true})
+                    .attach('redis', new RedisService( redisClient , 'anonymous'))
 
 server.on('ready',()=>{
     let io = new IO('ws://localhost:'+server.port)

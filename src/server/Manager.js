@@ -14,14 +14,17 @@ export class Manager {
 
   constructor(server, authManager) {
     this.server = server;
-    this.pingPeriod = serverOption.timeout;
-    this.pingGrace = serverOption.pingTimeoutGrace;
+    // This server's settings; a Manager made without a Server (tests, checks) uses the defaults.
+    this.pingPeriod = server?.heartbeatInterval ?? serverOption.heartbeatInterval;
+    this.pingGrace = server?.heartbeatGrace ?? serverOption.heartbeatGrace;
     if (!Number.isFinite(this.pingPeriod) || this.pingPeriod <= 0 ||
         !Number.isFinite(this.pingGrace) || this.pingGrace < 0) {
       throw new RangeError('Invalid heartbeat period or grace');
     }
-    this.txBytes = 0;
-    this.rxBytes = 0;
+    // Cumulative since the server started; never reset (readers compute rates from deltas).
+    this.counters = { rxMessages: 0, rxBytes: 0, txMessages: 0, txBytes: 0,
+      publishes: 0, deliveryAttempts: 0, quotaExcluded: 0, oversizeRejected: 0, rateLimited: 0,
+      peerRxLimitSkipped: 0 }; // messages not sent: larger than the peer's advertised RX buffer
 
     this.authManager = authManager;
 
@@ -39,7 +42,12 @@ export class Manager {
 
     this.remotes = new Set();         // total remotes
     this.cid2remote = new Map();      // key: cid -> value: remote
+    this.accountConnectionCounts = new Map(); // uid -> authenticated connections
     this.retain_messages = new Map()  // key: tag, data: signalMessage
+    this.retain_owner = new Map()     // key: channel retain tag -> its owner record (see retainOwner)
+    this.retainOwners = new Map()     // key: 'cid:<cid>' | 'conn:<ssid>' | 'net:<HOME_CHANNEL>' -> owner
+    this.retainExpiry = new Map()     // key: channel retain tag in a grace pool -> expiry time
+    this.retainBytes = 0              // all retained messages, channel and CID
     this.channel_map = new Map()      // key: channelName -> value: < remote : Set >
     this.CHANNEL_PREFIX = 'CH:'
     this.CID_PREFIX = 'CID:'
@@ -61,18 +69,49 @@ export class Manager {
     };
     this.pingIntervalID = setTimeout(tick, this.pingTickMs);
 
-    if (serverOption.showMetric) {
-      this.monitIntervalID = setInterval((e) => {
-        this.monitor()
-      }, serverOption.monitorPeriod);
+    // logStats: one summary line per interval; it never clears the terminal, so other logs stay.
+    if (server.logStats) {
+      this.statsIntervalID = setInterval(() => console.log(this.metrics.summaryLine()), server.logStats);
     }
 
 
   }
 
 
+  get retainOptions() {
+    return this.server?.retain ?? serverOption.retain
+  }
+
+  get quotas() {
+    return this.server?.quotas ?? serverOption.quotas
+  }
+
+  get anonymousQuota() {
+    return this.server?.anonymousQuota ?? serverOption.anonymousQuota
+  }
+
+  // Authenticated connections per account (uid), for the quota's maxConnections.
+  accountConnections(uid) {
+    return this.accountConnectionCounts.get(uid) ?? 0
+  }
+
+  addAccountConnection(remote, uid) {
+    remote.accountUid = uid
+    this.accountConnectionCounts.set(uid, this.accountConnections(uid) + 1)
+  }
+
+  removeAccountConnection(remote) {
+    const uid = remote.accountUid
+    if (!uid) return
+    remote.accountUid = null
+    const count = this.accountConnections(uid) - 1
+    if (count > 0) this.accountConnectionCounts.set(uid, count)
+    else this.accountConnectionCounts.delete(uid)
+  }
+
   heartbeatTick() {
     const now = performance.now();
+    if (this.retainExpiry.size) this.expireChannelRetains(now);
     // Process only expired requests, not every connected peer.
     for (const [remote, deadline] of this.heartbeatPending) {
       if (deadline > now) break;
@@ -115,6 +154,7 @@ export class Manager {
   removeRemote(remote) {
 
     remote._closing = true;
+    this.removeAccountConnection(remote);
     this.pingGroups[remote.pingGroup]?.delete(remote);
     this.heartbeatPending.delete(remote);
     remote.setState(STATE.CLOSED);
@@ -142,6 +182,10 @@ export class Manager {
 
     // retain message policy
     // type 1. ( isAuthorizedUser) ? keep : delete.
+    // Channel retains: an authenticated writer's belong to its account and stay; an anonymous
+    // connection's move to its network's grace pool and expire there.
+    this.orphanChannelRetains(remote)
+
     if (remote.boho.isAuthorized) {
       //keep retain signal.
     } else {
@@ -157,6 +201,10 @@ export class Manager {
         }
       }
     }
+    // CID retains live in the remote and go with it (after the '@$state' close above).
+    for (const message of remote.retain_signal.values()) this.retainBytes -= message.byteLength
+    remote.retain_signal.clear()
+    remote.retainBytes = 0
 
 
     // Service lifecycle hook. Called directly: RPC permission/command checks do not apply to cleanup.
@@ -228,9 +276,7 @@ export class Manager {
     let topic = tag.split('@')[1]
     if (cid && this.cid2remote.has(cid)) {
       let sigPack = getSignalPack('@' + topic, ...args)
-      let targetRemote = this.cid2remote.get(cid)
-      console.log('target', targetRemote.state, targetRemote.cid)
-      targetRemote.send_enc_mode(sigPack)
+      this.cid2remote.get(cid).send_enc_mode(sigPack)
       return
     } else {
       return "no cid"
@@ -239,7 +285,7 @@ export class Manager {
 
   sender(tag, remote, message) {
     if (encoder.encode(tag).byteLength > SIZE_LIMIT.TAG_LEN1) return ['err', 'Tag exceeds 255 UTF-8 bytes']
-    if (serverOption.membersOnly && !remote.boho.isAuthorized) {
+    if ((this.server?.membersOnly ?? serverOption.membersOnly) && !remote.boho.isAuthorized) {
       // console.log("### server reject client signal reason: [membersOnly]" ,tag, remote.cid  )
       remote.send(Buffer.from([IOMsg.AUTH_CLEAR]))
       remote.close()
@@ -296,37 +342,26 @@ export class Manager {
     // retain signal message
     if (tag.includes('$')
       // && remote.boho.isAuthorized
-      && serverOption.retain.isAvailable
-      && serverOption.retain.limitCounter > this.retain_messages.size
-      && serverOption.retain.limitSize > message.byteLength
+      && this.retainOptions.enabled
     ) {
-      // cid retain signal
       if (tag.includes('@')) {
-        // cid retain signal stored inside remote.
-        let retainTag = tag.split('@')[1]
-        remote.retain_signal.set(retainTag, message)
+        // cid retain signal stored inside remote, counted per remote.
+        this.storeCidRetain(tag.split('@')[1], message, remote)
       } else {
         // channel retain signal stored inside manager.
-        this.retain_messages.set(tag, message)
+        this.storeChannelRetain(tag, message, remote)
       }
-
-    } else {
-      // console.log('no retain. serverOption.retain:', serverOption.retain )
     }
 
-    if (this.telemetry) this.telemetry.publishes++;
+    this.counters.publishes++;
     let sentCounter = 0;
     if (this.channel_map.has(tag)) {
       // console.log('raw channel_map matched tag:', tag)
       let remotes = this.channel_map.get(tag);
       if (remotes.size >= 1) {
-        let limit;
-        if (serverOption.useQuota.publishCounter) {
-          limit = Math.min(remote.quota.publishCounter, remotes.size)
-        } else {
-          limit = remotes.size;
-        }
-        if (this.telemetry) this.telemetry.quotaExcluded += remotes.size - limit;
+        const fanout = remote.quota.fanout;
+        const limit = fanout === null ? remotes.size : Math.min(fanout, remotes.size);
+        this.counters.quotaExcluded += remotes.size - limit;
         let peers = remotes.values();
         while (sentCounter < limit) {
           let c = peers.next().value
@@ -341,12 +376,7 @@ export class Manager {
           // }
         }
 
-        // if (serverOption.useQuota.publishCounter) {
-        //   // console.log(`pub >> [${tag}] sent: ${sentCounter} [use quota limit: ${remote.quota.publishCounter }] total: ${remotes.size} subscribers. ` )
-        // } else {
-        //   // console.log(`pub >> [${tag}] sent: ${sentCounter} [no quota limit] total: ${remotes.size} subscribers. ` )
-        // }
-        if (this.telemetry) this.telemetry.deliveryAttempts += sentCounter;
+        this.counters.deliveryAttempts += sentCounter;
         return ['ok', sentCounter]
       }
     }
@@ -355,6 +385,123 @@ export class Manager {
   }
 
 
+
+  // Retained messages are stored as exact-size copies (a subarray would keep a whole socket chunk
+  // or 8 KiB Buffer pool slab alive), within an owner's budget and bytesTotal server-wide. A value
+  // that cannot be stored (size, count or budget) also removes the value it would replace, so a
+  // later subscriber never gets a stale one.
+  retainFits(message, freed, ownerBytes, budget) {
+    return this.retainOptions.limitSize > message.byteLength &&
+      ownerBytes + message.byteLength <= budget &&
+      this.retainBytes + message.byteLength - freed <= this.retainOptions.bytesTotal
+  }
+
+  retainCopy(message) {
+    const copy = Buffer.allocUnsafeSlow(message.byteLength)
+    copy.set(message)
+    this.retainBytes += copy.byteLength
+    return copy
+  }
+
+  // A connection's CID retains go with it: within bytesPerConnection; limitCounter caps new tags.
+  storeCidRetain(key, message, remote) {
+    const map = remote.retain_signal
+    const old = map.get(key)
+    const freed = old?.byteLength ?? 0
+    if ((old || map.size < this.retainOptions.limitCounter) &&
+        this.retainFits(message, freed, remote.retainBytes - freed, this.retainOptions.bytesPerConnection)) {
+      map.set(key, this.retainCopy(message))
+      this.retainBytes -= freed
+      remote.retainBytes += message.byteLength - freed
+    } else if (old) {
+      map.delete(key)
+      this.retainBytes -= freed
+      remote.retainBytes -= freed
+    }
+  }
+
+  // Channel retain owner: the last writer's account (an authenticated CID, shared by its
+  // connections, so reconnecting does not reset its budget) or an anonymous writer's connection.
+  // Each owner holds at most tagsPerOwner tags and bytesPerOwner bytes.
+  retainOwner(key) {
+    let owner = this.retainOwners.get(key)
+    if (!owner) this.retainOwners.set(key, owner = { key, bytes: 0, tags: new Set() })
+    return owner
+  }
+
+  storeChannelRetain(tag, message, remote) {
+    const owner = this.retainOwner(remote.boho.isAuthorized ? 'cid:' + remote.cid : 'conn:' + remote.ssid)
+    const old = this.retain_messages.get(tag)
+    const freed = old?.byteLength ?? 0
+    const room = old || (this.retain_messages.size < this.retainOptions.limitCounter &&
+      owner.tags.size < this.retainOptions.tagsPerOwner)
+    const ownerBytes = owner.bytes - (this.retain_owner.get(tag) === owner ? freed : 0)
+    if (room && this.retainFits(message, freed, ownerBytes, this.retainOptions.bytesPerOwner)) {
+      if (old) this.releaseChannelRetain(tag, freed)
+      this.retain_messages.set(tag, this.retainCopy(message))
+      owner.bytes += message.byteLength
+      owner.tags.add(tag)
+      this.retain_owner.set(tag, owner)
+      this.retainOwners.set(owner.key, owner) // releasing may have removed it when it emptied
+    } else if (old) {
+      this.dropChannelRetain(tag)
+    }
+    if (owner.tags.size === 0) this.retainOwners.delete(owner.key)
+  }
+
+  // A closed anonymous connection's channel retains stay anonymousGraceMs in its network's pool
+  // (by HOME_CHANNEL), which has the same owner budget: reconnecting cannot pile values up, and
+  // when the pool is over budget the values closest to expiry go first, least recently written
+  // first among equals (an update moves its tag to the end of the owner's set).
+  orphanChannelRetains(remote) {
+    const conn = this.retainOwners.get('conn:' + remote.ssid)
+    if (!conn) return
+    const grace = this.retainOptions.anonymousGraceMs
+    if (!(grace > 0)) {
+      for (const tag of [...conn.tags]) this.dropChannelRetain(tag)
+      return
+    }
+    this.retainOwners.delete(conn.key)
+    const pool = this.retainOwner('net:' + remote.HOME_CHANNEL)
+    const expires = performance.now() + grace
+    for (const tag of conn.tags) {
+      pool.tags.add(tag)
+      pool.bytes += this.retain_messages.get(tag).byteLength
+      this.retain_owner.set(tag, pool)
+      this.retainExpiry.set(tag, expires)
+    }
+    while (pool.bytes > this.retainOptions.bytesPerOwner || pool.tags.size > this.retainOptions.tagsPerOwner) {
+      let first
+      for (const tag of pool.tags) {
+        if (first === undefined || this.retainExpiry.get(tag) < this.retainExpiry.get(first)) first = tag
+      }
+      this.dropChannelRetain(first)
+    }
+  }
+
+  expireChannelRetains(now = performance.now()) {
+    for (const [tag, expires] of this.retainExpiry) {
+      if (expires <= now) this.dropChannelRetain(tag)
+    }
+  }
+
+  dropChannelRetain(tag) {
+    const old = this.retain_messages.get(tag)
+    if (!old) return
+    this.releaseChannelRetain(tag, old.byteLength)
+    this.retain_messages.delete(tag)
+  }
+
+  releaseChannelRetain(tag, size) {
+    const owner = this.retain_owner.get(tag)
+    this.retain_owner.delete(tag)
+    this.retainExpiry.delete(tag)
+    this.retainBytes -= size
+    if (!owner) return
+    owner.tags.delete(tag)
+    owner.bytes -= size
+    if (owner.tags.size === 0) this.retainOwners.delete(owner.key)
+  }
 
   subscribe(chArr, remote) {
     chArr.forEach(tag => {
@@ -378,7 +525,7 @@ export class Manager {
 
       // 3. send retain message if available.
       if (tag.includes('$')
-        && serverOption.retain.isAvailable
+        && this.retainOptions.enabled
       ) {
         let retainMessage;
         if (tag.includes('@')) {
@@ -446,32 +593,6 @@ export class Manager {
   }
 
 
-  monitor() {
-    if (process.stdout.isTTY) {
-      process.stdout.cursorTo(0, 0)
-      process.stdout.clearScreenDown()
-    }
-
-    if (serverOption.showChannel > 0) {
-      this.metrics.channels(serverOption.showChannel);
-    }
-    let mode = parseInt(serverOption.showMetric)
-    switch (mode) {
-      case 1:
-        this.metrics.oneline(true);
-        break;
-      case 2:
-        this.metrics.getRemotes(true);
-        break;
-      case 3:
-        this.metrics.getChannelList(true);
-        break;
-      default:
-    }
-
-  }
-
-
   anonymousCidRandom(size) {
     return globalThis.crypto.getRandomValues(Buffer.alloc(size))
   }
@@ -504,8 +625,8 @@ export class Manager {
     clearTimeout(this.pingIntervalID);
     this.heartbeatPending.clear();
     for (const group of this.pingGroups) group.clear();
-    if (this.monitIntervalID) {
-      clearInterval(this.monitIntervalID);
+    if (this.statsIntervalID) {
+      clearInterval(this.statsIntervalID);
     }
 
     this.remotes.forEach(remote => {
@@ -515,6 +636,10 @@ export class Manager {
     this.remotes.clear();
     this.cid2remote.clear();
     this.retain_messages.clear();
+    this.retain_owner.clear();
+    this.retainOwners.clear();
+    this.retainExpiry.clear();
+    this.retainBytes = 0;
     this.channel_map.clear();
 
   }

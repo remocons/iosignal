@@ -46,7 +46,9 @@ export class IOCongSocket extends IOCore {
     if (urlObj.protocol != "cong:") {
       urlObj = new URL('cong://' + url)
     }
-    const socket = this.socket = net.createConnection(urlObj.port, urlObj.hostname)
+    // URL keeps the brackets of an IPv6 literal ('[::1]'); net expects the bare address.
+    const host = urlObj.hostname.replace(/^\[(.*)\]$/, '$1')
+    const socket = this.socket = net.createConnection(urlObj.port, host)
     // Signals are small frames; send each immediately instead of waiting on Nagle.
     socket.setNoDelay(true)
     this._closed = false;

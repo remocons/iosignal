@@ -121,15 +121,13 @@ export class IOCore extends EventEmitter<string | symbol, any> {
      */
     mid: number;
     /**
-     * Quota level.
-     * @type {number}
+     * This connection's quota as told by the server (QUOTA). maxMessageBytes: largest message
+     * send() passes on; null: no limit (also until the server tells).
+     * @type {{ maxMessageBytes: number | null }}
      */
-    level: number;
-    /**
-     * Quota table for current level.
-     * @type {object}
-     */
-    quota: object;
+    quota: {
+        maxMessageBytes: number | null;
+    };
     /**
      * Server settings.
      * @type {object}
@@ -434,7 +432,6 @@ export type PAYLOAD_TYPE = import("../common/constants.js").PAYLOAD_TYPE;
 export type SIZE_LIMIT = import("../common/constants.js").SIZE_LIMIT;
 export type ENC_MODE = import("../common/constants.js").ENC_MODE;
 export type STATE = import("../common/constants.js").STATE;
-export type quotaTable = any;
 export type Buffer = import("boho").Buffer;
 import { EventEmitter } from "eventemitter3";
 import Boho from "boho";

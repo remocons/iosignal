@@ -1,93 +1,81 @@
 import { memoryUsage } from 'process';
+import { performance } from 'node:perf_hooks';
 import { ENC_MODE } from '../common/constants.js'
 
-const MAX = 10
-let period = 10000
+const KIB = 1024, MIB = 1024 * 1024
 
+function bytes(n) {
+  if (n >= MIB) return (n / MIB).toFixed(1) + 'MB'
+  if (n >= KIB) return (n / KIB).toFixed(1) + 'KB'
+  return Math.round(n) + 'B'
+}
+
+// Read-only views of the manager for logStats, Server.stats() and the sudo service.
+// Nothing here runs on a timer or resets the manager's counters.
 export class Metrics {
   constructor(manager) {
     this.manager = manager;
-
-    this.metricsPack = {
-      remotes: [0],
-      channels: [0],
-      txBytes: [0],
-      rxBytes: [0],
-      unixTime: [Math.floor(Date.now() / 1000)],
-      period: 0
-    }
-
-    this.tickId = setInterval(e => {
-
-      this.metricsPack.remotes.push(this.manager.remotes.size)
-      if (this.metricsPack.remotes.length > MAX) this.metricsPack.remotes.shift()
-
-      this.metricsPack.channels.push(this.manager.channel_map.size)
-      if (this.metricsPack.channels.length > MAX) this.metricsPack.channels.shift()
-
-
-      this.metricsPack.txBytes.push(this.manager.txBytes)
-      if (this.metricsPack.txBytes.length > MAX) this.metricsPack.txBytes.shift()
-
-      this.metricsPack.rxBytes.push(this.manager.rxBytes)
-      if (this.metricsPack.rxBytes.length > MAX) this.metricsPack.rxBytes.shift()
-
-      this.metricsPack.unixTime = Math.floor(Date.now() / 1000)
-      this.metricsPack.period = period;
-      this.manager.txBytes = 0
-      this.manager.rxBytes = 0
-
-
-    }, 10000)
+    this.previous = null; // last summaryLine() sample, for rates
   }
-
-
 
   close() {
-    clearInterval(this.tickId);
-    this.tickId = null;
+    this.previous = null;
   }
 
-  oneline(prn) {
-    let memoryUse = memoryUsage();
-    let memoryInfo = [{
-      ...memoryUse
-    }]
+  // Current state; counters are cumulative since the server started. Enumerates connections once.
+  snapshot() {
+    const manager = this.manager
+    let authenticated = 0, websocket = 0
+    for (const remote of manager.remotes) {
+      if (remote.boho.isAuthorized) authenticated++
+      if (remote.socketType === 'websocket') websocket++
+    }
+    const total = manager.remotes.size
+    const memory = memoryUsage()
+    return {
+      at: Date.now(),
+      connections: { total, authenticated, anonymous: total - authenticated, websocket, tcp: total - websocket },
+      channels: manager.channel_map.size,
+      retained: { channel: manager.retain_messages.size, bytes: manager.retainBytes },
+      counters: { ...manager.counters },
+      memory: { rss: memory.rss, heapUsed: memory.heapUsed }
+    }
+  }
 
-    if (prn) console.table(memoryInfo, ['rss', 'heapTotal', 'heapUsed', 'external', 'arrayBuffers']);
+  // One logStats line; rates are per second since the previous line.
+  summaryLine(now = performance.now()) {
+    const s = this.snapshot(), previous = this.previous
+    const rate = key => previous ? (s.counters[key] - previous.counters[key]) * 1000 / Math.max(1, now - previous.time) : 0
+    this.previous = { time: now, counters: s.counters }
+    const c = s.connections
+    return `[iosignal] conn ${c.total} (auth ${c.authenticated}, anon ${c.anonymous}, ws ${c.websocket}, tcp ${c.tcp})` +
+      ` ch ${s.channels} retained ${s.retained.channel}/${bytes(s.retained.bytes)}` +
+      ` | rx ${rate('rxMessages').toFixed(1)}/s ${bytes(rate('rxBytes'))}/s` +
+      ` tx ${rate('txMessages').toFixed(1)}/s ${bytes(rate('txBytes'))}/s pub ${rate('publishes').toFixed(1)}/s` +
+      ` | rss ${bytes(s.memory.rss)} heap ${bytes(s.memory.heapUsed)}`
+  }
 
-    let metric = [{
+  // Compact summary for metrics reports ('@$metrics'); byte counters are cumulative.
+  oneline() {
+    return {
       lastSSID: this.manager.lastSSID,
       remotes: this.manager.remotes.size,
       channels: this.manager.channel_map.size,
-      txBytes: this.manager.txBytes,
-      rxBytes: this.manager.rxBytes,
-    }]
-
-    if (prn) console.table(metric, ['lastSSID', 'remotes', 'channels', 'txBytes', 'rxBytes']);
-
-    return metric[0]
+      txBytes: this.manager.counters.txBytes,
+      rxBytes: this.manager.counters.rxBytes,
+    }
   }
 
-  getRemotes(prn) {
-    let remoteList = Array.from(this.manager.remotes.values())
-    let remoteStates = remoteList.map(v => {
-      return "#" + v.ssid + ":" + v.cid + "(" + v.state + ")"
-    })
-    if (prn) console.table(remoteStates)
-    return remoteStates
+  getRemotes() {
+    return Array.from(this.manager.remotes, v => "#" + v.ssid + ":" + v.cid + "(" + v.getStateName() + ")")
   }
 
-  getCIdList(prn) {
-    let CIdList = Array.from(this.manager.cid2remote.keys())
-    if (prn) console.table(CIdList)
-    return CIdList
+  getCIdList() {
+    return Array.from(this.manager.cid2remote.keys())
   }
 
-  getChannelList(prn) {
-    let chList = Array.from(this.manager.channel_map.keys())
-    if (prn) console.table(chList)
-    return chList
+  getChannelList() {
+    return Array.from(this.manager.channel_map.keys())
   }
 
   getSubscribers(ch) {
@@ -98,7 +86,6 @@ export class Metrics {
         list.push(c.cid)
       })
     }
-    // console.log(list)
     return list
   }
 
@@ -137,15 +124,11 @@ export class Metrics {
           encMode: ENC_MODE[remote.encMode]
         }
       } else if (mode == 4) {
-        let channels = Array.from(remote.channels.keys())
-        let set_memory = Array.from(remote.memory.keys())
-        let retain_signal = Array.from(remote.retain_signal.keys())
         return {
           ip: remote.ip,
           uptime: Math.trunc((Date.now() - remote.socket.openTime) / 1000),
-          channels: channels,
-          set: set_memory,
-          retain: retain_signal
+          channels: Array.from(remote.channels.keys()),
+          retain: Array.from(remote.retain_signal.keys())
         }
       }
 
@@ -157,4 +140,3 @@ export class Metrics {
 
 
 }
-

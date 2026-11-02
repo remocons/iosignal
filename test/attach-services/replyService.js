@@ -3,7 +3,7 @@ import { IO, Server, replyService } from "iosignal"
 
 const server = new Server({ 
     port: 0, 
-    // showMessage: 'message'
+    // logMessages: true
  })
 server.attach('reply', replyService)
 

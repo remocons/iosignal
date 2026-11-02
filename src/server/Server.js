@@ -7,13 +7,122 @@ import { STATUS } from '../services/constant.js'
 import { BohoAuth, validateDuplicateLogin } from '../auth/BohoAuth.js'
 import { LocalKeyProvider } from '../auth/key_providers/LocalKeyProvider.js'
 
+// Removed or renamed in 9.0, as Server options and as serverOption keys ('global': only as a
+// serverOption key). An error names the replacement instead of the setting silently doing nothing.
+const REMOVED = [
+  ['showMessage', 'logMessages: true'],
+  ['showMetric', "logStats: <interval ms> (for lists, the sudo service's remotes/channels commands)"],
+  ['monitorPeriod', 'logStats: <interval ms>'],
+  ['timeout', 'heartbeatInterval'],
+  ['pingTimeoutGrace', 'heartbeatGrace'],
+  ['retain.isAvailable', 'retain.enabled'],
+  ['useQuota', 'quotas: named quota profiles, always enforced (null: unlimited)'],
+  ['defaultQuotaIndex', "anonymousQuota: a quotas profile name; logins use their account's quota"],
+  ['auth.delay_auth_fail', 'auth.failDelay', 'global'],
+  ['adminLevel', "role: 'admin' in the account (key entry)", 'global'],
+  ['clientTracking', 'nothing: it was never used', 'global'],
+  ...['port', 'congPort', 'httpServer', 'wsPath'].map(name => [name, `new Server({ ${name} })`, 'global'])
+]
+const lookup = (object, path) => path.split('.').reduce((value, key) => value?.[key], object)
+
+function checkRemoved(options) {
+  for (const [path, replacement, scope] of REMOVED) {
+    const sources = scope === 'global' ? [['serverOption.', serverOption]] : [['', options], ['serverOption.', serverOption]]
+    for (const [prefix, source] of sources) {
+      if (lookup(source, path) !== undefined) {
+        throw new TypeError(`${prefix}${path} was removed in iosignal 9.0; use ${replacement}`)
+      }
+    }
+  }
+}
+
+const MAX_TIMER_MS = 2147483647 // setTimeout limit
+
+function integer(name, value, min, max = Number.MAX_SAFE_INTEGER) {
+  if (!Number.isSafeInteger(value) || value < min || value > max) {
+    throw new RangeError(`${name} must be an integer from ${min} to ${max}`)
+  }
+  return value
+}
+const positive = (name, value) => integer(name, value, 1)
+const nonNegative = (name, value) => integer(name, value, 0)
+const QUOTA_LIMITS = ['maxMessageBytes', 'fanout', 'msgPerSec', 'bytesPerSec', 'maxConnections']
+
+// This Server's quota profiles: the defaults with each given profile merged over its default
+// (a new name starts from no limits). Every limit is a positive integer or null (unlimited).
+function quotaProfiles(given) {
+  if (given !== undefined && (given === null || typeof given !== 'object')) {
+    throw new TypeError('quotas must be an object')
+  }
+  const profiles = {}
+  for (const name of new Set([...Object.keys(serverOption.quotas), ...Object.keys(given ?? {})])) {
+    const profile = given?.[name]
+    if (profile !== undefined && (profile === null || typeof profile !== 'object')) {
+      throw new TypeError(`quotas.${name} must be an object`)
+    }
+    for (const key of Object.keys(profile ?? {})) {
+      if (!QUOTA_LIMITS.includes(key)) throw new TypeError(`unknown option quotas.${name}.${key}`)
+    }
+    const base = serverOption.quotas[name] ?? Object.fromEntries(QUOTA_LIMITS.map(key => [key, null]))
+    profiles[name] = { ...base, ...profile }
+    for (const key of QUOTA_LIMITS) {
+      if (profiles[name][key] !== null) positive(`quotas.${name}.${key}`, profiles[name][key])
+    }
+  }
+  return profiles
+}
+function boolean(name, value) {
+  if (typeof value !== 'boolean') throw new TypeError(`${name} must be a boolean`)
+  return value
+}
+
+// A nested option group: this Server's own copy of the serverOption defaults with its options
+// applied. Unknown keys are errors, so a typo does not silently do nothing.
+function group(name, given, checks) {
+  if (given !== undefined && (given === null || typeof given !== 'object')) {
+    throw new TypeError(`${name} must be an object`)
+  }
+  for (const key of Object.keys(given ?? {})) {
+    if (!(key in checks)) throw new TypeError(`unknown option ${name}.${key}`)
+  }
+  const merged = { ...serverOption[name], ...given }
+  for (const [key, check] of Object.entries(checks)) check(`${name}.${key}`, merged[key])
+  return merged
+}
+
+function resolveLogStats(value) {
+  if (value === 0 || value === false) return 0
+  return integer('logStats', value, 1000, MAX_TIMER_MS)
+}
+
 export class Server extends EventEmitter {
 
   /**
    * @param {object} options Server configuration.
    *   options.localAuth: login without a key list, for local testing. 'idKey' (key = ID) or
-   *   { mode: 'idKey' | 'sharedKey', key, level } (see LocalKeyProvider); the CID is the ID.
+   *   { mode: 'idKey' | 'sharedKey', key, role, quota } (see LocalKeyProvider); the CID is the ID.
    *   Cannot be combined with authManager.
+   *   Every other setting is this Server's own: given here, else the serverOption default, which is
+   *   never modified. Nested groups (security, retain, quotas) are merged over their defaults;
+   *   unknown or removed names are errors.
+   *   options.heartbeatInterval: ms between liveness checks (default 50000).
+   *   options.heartbeatGrace: extra ms a peer has to answer before it is closed (default 5000).
+   *   options.trustProxy: when X-Forwarded-For/-Proto are used. 'private' (default) only from a
+   *   loopback/private peer, true always, false never, or N trusted proxy hops.
+   *   options.maxPayload: largest WebSocket message and CongSocket frame in bytes (default 32 MiB).
+   *   options.maxBufferedBytes: close a peer whose unsent data exceeds this (default 64 MiB).
+   *   options.membersOnly: drop signals from connections that are not authenticated.
+   *   options.logMessages: log each received message after decryption: type and tag, never the payload.
+   *   options.logStats: print a one-line summary every N ms (>= 1000; 0 = off); see stats().
+   *   options.security: { maxClockSkewMs, authChallengeMaxAgeMs, maxReplayEntries }.
+   *   options.retain: retained message limits, see serverOption.retain; adjustable later on server.retain.
+   *   options.quotas: named quota profiles { name: { maxMessageBytes, fanout, msgPerSec, bytesPerSec,
+   *   maxConnections } }, merged over serverOption.quotas; always enforced, null is unlimited.
+   *   Adjustable later on server.quotas. The client is told its maxMessageBytes.
+   *   options.anonymousQuota: profile of a connection that has not authenticated (default 'anonymous').
+   *   options.duplicateLogin: 'keepOld' | 'keepNew' for this Server's connections; overrides the auth
+   *   manager's own policy without changing it, so an auth manager can be shared between servers.
+   *   A failed listen (e.g. EADDRINUSE) is emitted as 'error'.
    * @param {any} [authManager] Optional authentication manager.
    */
   constructor(options, authManager) {
@@ -22,13 +131,33 @@ export class Server extends EventEmitter {
       if (authManager) throw new TypeError('localAuth cannot be combined with an authManager')
       authManager = new BohoAuth(new LocalKeyProvider(options.localAuth))
     }
-    const security = { ...serverOption.security, ...options.security };
-    for (const name of ['maxClockSkewMs', 'authChallengeMaxAgeMs', 'maxReplayEntries']) {
-      if (!Number.isSafeInteger(security[name]) || security[name] <= 0) {
-        throw new RangeError(`security.${name} must be a positive safe integer`);
-      }
+    // Each Server resolves its settings once, here: serverOption only supplies the defaults and is
+    // never written, so servers in one process do not affect each other.
+    checkRemoved(options);
+    this.security = Object.freeze(group('security', options.security,
+      { maxClockSkewMs: positive, authChallengeMaxAgeMs: positive, maxReplayEntries: positive }));
+    // retain and quotas may be adjusted on a running server, e.g. server.quotas.basic.fanout = 50.
+    this.retain = group('retain', options.retain, {
+      enabled: boolean, limitSize: positive, limitCounter: positive, tagsPerOwner: positive,
+      bytesPerOwner: positive, anonymousGraceMs: nonNegative, bytesPerConnection: positive, bytesTotal: positive });
+    this.quotas = quotaProfiles(options.quotas);
+    this.anonymousQuota = options.anonymousQuota ?? serverOption.anonymousQuota;
+    if (!Object.hasOwn(this.quotas, this.anonymousQuota)) {
+      throw new RangeError(`anonymousQuota must be one of the quotas: ${Object.keys(this.quotas).join(', ')}`)
     }
-    this.security = Object.freeze(security);
+    this.heartbeatInterval = integer('heartbeatInterval',
+      options.heartbeatInterval ?? serverOption.heartbeatInterval, 1, MAX_TIMER_MS);
+    this.heartbeatGrace = integer('heartbeatGrace', options.heartbeatGrace ?? serverOption.heartbeatGrace, 0, MAX_TIMER_MS);
+    this.maxPayload = positive('maxPayload', options.maxPayload ?? serverOption.maxPayload);
+    this.maxBufferedBytes = positive('maxBufferedBytes', options.maxBufferedBytes ?? serverOption.maxBufferedBytes);
+    this.logMessages = boolean('logMessages', options.logMessages ?? serverOption.logMessages);
+    this.logStats = resolveLogStats(options.logStats ?? serverOption.logStats);
+    this.trustProxy = options.trustProxy ?? serverOption.trustProxy;
+    if (![true, false, 'private'].includes(this.trustProxy) &&
+        !(Number.isSafeInteger(this.trustProxy) && this.trustProxy > 0)) {
+      throw new RangeError("trustProxy must be true, false, 'private' or a positive integer");
+    }
+    this.membersOnly = boolean('membersOnly', options.membersOnly ?? serverOption.membersOnly);
     this.serviceNames = new Set()
     this.services = new Map()   // name -> service module (for lifecycle hooks)
     // Stays null for a CongSocket-only server, so close() does not wait on a WebSocket server.
@@ -36,38 +165,13 @@ export class Server extends EventEmitter {
     this.port = null;
     this.congPort = null;
 
-    if (options.pingTimeoutGrace !== undefined) {
-      if (!Number.isFinite(options.pingTimeoutGrace) || options.pingTimeoutGrace < 0) {
-        throw new RangeError('pingTimeoutGrace must be a finite non-negative number');
-      }
-      serverOption.pingTimeoutGrace = options.pingTimeoutGrace;
-    }
-
-    if (options.timeout) {
-      let pingT = parseInt(options.timeout)
-      if (pingT && pingT >= 1000) serverOption.timeout = pingT
-    }
-    if (options.monitorPeriod) {
-      let monitorT = parseInt(options.monitorPeriod)
-      if (monitorT && monitorT >= 1000) serverOption.monitorPeriod = monitorT
-    }
-    if (options.showMessage) {
-      serverOption.showMessage = options.showMessage
-    }
-    if (options.showMetric) {
-      serverOption.showMetric = options.showMetric
-    }
-    if (options.membersOnly) {
-      serverOption.membersOnly = options.membersOnly
-    }
-    // Applies to this server's auth manager only; without auth there are no duplicate logins.
+    // Read by the auth manager for this server's connections; the auth manager itself is not
+    // changed, since it may be shared. null: the auth manager's own policy.
+    this.duplicateLogin = null;
     if (options.duplicateLogin !== undefined) {
-      validateDuplicateLogin(options.duplicateLogin)
-      if (authManager) {
-        if (!('duplicateLogin' in authManager)) {
-          throw new TypeError('duplicateLogin: the auth manager does not support this option')
-        }
-        authManager.duplicateLogin = options.duplicateLogin
+      this.duplicateLogin = validateDuplicateLogin(options.duplicateLogin)
+      if (authManager && !('duplicateLogin' in authManager)) {
+        throw new TypeError('duplicateLogin: the auth manager does not support this option')
       }
     }
 
@@ -108,9 +212,9 @@ export class Server extends EventEmitter {
   startWSServer() {
     // console.log('optoins', options )
     if (this.port || this.port == 0) {
-      this.wss = new WebSocketServer({ port: this.port , path: this.wsPath })
+      this.wss = new WebSocketServer({ port: this.port , path: this.wsPath, maxPayload: this.maxPayload })
     } else if (this.httpServer ) {
-      this.wss = new WebSocketServer({ server: this.httpServer, path: this.wsPath })
+      this.wss = new WebSocketServer({ server: this.httpServer, path: this.wsPath, maxPayload: this.maxPayload })
     } else {
       throw new TypeError(
         'One and only one of the "port", "httpServer"' +
@@ -128,12 +232,7 @@ export class Server extends EventEmitter {
     });
 
     // this.wss.setMaxListeners(0)
-    this.wss.on('error', (err) => {
-      console.error('### ws server error:', err.message)
-      if (err.code == 'EADDRINUSE') {
-        process.exit()
-      }
-    })
+    this.wss.on('error', (err) => this.onListenerError('ws', err))
 
     this.wss.on('close', () => {
       // console.log('### WS server is closed.')
@@ -153,12 +252,8 @@ export class Server extends EventEmitter {
       socket.setNoDelay(true)
       this.manager.addRemote(socket)
     })
-      .on('error', (err) => {
-        console.log('### cong server error:', err.message)
-        if (err.code == 'EADDRINUSE') {
-          process.exit()
-        }
-      }).on('close', () => {
+      .on('error', (err) => this.onListenerError('cong', err))
+      .on('close', () => {
         // console.log('### congsocket server is closed.')
       }).listen(this.congPort, () => {
         this.congPort = this.congServer.address().port;
@@ -168,6 +263,26 @@ export class Server extends EventEmitter {
           this.emit('ready');
         }
       });
+  }
+
+  // A failed listen (e.g. EADDRINUSE) is the application's to handle: emitted as 'error',
+  // which, like any EventEmitter, throws when nothing listens. Other errors are logged.
+  onListenerError(name, err) {
+    console.error(`### ${name} server error:`, err.message)
+    if (err.syscall === 'listen') this.emit('error', err)
+  }
+
+  /**
+   * Current server state, for monitoring. counters are cumulative since the server started
+   * (rates are the reader's to compute from two snapshots). Enumerates connections once.
+   * @returns {{ at: number, connections: { total: number, authenticated: number, anonymous: number,
+   *   websocket: number, tcp: number }, channels: number, retained: { channel: number, bytes: number },
+   *   counters: { rxMessages: number, rxBytes: number, txMessages: number, txBytes: number,
+   *   publishes: number, deliveryAttempts: number, quotaExcluded: number, peerRxLimitSkipped: number },
+   *   memory: { rss: number, heapUsed: number } }}
+   */
+  stats() {
+    return this.manager.metrics.snapshot()
   }
 
 /**

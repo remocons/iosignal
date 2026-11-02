@@ -3,7 +3,7 @@ import { Server , IO, MBP ,delay } from 'iosignal'
 const tag = 'ch1'
 const tag2 = 'ch2'
 
-const s = new Server({port:0, showMessage: 'message'});
+const s = new Server({port:0, logMessages: true});
 
 s.on('ready',async ()=>{
     // 서버 listen 포트가 0으로 설정된경우,  자동설정된 값이 s.port 속성으로 확정됨.

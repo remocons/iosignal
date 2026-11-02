@@ -49,14 +49,19 @@ export function pack(payload) {
 
 export class CongRx extends Transform {
   /**
-   * @param {import('stream').TransformOptions} [options] Stream options.
+   * @param {import('stream').TransformOptions & { maxFrameSize?: number }} [options] Stream options.
+   *   maxFrameSize: largest payload to buffer (default unlimited). A larger frame is
+   *   skipped without buffering and reported by an 'oversize' event (payloadSize).
    */
-  constructor(options) {
-    super(options)
+  constructor(options = {}) {
+    const { maxFrameSize = Infinity, ...streamOptions } = options
+    super(streamOptions)
     this.buffer = Buffer.alloc(0)
     this.frames = []
     this.rxi = 0;
     this.rxi_zero = 0;
+    this.maxFrameSize = maxFrameSize;
+    this.skipBytes = 0; // remaining payload bytes of an oversized frame to discard
   }
 
 
@@ -81,6 +86,15 @@ export class CongRx extends Transform {
       if (chunk[i++] == 0) {
         this.rxi_zero++
       }
+    }
+
+    if (this.skipBytes > 0) {
+      if (chunk.byteLength <= this.skipBytes) {
+        this.skipBytes -= chunk.byteLength;
+        return;
+      }
+      chunk = chunk.subarray(this.skipBytes);
+      this.skipBytes = 0;
     }
 
     if (this.buffer.byteLength > 0) {
@@ -118,6 +132,20 @@ export class CongRx extends Transform {
         this.emit('wrong', this.buffer);
         this.buffer = Buffer.alloc(0);
         return;
+      }
+
+      // Decide as soon as the length is known: the header can advertise up to 4 GiB.
+      // Skipping keeps frame boundaries, so later frames still parse.
+      if (payloadSize > this.maxFrameSize) {
+        this.emit('oversize', payloadSize);
+        const available = this.buffer.byteLength - headerLen;
+        if (available < payloadSize) {
+          this.skipBytes = payloadSize - available;
+          this.buffer = Buffer.alloc(0);
+          return;
+        }
+        this.buffer = this.buffer.subarray(headerLen + payloadSize);
+        continue;
       }
 
       const frameSize = headerLen + payloadSize;
