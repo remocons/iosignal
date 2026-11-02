@@ -12,7 +12,6 @@
     "src/client/browser/IOWebSocket.js",
     "src/common/constants.js",
     "src/common/payload.js",
-    "src/common/quotaTable.js",
     "src/common/util.js",
     "src/server/FileLogger.js",
     "src/server/Manager.js",
@@ -54,7 +53,6 @@
     "dist/types/client/IOCore.d.ts",
     "dist/types/client/browser/IOWebSocket.d.ts",
     "dist/types/common/constants.d.ts",
-    "dist/types/common/payload.d.ts",
-    "dist/types/common/quotaTable.d.ts"
+    "dist/types/common/payload.d.ts"
   ]
 }

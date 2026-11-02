@@ -92,7 +92,6 @@
     "dist/types/client/IOCore.d.ts",
     "dist/types/client/browser/IOWebSocket.d.ts",
     "dist/types/common/constants.d.ts",
-    "dist/types/common/payload.d.ts",
-    "dist/types/common/quotaTable.d.ts"
+    "dist/types/common/payload.d.ts"
   ]
 }
