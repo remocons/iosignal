@@ -24,6 +24,8 @@ and tests here; link to the documentation site for explanations and examples.
   the private repository's agent instructions or internal work records here.
 - Public entry points, package metadata, dependencies, lockfile, README files,
   build configuration and release versions are maintained separately here.
+- Release versions match across iosignal, iosignal-cli, remocon, iosignal-arduino
+  and remocon-arduino (from 9.0.0). Release them together with the same number.
 - `scripts/public-files.json` lists exact source/test and artifact paths.
   `scripts/public-policy.mjs` lists public control files, including this document.
   Review public scope explicitly before adding or deleting an allowed path;
