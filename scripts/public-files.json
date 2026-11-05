@@ -19,6 +19,7 @@
     "src/server/Remote.js",
     "src/server/RemoteCore.js",
     "src/server/Server.js",
+    "src/server/deliveryPolicy.js",
     "src/server/serverOption.js",
     "src/services/RedisService.js",
     "src/services/constant.js",
