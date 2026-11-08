@@ -7,7 +7,7 @@ export const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 export const policy = JSON.parse(fs.readFileSync(path.join(root, 'scripts/public-files.json')));
 export const controls = [
   '.gitignore', '.npmignore', 'index.js', 'package.json', 'package-lock.json',
-  'rollup.config.js', 'tsconfig.json', 'README.md', 'README.ko.md', 'AGENTS.md',
+  'rollup.config.js', 'tsconfig.json', 'README.md', 'README.ko.md',
   'docs/assets/iosignal-ecosystem.png',
   'docs/boho.ko.md',
   'docs/boho.md',
@@ -70,7 +70,7 @@ export function audit(base = root, artifacts = false, added = []) {
   for (const name of walk(base)) {
     if (!allowed.has(name)) throw Error(`Unapproved public file: ${name}`);
     safeFile(base, name);
-    if (['index.js', 'package-lock.json', 'README.md', 'README.ko.md', 'AGENTS.md'].includes(name) || (/^(src|test|dist)\//.test(name) || /^docs\/.*\.md$/.test(name))) inspect(name, fs.readFileSync(path.join(base, name), 'utf8'));
+    if (['index.js', 'package-lock.json', 'README.md', 'README.ko.md'].includes(name) || (/^(src|test|dist)\//.test(name) || /^docs\/.*\.md$/.test(name))) inspect(name, fs.readFileSync(path.join(base, name), 'utf8'));
   }
   for (const name of [...controls, ...policy.sync, ...(artifacts ? policy.dist : [])]) {
     if (added.includes(name)) safeTarget(base, name); else safeFile(base, name);
