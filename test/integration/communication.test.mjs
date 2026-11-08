@@ -263,6 +263,7 @@ for (const [format, api] of variants) {
     assert.equal(api.getSignalPack(boundary)[1], 255);
     assert.throws(() => api.getSignalPack(overflow), /255/);
     assert.throws(() => api.getSignalPack('😀'.repeat(64)), /255/);
+    io.state = api.STATE.READY; // subscribe() sends at once only on a ready connection
     io.subscribe(boundary);
     assert.equal(sent[0][1], 255);
     assert.throws(() => io.subscribe(overflow), /255/);
@@ -321,6 +322,102 @@ for (const [format, api] of variants) {
       io.stop();
       await closed;
     }
+  });
+
+  test(`${format}: stored subscriptions are sent before ready, so a ready handler's signal is answered`, { timeout: 10000 }, async t => {
+    const { server, client, url } = await fixture(t, api);
+    const io = client();
+    const received = [];
+    io.listen('self', (tag, text) => received.push(text));
+    io.on('ready', () => io.signal('self', `round ${received.length}`));
+    for (let round = 0; round < 2; round++) {
+      const message = event(io, 'self', t.signal);
+      io.open(url);
+      await message;
+      assert.deepEqual(received, Array.from({ length: round + 1 }, (_, i) => `round ${i}`));
+      const closed = event(server.manager.cid2remote.get(io.cid).socket, 'close', t.signal);
+      io.stop();
+      await closed;
+    }
+  });
+
+  test(`${format}: listen() inside a ready handler throws, for any tag`, { timeout: 10000 }, async t => {
+    const { client, url } = await fixture(t, api);
+    const io = client();
+    const outcomes = [];
+    io.on('ready', () => {
+      assert.throws(() => io.listen('late', () => {}), /inside a ready handler/);
+      outcomes.push('subscription tag');
+      // A direct tag needs no subscription, but a handler added on every connect would run
+      // once more after each reconnect: listen() and the ready handler are not mixed.
+      assert.throws(() => io.listen('@direct', () => {}), /inside a ready handler/);
+      outcomes.push('direct tag');
+      io.on('@direct', () => {}); // on() stays the ready handler's way to add a handler
+    });
+    const ready = event(io, 'ready', t.signal);
+    io.open(url);
+    await ready;
+    assert.deepEqual(outcomes, ['subscription tag', 'direct tag']);
+    assert.equal(io.channels.has('late'), false);
+    assert.equal(io.listenerCount('@direct'), 1);
+    io.listen('after', () => {}); // outside the handler, listen() is unchanged
+    assert.equal(io.channels.has('after'), true);
+  });
+
+  test(`${format}: link() waits for a ready connection; subscribe() before it throws`, { timeout: 10000 }, async t => {
+    const { server, client, connect, url } = await fixture(t, api);
+    const sender = await connect();
+    sender.signal('room$x', 'kept');
+    await sender.call('reply', 'echo', 'retained stored');
+
+    const io = client();
+    const packets = [];
+    const send = io.send_enc_mode.bind(io);
+    io.send_enc_mode = packet => {
+      if (packet[0] === api.IOMsg.SUBSCRIBE) packets.push({ state: io.stateName, tags: Buffer.from(packet.subarray(2)).toString().split(',') });
+      send(packet);
+    };
+    let retained = 0;
+    io.link('page', 'room$x', () => retained++);
+    assert.throws(() => io.subscribe('manual'), /needs a ready connection/);
+    assert.throws(() => io.subscribe('@direct'), TypeError, 'an invalid tag is still a TypeError');
+    // Between the socket opening and the CID: the old client sent these at once, unencrypted.
+    const early = [];
+    let first = true;
+    io.on('change', state => {
+      if (state !== 'server_ready' || !first) return;
+      first = false;
+      io.link('page', 'early', () => {});
+      try { io.subscribe('early-manual'); } catch (error) { early.push(error.message); }
+    });
+    const ready = event(io, 'ready', t.signal);
+    io.open(url);
+    await ready;
+    await io.call('reply', 'echo', 'subscriptions processed');
+    assert.equal(early.length, 1);
+    assert.match(early[0], /needs a ready connection \(state: server_ready\)/);
+    assert.ok(packets.every(p => p.state === 'ready'), 'nothing is sent before the connection is ready');
+    assert.deepEqual(packets.flatMap(p => p.tags).sort(), ['early', 'room$x']);
+    assert.equal(retained, 1, 'the retained value arrives once');
+    assert.equal(io.channels.has('manual'), false);
+
+    // Ready now: both send at once.
+    packets.length = 0;
+    io.link('page', 'later', () => {});
+    io.subscribe('later-manual');
+    assert.deepEqual(packets.map(p => p.tags), [['later'], ['later-manual']]);
+
+    // subscribe() lasts one connection; link() is sent again after a reconnect.
+    packets.length = 0;
+    const closed = event(server.manager.cid2remote.get(io.cid).socket, 'close', t.signal);
+    io.stop();
+    await closed;
+    assert.throws(() => io.subscribe('offline'), /needs a ready connection \(state: stop\)/);
+    const again = event(io, 'ready', t.signal);
+    io.open(url);
+    await again;
+    await io.call('reply', 'echo', 'subscriptions processed');
+    assert.deepEqual(packets.flatMap(p => p.tags).sort(), ['early', 'later', 'room$x']);
   });
 
   test(`${format}: server rejects oversized CID rewrites without sending`, { timeout: 10000 }, async t => {
@@ -977,6 +1074,7 @@ for (const [format, api] of variants) {
   test(`${format}: unlink preserves shared, listen and explicit subscription ownership`, t => {
     const io = new api.IO(); t.after(() => io.destroy());
     const sent = []; io.send_enc_mode = p => sent.push(p);
+    io.state = api.STATE.READY; // subscribe() needs a ready connection
     const unsubs = () => sent.filter(p => p[0] === api.IOMsg.UNSUBSCRIBE).map(p => Buffer.from(p.subarray(2)).toString());
     io.link('a', 'room', () => {}); io.link('b', 'room', () => {});
     io.unlinkAll('a'); assert.deepEqual(unsubs(), []); assert.ok(io.channels.has('room'));

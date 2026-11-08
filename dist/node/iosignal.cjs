@@ -18,7 +18,7 @@ var fs = require('fs');
 var process$1 = require('process');
 var path = require('path');
 
-var version$1 = "9.0.0";
+var version$1 = "9.6.0";
 var pkg = {
 	version: version$1};
 
@@ -892,6 +892,7 @@ class IOCore extends EventEmitter {
     this._linkHandlers = new Map();
     /** @private @type {Set<string>} */
     this._listenTags = new Set();
+    this._readyDispatch = false; // true while 'ready' handlers run; see listen()
     /** @private @type {Set<string>} */
     this._manualSubscriptions = new Set();
 
@@ -1193,9 +1194,17 @@ class IOCore extends EventEmitter {
         let cidStr = decoder$4.decode(buffer.subarray(1));
         this.cid = cidStr;
 
-        // **IMPORTANT** change state before subscribe.
-        this.stateChange('ready', 'cid_ready');
-        this.subscribe_channels(); 
+        // State first (subscribe_channels needs READY), then the stored subscriptions, and only then
+        // 'ready': a signal sent from a ready handler reaches the server after our own subscriptions.
+        // stateChange() without a message emits 'change' only; false means a handler moved the state on.
+        if (!this.stateChange('ready')) break;
+        this.subscribe_channels();
+        this._readyDispatch = true;
+        try {
+          this.emit('ready', 'cid_ready');
+        } finally {
+          this._readyDispatch = false;
+        }
         break;
 
       case IOMsg.QUOTA: {
@@ -1702,11 +1711,22 @@ class IOCore extends EventEmitter {
 
 
   /**
-   * Subscribes to a channel or channels.
+   * Subscribes to a channel or channels on the current, ready connection, at once.
+   * Call it from a ready handler (it runs on every connect) or later while ready; it is not
+   * repeated after a reconnect. To subscribe before connecting, or for every connection
+   * without a ready handler, use listen() or link().
    * @param {string} tag - The tag(s) of the channel(s) to subscribe to (comma-separated).
    * @throws {TypeError} If tag is invalid, exceeds the length limit, or contains a direct-receive subscription.
+   * @throws {Error} If the connection is not ready (after destroy() it is a no-op instead).
    */
   subscribe(tag) {
+    encodeSubscriptionTags(tag);
+    if (!this.boho) return // destroyed: a no-op, like every send after destroy()
+    if (this.state !== STATE.READY) {
+      // Before the CID the request would go out unauthenticated and unencrypted; while
+      // disconnected it would be lost. Neither should pass silently.
+      throw new Error(`subscribe('${tag}') needs a ready connection (state: ${this.stateName}); call it from a ready handler, or use listen() or link()`)
+    }
     sendSubscription(this, tag);
     for (const part of tag.split(',')) this._manualSubscriptions.add(part);
   }
@@ -1770,23 +1790,28 @@ class IOCore extends EventEmitter {
    * Convenience API for simple clients (for example, CLI tools): register a
    * tag handler once and remember its subscription in channels. For subscription
    * tags, register before connection readiness; the CID-ready flow subscribes on initial connection
-   * and again after reconnect, without application-level ready/subscribe code.
+   * and again after reconnect, before 'ready' is emitted, so a ready handler may signal at once.
    * This does not send a subscription immediately, even if already ready.
-   * For precise subscription/send ordering or dynamic subscriptions, use
-   * on() with subscribe() in a ready handler instead.
-   * Direct signals need no subscription: use on/listen('@') for all direct
-   * signals, or on/listen('@topic') for an exact topic. Direct handlers can be
-   * registered before or after readiness, before the message arrives.
+   * Do not call listen() inside a ready handler; it throws there, for any tag: a subscription tag
+   * would be subscribed only after the next reconnect, and a handler registered on every
+   * connect runs once more after each reconnect. In a ready handler use on() and subscribe();
+   * for dynamic subscriptions use link().
+   * Direct signals need no subscription: use listen('@') during setup, or on('@'), for all
+   * direct signals, or '@topic' for an exact topic.
    * Dispatch is synchronous: '@' first, then '@topic' when tag is not '@'.
    * Returning false does not cancel dispatch; a thrown error interrupts it.
    * @param {string} tag - The tag to listen on.
    * @param {Function} handler - The callback function to handle the signal.
    * @throws {TypeError} If tag is not a string, handler is not a function, or tag length is invalid.
+   * @throws {Error} If called inside a ready handler.
    */
   listen(tag, handler) {
     if (typeof tag !== 'string') throw TypeError('tag should be string.')
     encodeTag(tag, false);
     if (typeof handler !== 'function') throw TypeError('handler is not a function.')
+    if (this._readyDispatch) {
+      throw new Error(`listen('${tag}') inside a ready handler: call listen() in the setup code that runs before the connection is ready, or use on() and subscribe() in the ready handler`)
+    }
 
     if (tag.indexOf('@') !== 0) {
       encodeSubscriptionTags(tag);
@@ -1803,8 +1828,8 @@ class IOCore extends EventEmitter {
 
   /**
    * Associates handlers with a local component for scoped teardown.
-   * Direct tags (@ or @topic) only register local handlers. Other tags also
-   * subscribe now and are remembered for reconnection.
+   * Direct tags (@ or @topic) only register local handlers. Other tags are remembered for
+   * reconnection and subscribed at once on a ready connection; before that, when it becomes ready.
    * @param {string} to - The local component identifier, not a server target.
    * @param {string} tag - The exact event tag.
    * @param {Function} handler - The callback receiving (tag, ...args).
@@ -1830,7 +1855,9 @@ class IOCore extends EventEmitter {
     this.on(tag, linkedHandler);
     if (!direct) {
       this.channels.add(tag);
-      sendSubscription(this, tag);
+      // Not before the connection is ready: the request would go out before authentication
+      // (unencrypted) and again from subscribe_channels(), repeating retained values.
+      if (this.state === STATE.READY) sendSubscription(this, tag);
     }
   }
 
@@ -7505,6 +7532,8 @@ class RemoteCore {
     this.HOME_CHANNEL = '';
     this.role = 'anonymous'; // set on authentication; see ROLES in BohoAuth
     this.accountUid = null;  // counted in manager.accountConnections while authenticated with a uid
+    this.ownerUid = null;    // the device's owner (login uid); a web sign-in later changes uid, not this
+    this.rxPolicy = null;    // compiled delivery policy of an owned device, see deliveryPolicy.js
     // Quota profile (a server.quotas entry, read live): the anonymous one until authenticated.
     this.quotaName = manager.anonymousQuota;
     this.quota = manager.quotas[this.quotaName];
@@ -8562,6 +8591,145 @@ class Metrics {
 
 }
 
+/**
+ * Delivery policy: which senders a device accepts CID unicast ('<cid>@topic') from.
+ *
+ * The policy belongs to an owned device (one whose login has a uid) and comes with its login
+ * (authInfo.rxPolicy from the key provider, JSON text or an object) or later from
+ * Manager.setDeliveryPolicy(). A device without an owner uid is never filtered.
+ *
+ * {
+ *   v: 1,
+ *   mode: 'open' | 'allowlist' | 'denylist',   // open: everyone (the default)
+ *   anonymous: 'allow' | 'deny',                // default: deny for allowlist, allow for denylist
+ *   publish: 'all' | 'policy',                  // who gets its CID publications ('@topic', '@$topic'):
+ *                                               // 'all' subscribers (default), or only those the policy allows
+ *   allow: { cids: [], uids: [] },
+ *   deny:  { cids: [], uids: [] }
+ * }
+ *
+ * Decision, first match wins:
+ *  1. no owner, no policy, mode open           -> allow
+ *  2. the device itself, its owner's uid, or a connection with role 'admin' -> allow
+ *  3. sender CID in deny.cids / allow.cids     -> deny / allow
+ *  4. sender uid in deny.uids / allow.uids     -> deny / allow
+ *  5. anonymous sender (not authenticated, no uid) -> anonymous setting
+ *  6. mode default: allowlist denies, denylist allows
+ *
+ * With publish 'policy', the same decision (subscriber in the sender's place) filters the device's CID
+ * publications and the retained ones a new subscriber would get. Its '@state' close notice included.
+ *
+ * The sender's uid is remote.uid: a device's owner, or the user of a web sign-in on that connection.
+ * Only the server's own view of the sender is used, never anything in the message.
+ */
+
+const DELIVERY_POLICY_MODES = Object.freeze(['open', 'allowlist', 'denylist']);
+const DELIVERY_POLICY_MAX_ENTRIES = 200;
+const ENTRY_MAX_LENGTH = 64;
+const LISTS = ['cids', 'uids'];
+
+function entries(name, value) {
+  if (value === undefined || value === null) return []
+  if (!Array.isArray(value)) throw new TypeError(`${name} must be an array`)
+  if (value.length > DELIVERY_POLICY_MAX_ENTRIES) {
+    throw new RangeError(`${name} has more than ${DELIVERY_POLICY_MAX_ENTRIES} entries`)
+  }
+  for (const entry of value) {
+    if (typeof entry !== 'string' || !entry || entry.length > ENTRY_MAX_LENGTH) {
+      throw new TypeError(`${name} entries must be non-empty strings of at most ${ENTRY_MAX_LENGTH} characters`)
+    }
+  }
+  return [...new Set(value)]
+}
+
+function lists(name, value) {
+  if (value === undefined || value === null) return { cids: [], uids: [] }
+  if (typeof value !== 'object' || Array.isArray(value)) throw new TypeError(`${name} must be an object`)
+  for (const key of Object.keys(value)) {
+    if (!LISTS.includes(key)) throw new TypeError(`unknown ${name}.${key}`)
+  }
+  return { cids: entries(`${name}.cids`, value.cids), uids: entries(`${name}.uids`, value.uids) }
+}
+
+/**
+ * A checked copy of a policy with every field present, or null for "no policy" (null, undefined, '').
+ * Accepts JSON text. Throws TypeError/RangeError on an invalid policy.
+ */
+function normalizeDeliveryPolicy(raw) {
+  if (raw === undefined || raw === null || raw === '') return null
+  let policy = raw;
+  if (typeof raw === 'string') {
+    try { policy = JSON.parse(raw); } catch { throw new TypeError('delivery policy is not valid JSON') }
+  }
+  if (!policy || typeof policy !== 'object' || Array.isArray(policy)) throw new TypeError('delivery policy must be an object')
+  for (const key of Object.keys(policy)) {
+    if (!['v', 'mode', 'anonymous', 'publish', 'allow', 'deny', 'updatedAt'].includes(key)) throw new TypeError(`unknown delivery policy field ${key}`)
+  }
+  if (policy.v !== undefined && policy.v !== 1) throw new TypeError('delivery policy version must be 1')
+  const mode = policy.mode ?? 'open';
+  if (!DELIVERY_POLICY_MODES.includes(mode)) throw new TypeError(`delivery policy mode must be one of: ${DELIVERY_POLICY_MODES.join(', ')}`)
+  const anonymous = policy.anonymous ?? (mode === 'allowlist' ? 'deny' : 'allow');
+  if (anonymous !== 'allow' && anonymous !== 'deny') throw new TypeError("delivery policy anonymous must be 'allow' or 'deny'")
+  const publish = policy.publish ?? 'all';
+  if (publish !== 'all' && publish !== 'policy') throw new TypeError("delivery policy publish must be 'all' or 'policy'")
+  const normalized = { v: 1, mode, anonymous, publish, allow: lists('allow', policy.allow), deny: lists('deny', policy.deny) };
+  if (policy.updatedAt !== undefined) {
+    if (!Number.isSafeInteger(policy.updatedAt) || policy.updatedAt < 0) throw new TypeError('delivery policy updatedAt must be a time in ms')
+    normalized.updatedAt = policy.updatedAt;
+  }
+  return normalized
+}
+
+/**
+ * The form Manager checks per message, or null when nothing is filtered (no owner, no policy, open).
+ * Never throws: a stored policy that cannot be read only lets the owner's own senders through
+ * (fail closed), since ignoring it would deliver what the owner asked to block.
+ */
+function compileDeliveryPolicy(raw, ownerUid) {
+  if (typeof ownerUid !== 'string' || !ownerUid) return null
+  let policy;
+  try {
+    policy = normalizeDeliveryPolicy(raw);
+  } catch (error) {
+    console.warn(`[iosignal] unreadable delivery policy of uid ${ownerUid}, owner only:`, error.message);
+    policy = { mode: 'allowlist', anonymous: 'deny', publish: 'policy', allow: { cids: [], uids: [] }, deny: { cids: [], uids: [] } };
+  }
+  if (!policy || policy.mode === 'open') return null
+  return Object.freeze({
+    owner: ownerUid,
+    mode: policy.mode,
+    defaultAllow: policy.mode === 'denylist',
+    anonymousAllow: policy.anonymous === 'allow',
+    filterPublish: policy.publish === 'policy',
+    allowCids: new Set(policy.allow.cids),
+    denyCids: new Set(policy.deny.cids),
+    allowUids: new Set(policy.allow.uids),
+    denyUids: new Set(policy.deny.uids)
+  })
+}
+
+/** True if `target` (whose compiled policy is target.rxPolicy) accepts a unicast from `sender`. */
+function deliveryAllowed(target, sender) {
+  const policy = target.rxPolicy;
+  if (!policy) return true
+  if (sender === target) return true
+  const authorized = sender.boho?.isAuthorized === true;
+  const uid = typeof sender.uid === 'string' && sender.uid ? sender.uid : null;
+  if (uid === policy.owner) return true
+  if (authorized && sender.role === 'admin') return true
+  // An anonymous connection's CID is random per connection, so CID rules are for authenticated ones.
+  if (authorized) {
+    if (policy.denyCids.has(sender.cid)) return false
+    if (policy.allowCids.has(sender.cid)) return true
+  }
+  if (uid) {
+    if (policy.denyUids.has(uid)) return false
+    if (policy.allowUids.has(uid)) return true
+  }
+  if (!authorized && !uid) return policy.anonymousAllow
+  return policy.defaultAllow
+}
+
 const encoder = new TextEncoder();
 const decoder$1 = new TextDecoder();
 
@@ -8579,7 +8747,8 @@ class Manager {
     // Cumulative since the server started; never reset (readers compute rates from deltas).
     this.counters = { rxMessages: 0, rxBytes: 0, txMessages: 0, txBytes: 0,
       publishes: 0, deliveryAttempts: 0, quotaExcluded: 0, oversizeRejected: 0, rateLimited: 0,
-      peerRxLimitSkipped: 0 }; // messages not sent: larger than the peer's advertised RX buffer
+      peerRxLimitSkipped: 0, // messages not sent: larger than the peer's advertised RX buffer
+      policyDenied: 0 };     // unicasts and CID publications a device's delivery policy kept back
 
     this.authManager = authManager;
 
@@ -8653,6 +8822,37 @@ class Manager {
   addAccountConnection(remote, uid) {
     remote.accountUid = uid;
     this.accountConnectionCounts.set(uid, this.accountConnections(uid) + 1);
+  }
+
+  /**
+   * Replace the delivery policy of the connected, owned device with this CID (see deliveryPolicy.js);
+   * the next unicast to it already uses the new one. A new login reads the stored policy again.
+   * Returns false when no such connection is here or it has no owner (never filtered).
+   * Throws on an invalid policy, so a caller cannot install one by mistake.
+   */
+  setDeliveryPolicy(cid, policy) {
+    const remote = this.cid2remote.get(cid);
+    if (!remote?.boho.isAuthorized || !remote.ownerUid) return false
+    normalizeDeliveryPolicy(policy);
+    remote.rxPolicy = compileDeliveryPolicy(policy, remote.ownerUid);
+    return true
+  }
+
+  /**
+   * Count a message a delivery policy kept from `other` (unicast from it, or a publication to it) and,
+   * when someone listens, emit 'delivery:denied' on the server with what the server knows of both:
+   * { kind: 'unicast' | 'publish', cid, did, owner, other: { cid, uid, ip, authenticated }, at }.
+   * An anonymous connection's CID is not reported (random per connection).
+   */
+  deliveryDenied(device, other, kind) {
+    this.counters.policyDenied++;
+    if (!this.server?.listenerCount?.('delivery:denied')) return
+    const authenticated = other.boho?.isAuthorized === true;
+    this.server.emit('delivery:denied', {
+      kind, cid: device.cid, did: device.did, owner: device.ownerUid,
+      other: { cid: authenticated ? other.cid : null, uid: other.uid || null, ip: other.ip ?? null, authenticated },
+      at: Date.now()
+    });
   }
 
   removeAccountConnection(remote) {
@@ -8844,6 +9044,8 @@ class Manager {
     if (tag.indexOf('$') == 0) return ['err', 'prefix $ is reserved for userSet tag.']
 
     let cidIndex = tag.indexOf('@');
+    // A device whose policy also covers its publications: each subscriber is checked (see deliveryPolicy.js).
+    const publisher = cidIndex === 0 && remote.rxPolicy?.filterPublish ? remote : null;
     if (cidIndex === 0) {
       // ** CID_PUB multi-cast
       // [cid_pub]  @topic ,  @$retainTopic
@@ -8855,14 +9057,20 @@ class Manager {
     } else if (cidIndex > 0) {
       // uni-cast.  
       let targetCId = tag.split('@')[0];
-      if (this.cid2remote.has(targetCId)) {
+      const target = this.cid2remote.get(targetCId);
+      if (target && !deliveryAllowed(target, remote)) {
+        // Same answer as an offline CID: a sender cannot tell it is blocked, or probe the policy.
+        this.deliveryDenied(target, remote, 'unicast');
+        return ['err', 'Invalid cid']
+      }
+      if (target) {
         //rm cid from tag.
         let ommitCIdTag = '@' + tag.split('@')[1];
         // console.log('uni-cast tag change from', tag, 'to' , ommitCIdTag )
         message = this.getNewSignalTagMessage(message, ommitCIdTag);
         if (!message) return ['err', 'Tag exceeds 255 UTF-8 bytes']
         // console.log(`origin tag: ${tag} omitTag: ${this.getSignalTag(message)}`)
-        this.cid2remote.get(targetCId).send_enc_mode(message);
+        target.send_enc_mode(message);
         return ['ok', 1]
       }
       return ['err', 'Invalid cid']
@@ -8915,11 +9123,13 @@ class Manager {
             // console.log('## null remote' )
             break;
           }
+          if (publisher && !deliveryAllowed(publisher, c)) {
+            this.deliveryDenied(publisher, c, 'publish');
+            continue
+          }
           // change: from v4.x allow receiveSelfMessages.
-          // if (c !== remote) { 
-            c.send_enc_mode(message);
-            sentCounter++;
-          // }
+          c.send_enc_mode(message);
+          sentCounter++;
         }
 
         this.counters.deliveryAttempts += sentCounter;
@@ -9078,8 +9288,13 @@ class Manager {
           let cid = tag.split('@')[0];
           cid = cid.split(this.CID_PREFIX)[1];
           let retainTag = tag.split('@')[1];
-          if (this.cid2remote.has(cid)) {
-            retainMessage = this.cid2remote.get(cid).retain_signal.get(retainTag);
+          const owner = this.cid2remote.get(cid);
+          if (owner) {
+            if (owner.rxPolicy?.filterPublish && !deliveryAllowed(owner, remote)) {
+              this.deliveryDenied(owner, remote, 'publish');
+              return;
+            }
+            retainMessage = owner.retain_signal.get(retainTag);
           } else {
             // console.log('cid subscribe is rejected. not online:', cid)
             return;
@@ -9442,6 +9657,9 @@ class BohoAuth {
       peer.cid = authInfo.cid;
       peer.nick = authInfo.cid; // temporary: nick as cid
       if (authInfo.uid) peer.uid = authInfo.uid;
+      // Delivery policy of an owned device, in place before the CID is reachable (step 9).
+      peer.ownerUid = uid;
+      peer.rxPolicy = compileDeliveryPolicy(authInfo.rxPolicy, uid);
 
       //8. role and quota; the client is told its quota.
       peer.role = role;

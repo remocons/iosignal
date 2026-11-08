@@ -6,6 +6,7 @@ import { IOMsg, STATE, SIZE_LIMIT } from '../common/constants.js'
 import { getSignalPack } from '../common/payload.js';
 import { FileLogger } from './FileLogger.js'
 import { Metrics } from './Metrics.js'
+import { compileDeliveryPolicy, deliveryAllowed, normalizeDeliveryPolicy } from './deliveryPolicy.js'
 
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
@@ -24,7 +25,8 @@ export class Manager {
     // Cumulative since the server started; never reset (readers compute rates from deltas).
     this.counters = { rxMessages: 0, rxBytes: 0, txMessages: 0, txBytes: 0,
       publishes: 0, deliveryAttempts: 0, quotaExcluded: 0, oversizeRejected: 0, rateLimited: 0,
-      peerRxLimitSkipped: 0 }; // messages not sent: larger than the peer's advertised RX buffer
+      peerRxLimitSkipped: 0, // messages not sent: larger than the peer's advertised RX buffer
+      policyDenied: 0 };     // unicasts and CID publications a device's delivery policy kept back
 
     this.authManager = authManager;
 
@@ -98,6 +100,37 @@ export class Manager {
   addAccountConnection(remote, uid) {
     remote.accountUid = uid
     this.accountConnectionCounts.set(uid, this.accountConnections(uid) + 1)
+  }
+
+  /**
+   * Replace the delivery policy of the connected, owned device with this CID (see deliveryPolicy.js);
+   * the next unicast to it already uses the new one. A new login reads the stored policy again.
+   * Returns false when no such connection is here or it has no owner (never filtered).
+   * Throws on an invalid policy, so a caller cannot install one by mistake.
+   */
+  setDeliveryPolicy(cid, policy) {
+    const remote = this.cid2remote.get(cid)
+    if (!remote?.boho.isAuthorized || !remote.ownerUid) return false
+    normalizeDeliveryPolicy(policy)
+    remote.rxPolicy = compileDeliveryPolicy(policy, remote.ownerUid)
+    return true
+  }
+
+  /**
+   * Count a message a delivery policy kept from `other` (unicast from it, or a publication to it) and,
+   * when someone listens, emit 'delivery:denied' on the server with what the server knows of both:
+   * { kind: 'unicast' | 'publish', cid, did, owner, other: { cid, uid, ip, authenticated }, at }.
+   * An anonymous connection's CID is not reported (random per connection).
+   */
+  deliveryDenied(device, other, kind) {
+    this.counters.policyDenied++
+    if (!this.server?.listenerCount?.('delivery:denied')) return
+    const authenticated = other.boho?.isAuthorized === true
+    this.server.emit('delivery:denied', {
+      kind, cid: device.cid, did: device.did, owner: device.ownerUid,
+      other: { cid: authenticated ? other.cid : null, uid: other.uid || null, ip: other.ip ?? null, authenticated },
+      at: Date.now()
+    })
   }
 
   removeAccountConnection(remote) {
@@ -295,6 +328,8 @@ export class Manager {
     if (tag.indexOf('$') == 0) return ['err', 'prefix $ is reserved for userSet tag.']
 
     let cidIndex = tag.indexOf('@');
+    // A device whose policy also covers its publications: each subscriber is checked (see deliveryPolicy.js).
+    const publisher = cidIndex === 0 && remote.rxPolicy?.filterPublish ? remote : null
     if (cidIndex === 0) {
       // ** CID_PUB multi-cast
       // [cid_pub]  @topic ,  @$retainTopic
@@ -306,14 +341,20 @@ export class Manager {
     } else if (cidIndex > 0) {
       // uni-cast.  
       let targetCId = tag.split('@')[0];
-      if (this.cid2remote.has(targetCId)) {
+      const target = this.cid2remote.get(targetCId)
+      if (target && !deliveryAllowed(target, remote)) {
+        // Same answer as an offline CID: a sender cannot tell it is blocked, or probe the policy.
+        this.deliveryDenied(target, remote, 'unicast')
+        return ['err', 'Invalid cid']
+      }
+      if (target) {
         //rm cid from tag.
         let ommitCIdTag = '@' + tag.split('@')[1]
         // console.log('uni-cast tag change from', tag, 'to' , ommitCIdTag )
         message = this.getNewSignalTagMessage(message, ommitCIdTag)
         if (!message) return ['err', 'Tag exceeds 255 UTF-8 bytes']
         // console.log(`origin tag: ${tag} omitTag: ${this.getSignalTag(message)}`)
-        this.cid2remote.get(targetCId).send_enc_mode(message)
+        target.send_enc_mode(message)
         return ['ok', 1]
       }
       return ['err', 'Invalid cid']
@@ -369,11 +410,13 @@ export class Manager {
             // console.log('## null remote' )
             break;
           }
+          if (publisher && !deliveryAllowed(publisher, c)) {
+            this.deliveryDenied(publisher, c, 'publish')
+            continue
+          }
           // change: from v4.x allow receiveSelfMessages.
-          // if (c !== remote) { 
-            c.send_enc_mode(message);
-            sentCounter++;
-          // }
+          c.send_enc_mode(message);
+          sentCounter++;
         }
 
         this.counters.deliveryAttempts += sentCounter;
@@ -532,8 +575,13 @@ export class Manager {
           let cid = tag.split('@')[0]
           cid = cid.split(this.CID_PREFIX)[1]
           let retainTag = tag.split('@')[1]
-          if (this.cid2remote.has(cid)) {
-            retainMessage = this.cid2remote.get(cid).retain_signal.get(retainTag)
+          const owner = this.cid2remote.get(cid)
+          if (owner) {
+            if (owner.rxPolicy?.filterPublish && !deliveryAllowed(owner, remote)) {
+              this.deliveryDenied(owner, remote, 'publish')
+              return;
+            }
+            retainMessage = owner.retain_signal.get(retainTag)
           } else {
             // console.log('cid subscribe is rejected. not online:', cid)
             return;

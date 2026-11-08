@@ -3,6 +3,7 @@ import Boho from 'boho'
 import { serverOption } from '../server/serverOption.js'
 import { IOMsg, STATE } from '../common/constants.js'
 import { FileLogger } from '../server/FileLogger.js'
+import { compileDeliveryPolicy } from '../server/deliveryPolicy.js'
 
 const decoder = new TextDecoder()
 const DUPLICATE_LOGIN_POLICIES = ['keepOld', 'keepNew']
@@ -250,6 +251,9 @@ export class BohoAuth {
       peer.cid = authInfo.cid
       peer.nick = authInfo.cid // temporary: nick as cid
       if (authInfo.uid) peer.uid = authInfo.uid
+      // Delivery policy of an owned device, in place before the CID is reachable (step 9).
+      peer.ownerUid = uid
+      peer.rxPolicy = compileDeliveryPolicy(authInfo.rxPolicy, uid)
 
       //8. role and quota; the client is told its quota.
       peer.role = role;

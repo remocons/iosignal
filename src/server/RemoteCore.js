@@ -66,6 +66,8 @@ export class RemoteCore {
     this.HOME_CHANNEL = ''
     this.role = 'anonymous'; // set on authentication; see ROLES in BohoAuth
     this.accountUid = null;  // counted in manager.accountConnections while authenticated with a uid
+    this.ownerUid = null;    // the device's owner (login uid); a web sign-in later changes uid, not this
+    this.rxPolicy = null;    // compiled delivery policy of an owned device, see deliveryPolicy.js
     // Quota profile (a server.quotas entry, read live): the anonymous one until authenticated.
     this.quotaName = manager.anonymousQuota;
     this.quota = manager.quotas[this.quotaName];

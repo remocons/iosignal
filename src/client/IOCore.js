@@ -202,6 +202,7 @@ export class IOCore extends EventEmitter {
     this._linkHandlers = new Map()
     /** @private @type {Set<string>} */
     this._listenTags = new Set()
+    this._readyDispatch = false // true while 'ready' handlers run; see listen()
     /** @private @type {Set<string>} */
     this._manualSubscriptions = new Set()
 
@@ -505,9 +506,17 @@ export class IOCore extends EventEmitter {
         let cidStr = decoder.decode(buffer.subarray(1))
         this.cid = cidStr;
 
-        // **IMPORTANT** change state before subscribe.
-        this.stateChange('ready', 'cid_ready')
-        this.subscribe_channels() 
+        // State first (subscribe_channels needs READY), then the stored subscriptions, and only then
+        // 'ready': a signal sent from a ready handler reaches the server after our own subscriptions.
+        // stateChange() without a message emits 'change' only; false means a handler moved the state on.
+        if (!this.stateChange('ready')) break;
+        this.subscribe_channels()
+        this._readyDispatch = true
+        try {
+          this.emit('ready', 'cid_ready')
+        } finally {
+          this._readyDispatch = false
+        }
         break;
 
       case IOMsg.QUOTA: {
@@ -1017,11 +1026,22 @@ export class IOCore extends EventEmitter {
 
 
   /**
-   * Subscribes to a channel or channels.
+   * Subscribes to a channel or channels on the current, ready connection, at once.
+   * Call it from a ready handler (it runs on every connect) or later while ready; it is not
+   * repeated after a reconnect. To subscribe before connecting, or for every connection
+   * without a ready handler, use listen() or link().
    * @param {string} tag - The tag(s) of the channel(s) to subscribe to (comma-separated).
    * @throws {TypeError} If tag is invalid, exceeds the length limit, or contains a direct-receive subscription.
+   * @throws {Error} If the connection is not ready (after destroy() it is a no-op instead).
    */
   subscribe(tag) {
+    encodeSubscriptionTags(tag)
+    if (!this.boho) return // destroyed: a no-op, like every send after destroy()
+    if (this.state !== STATE.READY) {
+      // Before the CID the request would go out unauthenticated and unencrypted; while
+      // disconnected it would be lost. Neither should pass silently.
+      throw new Error(`subscribe('${tag}') needs a ready connection (state: ${this.stateName}); call it from a ready handler, or use listen() or link()`)
+    }
     sendSubscription(this, tag)
     for (const part of tag.split(',')) this._manualSubscriptions.add(part)
   }
@@ -1085,23 +1105,28 @@ export class IOCore extends EventEmitter {
    * Convenience API for simple clients (for example, CLI tools): register a
    * tag handler once and remember its subscription in channels. For subscription
    * tags, register before connection readiness; the CID-ready flow subscribes on initial connection
-   * and again after reconnect, without application-level ready/subscribe code.
+   * and again after reconnect, before 'ready' is emitted, so a ready handler may signal at once.
    * This does not send a subscription immediately, even if already ready.
-   * For precise subscription/send ordering or dynamic subscriptions, use
-   * on() with subscribe() in a ready handler instead.
-   * Direct signals need no subscription: use on/listen('@') for all direct
-   * signals, or on/listen('@topic') for an exact topic. Direct handlers can be
-   * registered before or after readiness, before the message arrives.
+   * Do not call listen() inside a ready handler; it throws there, for any tag: a subscription tag
+   * would be subscribed only after the next reconnect, and a handler registered on every
+   * connect runs once more after each reconnect. In a ready handler use on() and subscribe();
+   * for dynamic subscriptions use link().
+   * Direct signals need no subscription: use listen('@') during setup, or on('@'), for all
+   * direct signals, or '@topic' for an exact topic.
    * Dispatch is synchronous: '@' first, then '@topic' when tag is not '@'.
    * Returning false does not cancel dispatch; a thrown error interrupts it.
    * @param {string} tag - The tag to listen on.
    * @param {Function} handler - The callback function to handle the signal.
    * @throws {TypeError} If tag is not a string, handler is not a function, or tag length is invalid.
+   * @throws {Error} If called inside a ready handler.
    */
   listen(tag, handler) {
     if (typeof tag !== 'string') throw TypeError('tag should be string.')
     encodeTag(tag, false)
     if (typeof handler !== 'function') throw TypeError('handler is not a function.')
+    if (this._readyDispatch) {
+      throw new Error(`listen('${tag}') inside a ready handler: call listen() in the setup code that runs before the connection is ready, or use on() and subscribe() in the ready handler`)
+    }
 
     if (tag.indexOf('@') !== 0) {
       encodeSubscriptionTags(tag)
@@ -1118,8 +1143,8 @@ export class IOCore extends EventEmitter {
 
   /**
    * Associates handlers with a local component for scoped teardown.
-   * Direct tags (@ or @topic) only register local handlers. Other tags also
-   * subscribe now and are remembered for reconnection.
+   * Direct tags (@ or @topic) only register local handlers. Other tags are remembered for
+   * reconnection and subscribed at once on a ready connection; before that, when it becomes ready.
    * @param {string} to - The local component identifier, not a server target.
    * @param {string} tag - The exact event tag.
    * @param {Function} handler - The callback receiving (tag, ...args).
@@ -1145,7 +1170,9 @@ export class IOCore extends EventEmitter {
     this.on(tag, linkedHandler)
     if (!direct) {
       this.channels.add(tag)
-      sendSubscription(this, tag)
+      // Not before the connection is ready: the request would go out before authentication
+      // (unencrypted) and again from subscribe_channels(), repeating retained values.
+      if (this.state === STATE.READY) sendSubscription(this, tag)
     }
   }
 

@@ -148,6 +148,7 @@ declare class IOCore extends EventEmitter<string | symbol, any> {
     private _linkHandlers;
     /** @private @type {Set<string>} */
     private _listenTags;
+    _readyDispatch: boolean;
     /** @private @type {Set<string>} */
     private _manualSubscriptions;
     /**
@@ -328,9 +329,13 @@ declare class IOCore extends EventEmitter<string | symbol, any> {
      */
     call(target: string, topic: string, ...args: any[]): Promise<any>;
     /**
-     * Subscribes to a channel or channels.
+     * Subscribes to a channel or channels on the current, ready connection, at once.
+     * Call it from a ready handler (it runs on every connect) or later while ready; it is not
+     * repeated after a reconnect. To subscribe before connecting, or for every connection
+     * without a ready handler, use listen() or link().
      * @param {string} tag - The tag(s) of the channel(s) to subscribe to (comma-separated).
      * @throws {TypeError} If tag is invalid, exceeds the length limit, or contains a direct-receive subscription.
+     * @throws {Error} If the connection is not ready (after destroy() it is a no-op instead).
      */
     subscribe(tag: string): void;
     /**
@@ -348,24 +353,26 @@ declare class IOCore extends EventEmitter<string | symbol, any> {
      * Convenience API for simple clients (for example, CLI tools): register a
      * tag handler once and remember its subscription in channels. For subscription
      * tags, register before connection readiness; the CID-ready flow subscribes on initial connection
-     * and again after reconnect, without application-level ready/subscribe code.
+     * and again after reconnect, before 'ready' is emitted, so a ready handler may signal at once.
      * This does not send a subscription immediately, even if already ready.
-     * For precise subscription/send ordering or dynamic subscriptions, use
-     * on() with subscribe() in a ready handler instead.
-     * Direct signals need no subscription: use on/listen('@') for all direct
-     * signals, or on/listen('@topic') for an exact topic. Direct handlers can be
-     * registered before or after readiness, before the message arrives.
+     * Do not call listen() inside a ready handler; it throws there, for any tag: a subscription tag
+     * would be subscribed only after the next reconnect, and a handler registered on every
+     * connect runs once more after each reconnect. In a ready handler use on() and subscribe();
+     * for dynamic subscriptions use link().
+     * Direct signals need no subscription: use listen('@') during setup, or on('@'), for all
+     * direct signals, or '@topic' for an exact topic.
      * Dispatch is synchronous: '@' first, then '@topic' when tag is not '@'.
      * Returning false does not cancel dispatch; a thrown error interrupts it.
      * @param {string} tag - The tag to listen on.
      * @param {Function} handler - The callback function to handle the signal.
      * @throws {TypeError} If tag is not a string, handler is not a function, or tag length is invalid.
+     * @throws {Error} If called inside a ready handler.
      */
     listen(tag: string, handler: Function): void;
     /**
      * Associates handlers with a local component for scoped teardown.
-     * Direct tags (@ or @topic) only register local handlers. Other tags also
-     * subscribe now and are remembered for reconnection.
+     * Direct tags (@ or @topic) only register local handlers. Other tags are remembered for
+     * reconnection and subscribed at once on a ready connection; before that, when it becomes ready.
      * @param {string} to - The local component identifier, not a server target.
      * @param {string} tag - The exact event tag.
      * @param {Function} handler - The callback receiving (tag, ...args).
