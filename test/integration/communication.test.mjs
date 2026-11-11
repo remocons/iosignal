@@ -1730,21 +1730,26 @@ for (const [format, api] of variants) {
     const { server, connect } = await fixture(t, api);
     const manager = server.manager;
     const taken = {};
-    manager.cid2remote.set('?AAAA', taken);
+    manager.cid2remote.set('?0000', taken);
+    // Lowercase Crockford base32 from the low 5 bits: 0x00 -> '0', 0xff -> 'z', 0x31 -> 'h'.
     const draws = [0x00, 0x00, 0xff];
     manager.anonymousCidRandom = size => Buffer.alloc(size, draws.length ? draws.shift() : 0x11);
     const io = await connect();
-    assert.equal(io.cid, '?____');
-    assert.equal(manager.cid2remote.get('?AAAA'), taken);
-    assert.equal(manager.cid2remote.get('?____'), manager.cid2remote.get(io.cid));
+    assert.equal(io.cid, '?zzzz');
+    assert.equal(manager.cid2remote.get('?0000'), taken);
+    assert.equal(manager.cid2remote.get('?zzzz'), manager.cid2remote.get(io.cid));
 
     // The short space keeps colliding: fall back to 8 characters, then give up.
-    manager.anonymousCidRandom = size => Buffer.alloc(size, 0x00);
-    assert.equal(manager.issueAnonymousCid(), '?AAAAAAAA');
-    manager.cid2remote.set('?AAAAAAAA', taken);
+    manager.anonymousCidRandom = size => Buffer.alloc(size, 0x31);
+    manager.cid2remote.set('?hhhh', taken);
+    assert.equal(manager.issueAnonymousCid(), '?hhhhhhhh');
+    manager.cid2remote.set('?hhhhhhhh', taken);
     assert.equal(manager.issueAnonymousCid(), null);
-    manager.cid2remote.delete('?AAAA');
-    manager.cid2remote.delete('?AAAAAAAA');
+    for (const cid of ['?0000', '?hhhh', '?hhhhhhhh']) manager.cid2remote.delete(cid);
+
+    // Every character comes from the alphabet, so no i, l, o, u, upper case, '-' or '_'.
+    manager.anonymousCidRandom = size => globalThis.crypto.getRandomValues(Buffer.alloc(size));
+    for (let i = 0; i < 200; i++) assert.match(manager.issueAnonymousCid(), /^\?[0-9abcdefghjkmnpqrstvwxyz]{4}$/);
   });
 }
 

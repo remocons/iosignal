@@ -249,7 +249,6 @@ export class BohoAuth {
       //7. setting info.
       peer.did = id
       peer.cid = authInfo.cid
-      peer.nick = authInfo.cid // temporary: nick as cid
       if (authInfo.uid) peer.uid = authInfo.uid
       // Delivery policy of an owned device, in place before the CID is reachable (step 9).
       peer.ownerUid = uid

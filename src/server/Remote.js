@@ -44,6 +44,19 @@ export function getClientAddress(req, trust = serverOption.trustProxy) {
   }
 }
 
+// The site a browser connection came from: the host name of its Origin header ('bayo.tv'),
+// without scheme or port. '' when there is none (Node.js, apps, TCP) or it is 'null' (a file
+// page). A non-browser client can send any Origin, so this is for display only.
+export function originHost(req) {
+  const origin = req?.headers?.origin
+  if (typeof origin !== 'string' || !origin || origin === 'null' || origin.length > 512) return ''
+  try {
+    return new URL(origin).hostname.toLowerCase().replace(/^\[|\]$/g, '').slice(0, 253)
+  } catch {
+    return ''
+  }
+}
+
 export class Remote extends RemoteCore {
   constructor(socket, req, manager) {
     super(socket, manager);
@@ -57,6 +70,7 @@ export class Remote extends RemoteCore {
       const { ip, TLS } = getClientAddress(req, this.manager.server?.trustProxy);
       this.ip = ip;
       this.TLS = TLS;
+      this.site = originHost(req);
     } else {
       this.TLS = false;
       this.ip = normalizeIP(socket.remoteAddress) ?? '0.0.0.0'

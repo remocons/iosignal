@@ -8,6 +8,9 @@ import { FileLogger } from './FileLogger.js'
 import { Metrics } from './Metrics.js'
 import { compileDeliveryPolicy, deliveryAllowed, normalizeDeliveryPolicy } from './deliveryPolicy.js'
 
+// Characters of an anonymous CID after its '?': lowercase Crockford base32, easy to read aloud and type.
+export const ANONYMOUS_CID_ALPHABET = '0123456789abcdefghjkmnpqrstvwxyz'
+
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
 
@@ -641,17 +644,20 @@ export class Manager {
   }
 
 
+  // One random byte per CID character.
   anonymousCidRandom(size) {
     return globalThis.crypto.getRandomValues(Buffer.alloc(size))
   }
 
-  // '?' + base64url random bytes, never one that is online. Check and set run in the same
-  // synchronous turn (CID_REQ handler), so concurrent requests cannot take the same CID.
-  // 3 bytes (4 chars) normally; 6 bytes (8 chars) if the short space keeps colliding.
+  // '?' + lowercase Crockford base32 (ANONYMOUS_CID_ALPHABET: no i, l, o, u), never one that is
+  // online. Check and set run in the same synchronous turn (CID_REQ handler), so concurrent
+  // requests cannot take the same CID. 4 characters normally; 8 if the short space keeps colliding.
   issueAnonymousCid() {
-    for (const [size, tries] of [[3, 8], [6, 8]]) {
+    for (const [size, tries] of [[4, 8], [8, 8]]) {
       for (let i = 0; i < tries; i++) {
-        const cid = '?' + Buffer.from(this.anonymousCidRandom(size)).toString('base64url')
+        let cid = '?'
+        // 32 divides 256, so the low 5 bits of a random byte are uniform.
+        for (const byte of this.anonymousCidRandom(size)) cid += ANONYMOUS_CID_ALPHABET[byte & 31]
         if (!this.cid2remote.has(cid)) return cid
       }
     }

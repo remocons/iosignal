@@ -61,6 +61,7 @@ export class RemoteCore {
     this.did = ''; // Device Id
     this.uid = ''; // User Id
     this.nick = ''
+    this.site = '' // the Origin host of a browser connection, set by Remote
 
     this.privateNode = false
     this.HOME_CHANNEL = ''

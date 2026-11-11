@@ -7525,6 +7525,7 @@ class RemoteCore {
     this.did = ''; // Device Id
     this.uid = ''; // User Id
     this.nick = '';
+    this.site = ''; // the Origin host of a browser connection, set by Remote
 
     this.privateNode = false;
     this.HOME_CHANNEL = '';
@@ -8179,6 +8180,19 @@ function getClientAddress(req, trust = serverOption.trustProxy) {
   }
 }
 
+// The site a browser connection came from: the host name of its Origin header ('bayo.tv'),
+// without scheme or port. '' when there is none (Node.js, apps, TCP) or it is 'null' (a file
+// page). A non-browser client can send any Origin, so this is for display only.
+function originHost(req) {
+  const origin = req?.headers?.origin;
+  if (typeof origin !== 'string' || !origin || origin === 'null' || origin.length > 512) return ''
+  try {
+    return new URL(origin).hostname.toLowerCase().replace(/^\[|\]$/g, '').slice(0, 253)
+  } catch {
+    return ''
+  }
+}
+
 class Remote extends RemoteCore {
   constructor(socket, req, manager) {
     super(socket, manager);
@@ -8192,6 +8206,7 @@ class Remote extends RemoteCore {
       const { ip, TLS } = getClientAddress(req, this.manager.server?.trustProxy);
       this.ip = ip;
       this.TLS = TLS;
+      this.site = originHost(req);
     } else {
       this.TLS = false;
       this.ip = normalizeIP(socket.remoteAddress) ?? '0.0.0.0';
@@ -8727,6 +8742,9 @@ function deliveryAllowed(target, sender) {
   if (!authorized && !uid) return policy.anonymousAllow
   return policy.defaultAllow
 }
+
+// Characters of an anonymous CID after its '?': lowercase Crockford base32, easy to read aloud and type.
+const ANONYMOUS_CID_ALPHABET = '0123456789abcdefghjkmnpqrstvwxyz';
 
 const encoder = new TextEncoder();
 const decoder$1 = new TextDecoder();
@@ -9350,17 +9368,20 @@ class Manager {
   }
 
 
+  // One random byte per CID character.
   anonymousCidRandom(size) {
     return globalThis.crypto.getRandomValues(Buffer.alloc(size))
   }
 
-  // '?' + base64url random bytes, never one that is online. Check and set run in the same
-  // synchronous turn (CID_REQ handler), so concurrent requests cannot take the same CID.
-  // 3 bytes (4 chars) normally; 6 bytes (8 chars) if the short space keeps colliding.
+  // '?' + lowercase Crockford base32 (ANONYMOUS_CID_ALPHABET: no i, l, o, u), never one that is
+  // online. Check and set run in the same synchronous turn (CID_REQ handler), so concurrent
+  // requests cannot take the same CID. 4 characters normally; 8 if the short space keeps colliding.
   issueAnonymousCid() {
-    for (const [size, tries] of [[3, 8], [6, 8]]) {
+    for (const [size, tries] of [[4, 8], [8, 8]]) {
       for (let i = 0; i < tries; i++) {
-        const cid = '?' + Buffer.from(this.anonymousCidRandom(size)).toString('base64url');
+        let cid = '?';
+        // 32 divides 256, so the low 5 bits of a random byte are uniform.
+        for (const byte of this.anonymousCidRandom(size)) cid += ANONYMOUS_CID_ALPHABET[byte & 31];
         if (!this.cid2remote.has(cid)) return cid
       }
     }
@@ -9653,7 +9674,6 @@ class BohoAuth {
       //7. setting info.
       peer.did = id;
       peer.cid = authInfo.cid;
-      peer.nick = authInfo.cid; // temporary: nick as cid
       if (authInfo.uid) peer.uid = authInfo.uid;
       // Delivery policy of an owned device, in place before the CID is reachable (step 9).
       peer.ownerUid = uid;
@@ -10209,6 +10229,9 @@ class FileKeyProvider {
 }
 
 const DEVICE_PREFIX = "device:";
+// Every device CID in use. The account service picks new CIDs outside it, so a device added here
+// is listed too and no member can be given its CID.
+const CID_SET = "sets_cid";
 
 class RedisKeyProvider {
   constructor(redisClient) {
@@ -10245,11 +10268,17 @@ class RedisKeyProvider {
     const fields = { 'key': Base64hashKey, 'cid': cid };
     if (role) fields.role = role;
     if (quota) fields.quota = quota;
-    return this.redis.hSet(DEVICE_PREFIX + id, fields)
+    const old = await this.redis.hGet(DEVICE_PREFIX + id, 'cid');
+    const result = await this.redis.hSet(DEVICE_PREFIX + id, fields);
+    if (old && old !== cid) await this.redis.sRem(CID_SET, old);
+    if (cid) await this.redis.sAdd(CID_SET, cid);
+    return result
   }
 
   //sudoService call
   async delAuth(id) {
+    const cid = await this.redis.hGet(DEVICE_PREFIX + id, 'cid');
+    if (cid) await this.redis.sRem(CID_SET, cid);
     return this.redis.del(DEVICE_PREFIX + id)
   }
 
