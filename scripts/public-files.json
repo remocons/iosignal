@@ -14,6 +14,7 @@
     "src/common/payload.js",
     "src/common/util.js",
     "src/server/FileLogger.js",
+    "src/server/Host.js",
     "src/server/Manager.js",
     "src/server/Metrics.js",
     "src/server/Remote.js",
@@ -39,7 +40,8 @@
     "test/subscribe-signal/signal-MBA.js",
     "test/subscribe-signal/signalPack.js",
     "test/subscribe-signal/signaling.js",
-    "test/integration/communication.test.mjs"
+    "test/integration/communication.test.mjs",
+    "test/integration/host.test.mjs"
   ],
   "dist": [
     "dist/browser/esm/io.d.ts",
