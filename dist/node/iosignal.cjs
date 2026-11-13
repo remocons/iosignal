@@ -596,12 +596,12 @@ const STATUS$1 = {
   ERROR: 255
 };
 
-const encoder$2 = new TextEncoder();
+const encoder$3 = new TextEncoder();
 
 
 function getSignalPack(tag, ...args) {
   if (typeof tag !== 'string') throw TypeError('tag should be string.')
-  let tagEncoded = encoder$2.encode(tag);
+  let tagEncoded = encoder$3.encode(tag);
   if (tagEncoded.byteLength > SIZE_LIMIT.TAG_LEN1) throw TypeError('tag UTF-8 byte length exceeds 255')
   let payload = parsePayload(args);
 
@@ -643,7 +643,7 @@ function parsePayload(args) {
   } else if (args.length == 1) {
     if (typeof args[0] === 'string' || typeof args[0] === 'number') {
       type = PAYLOAD_TYPE.TEXT;
-      pack = encoder$2.encode(args[0] + "."); // add null byte area.
+      pack = encoder$3.encode(args[0] + "."); // add null byte area.
       pack[pack.byteLength - 1] = 0; // set byte-zero : '\0'  in C/C++
 
     } else if (ArrayBuffer.isView(args[0]) || args[0] instanceof ArrayBuffer) {
@@ -651,7 +651,7 @@ function parsePayload(args) {
       pack = $$1.B8(args[0]);
     } else if (typeof args[0] === 'object') {
       type = PAYLOAD_TYPE.OBJECT;
-      pack = encoder$2.encode(JSON.stringify(args[0]));
+      pack = encoder$3.encode(JSON.stringify(args[0]));
     } else {
       throw new Error('unknown payload arguments')
     }
@@ -665,7 +665,7 @@ function parsePayload(args) {
       type = PAYLOAD_TYPE.MBA;
     } else {
       type = PAYLOAD_TYPE.MJSON;
-      pack = encoder$2.encode(JSON.stringify(args));
+      pack = encoder$3.encode(JSON.stringify(args));
     }
 
   }
@@ -676,6 +676,42 @@ function parsePayload(args) {
 function getPayloadFromSignalPack(signalPack) {
   let tagLen = signalPack.readUint8(1);
   return signalPack.subarray(3 + tagLen)
+}
+const decoder$5 = new TextDecoder();
+
+/**
+ * Arguments of a SIGNAL payload, as IO emits them after the tag: EMPTY [], TEXT [string] (the
+ * trailing NUL that C/C++ senders add is removed), BINARY [the buffer itself], OBJECT [value],
+ * MJSON [...values], MBA [...args]. null for an unknown payload type. Throws on malformed JSON/MBA.
+ * @param {number} payloadType
+ * @param {Uint8Array} payloadBuffer
+ * @returns {any[] | null}
+ */
+function decodeSignalArgs(payloadType, payloadBuffer) {
+  switch (payloadType) {
+    case PAYLOAD_TYPE.EMPTY:
+      return []
+    case PAYLOAD_TYPE.TEXT: {
+      const end = payloadBuffer[payloadBuffer.byteLength - 1] === 0 ? payloadBuffer.byteLength - 1 : payloadBuffer.byteLength;
+      return [decoder$5.decode(payloadBuffer.subarray(0, end))]
+    }
+    case PAYLOAD_TYPE.BINARY:
+      return [payloadBuffer]
+    case PAYLOAD_TYPE.OBJECT:
+      return [JSON.parse(decoder$5.decode(payloadBuffer))]
+    case PAYLOAD_TYPE.MJSON: {
+      const values = JSON.parse(decoder$5.decode(payloadBuffer));
+      if (!Array.isArray(values)) throw new TypeError('MJSON payload is not an array')
+      return values
+    }
+    case PAYLOAD_TYPE.MBA: {
+      const mba = $$1.unpack(payloadBuffer);
+      if (!mba) throw new TypeError('malformed MBA payload')
+      return mba.args
+    }
+    default:
+      return null
+  }
 }
 
 const t=new Uint32Array([1116352408,1899447441,3049323471,3921009573,961987163,1508970993,2453635748,2870763221,3624381080,310598401,607225278,1426881987,1925078388,2162078206,2614888103,3248222580,3835390401,4022224774,264347078,604807628,770255983,1249150122,1555081692,1996064986,2554220882,2821834349,2952996808,3210313671,3336571891,3584528711,113926993,338241895,666307205,773529912,1294757372,1396182291,1695183700,1986661051,2177026350,2456956037,2730485921,2820302411,3259730800,3345764771,3516065817,3600352804,4094571909,275423344,430227734,506948616,659060556,883997877,958139571,1322822218,1537002063,1747873779,1955562222,2024104815,2227730452,2361852424,2428436474,2756734187,3204031479,3329325298]);function e(e,r,n,i,o){let f,s,u,h,a,c,l,p,y,g,d,b,w;for(;o>=64;){for(f=r[0],s=r[1],u=r[2],h=r[3],a=r[4],c=r[5],l=r[6],p=r[7],g=0;g<16;g++)d=i+4*g,e[g]=(255&n[d])<<24|(255&n[d+1])<<16|(255&n[d+2])<<8|255&n[d+3];for(g=16;g<64;g++)y=e[g-2],b=(y>>>17|y<<15)^(y>>>19|y<<13)^y>>>10,y=e[g-15],w=(y>>>7|y<<25)^(y>>>18|y<<14)^y>>>3,e[g]=(b+e[g-7]|0)+(w+e[g-16]|0);for(g=0;g<64;g++)b=(((a>>>6|a<<26)^(a>>>11|a<<21)^(a>>>25|a<<7))+(a&c^~a&l)|0)+(p+(t[g]+e[g]|0)|0)|0,w=((f>>>2|f<<30)^(f>>>13|f<<19)^(f>>>22|f<<10))+(f&s^f&u^s&u)|0,p=l,l=c,c=a,a=h+b|0,h=u,u=s,s=f,f=b+w|0;r[0]+=f,r[1]+=s,r[2]+=u,r[3]+=h,r[4]+=a,r[5]+=c,r[6]+=l,r[7]+=p,i+=64,o-=64;}return i}const r=function(){function t(){this.digestLength=32,this.blockSize=64,this.state=new Int32Array(8),this.temp=new Int32Array(64),this.buffer=new Uint8Array(128),this.bufferLength=0,this.bytesHashed=0,this.finished=false,this.reset();}return t.prototype.reset=function(){return this.state[0]=1779033703,this.state[1]=3144134277,this.state[2]=1013904242,this.state[3]=2773480762,this.state[4]=1359893119,this.state[5]=2600822924,this.state[6]=528734635,this.state[7]=1541459225,this.bufferLength=0,this.bytesHashed=0,this.finished=false,this},t.prototype.clean=function(){for(var t=0;t<this.buffer.length;t++)this.buffer[t]=0;for(t=0;t<this.temp.length;t++)this.temp[t]=0;this.reset();},t.prototype.update=function(t,r){if(void 0===r&&(r=t.length),this.finished)throw new Error("SHA256: can't update because hash was finished.");let n=0;if(this.bytesHashed+=r,this.bufferLength>0){for(;this.bufferLength<64&&r>0;)this.buffer[this.bufferLength++]=t[n++],r--;64===this.bufferLength&&(e(this.temp,this.state,this.buffer,0,64),this.bufferLength=0);}for(r>=64&&(n=e(this.temp,this.state,t,n,r),r%=64);r>0;)this.buffer[this.bufferLength++]=t[n++],r--;return this},t.prototype.finish=function(t){if(!this.finished){const t=this.bytesHashed,n=this.bufferLength,i=t/536870912|0,o=t<<3,f=t%64<56?64:128;this.buffer[n]=128;for(var r=n+1;r<f-8;r++)this.buffer[r]=0;this.buffer[f-8]=i>>>24&255,this.buffer[f-7]=i>>>16&255,this.buffer[f-6]=i>>>8&255,this.buffer[f-5]=i>>>0&255,this.buffer[f-4]=o>>>24&255,this.buffer[f-3]=o>>>16&255,this.buffer[f-2]=o>>>8&255,this.buffer[f-1]=o>>>0&255,e(this.temp,this.state,this.buffer,0,f),this.finished=true;}for(r=0;r<8;r++)t[4*r+0]=this.state[r]>>>24&255,t[4*r+1]=this.state[r]>>>16&255,t[4*r+2]=this.state[r]>>>8&255,t[4*r+3]=this.state[r]>>>0&255;return this},t.prototype.digest=function(){const t=new Uint8Array(this.digestLength);return this.finish(t),t},t.prototype._saveState=function(t){for(let e=0;e<this.state.length;e++)t[e]=this.state[e];},t.prototype._restoreState=function(t,e){for(let e=0;e<this.state.length;e++)this.state[e]=t[e];this.bytesHashed=e,this.finished=false,this.bufferLength=0;},t}(),n=function(){function t(t){this.inner=new r,this.outer=new r,this.blockSize=this.inner.blockSize,this.digestLength=this.inner.digestLength;const e=new Uint8Array(this.blockSize);if(t.length>this.blockSize)(new r).update(t).finish(e).clean();else for(var n=0;n<t.length;n++)e[n]=t[n];for(n=0;n<e.length;n++)e[n]^=54;this.inner.update(e);for(n=0;n<e.length;n++)e[n]^=106;this.outer.update(e),this.istate=new Uint32Array(8),this.ostate=new Uint32Array(8),this.inner._saveState(this.istate),this.outer._saveState(this.ostate);for(n=0;n<e.length;n++)e[n]=0;}return t.prototype.reset=function(){return this.inner._restoreState(this.istate,this.inner.blockSize),this.outer._restoreState(this.ostate,this.outer.blockSize),this},t.prototype.clean=function(){for(let t=0;t<this.istate.length;t++)this.ostate[t]=this.istate[t]=0;this.inner.clean(),this.outer.clean();},t.prototype.update=function(t){return this.inner.update(t),this},t.prototype.finish=function(t){return this.outer.finished?this.outer.finish(t):(this.inner.finish(t),this.outer.update(t,this.digestLength).finish(t)),this},t.prototype.digest=function(){const t=new Uint8Array(this.digestLength);return this.finish(t),t},t}();function i(t){const e=(new r).update(t),n=e.digest();return e.clean(),n}var o,f,s,u={},h={},a={};
@@ -705,13 +741,13 @@ const t=new Uint32Array([1116352408,1899447441,3049323471,3921009573,961987163,1
  */
 
 const Buffer$1 = $$1.Buffer;
-const encoder$1 = new TextEncoder();
+const encoder$2 = new TextEncoder();
 const decoder$4 = new TextDecoder();
 
 // Wire tag lengths use one byte, regardless of JavaScript string length.
 function encodeTag(tag, allowEmpty = true) {
   if (typeof tag !== 'string') throw TypeError('tag should be string.')
-  const encoded = encoder$1.encode(tag);
+  const encoded = encoder$2.encode(tag);
   if ((!allowEmpty && encoded.byteLength === 0) || encoded.byteLength > SIZE_LIMIT.TAG_LEN1) {
     throw TypeError('tag UTF-8 byte length must be ' + (allowEmpty ? '0' : '1') + '~255')
   }
@@ -1291,83 +1327,15 @@ class IOCore extends EventEmitter {
             > cid_sub message:  tag includes cid and @ both : 'cid@*'
             > ch_sub message:  else.
           */
-        //  console.log('payloadType', payloadType )
-          switch (payloadType) {
-
-            case PAYLOAD_TYPE.EMPTY:
-              if (tag.indexOf('@') === 0) {
-                this.emit('@', tag);
-                if (tag !== '@') this.emit(tag, tag);
-              } else {
-                this.emit(tag, tag);
-                this.emit('message', tag);
-              }
-              break;
-
-            case PAYLOAD_TYPE.TEXT:
-              // !! Must remove null char before decode in JS.
-              // string payload contains null char for the c/cpp devices.
-              let payloadStringWithoutNull = payloadBuffer;
-              if (payloadBuffer[payloadBuffer.byteLength - 1] === 0) {
-                payloadStringWithoutNull = payloadBuffer.subarray(0, payloadBuffer.byteLength - 1);
-              }
-              let oneString = decoder$4.decode(payloadStringWithoutNull);
-              if (tag.indexOf('@') === 0) {
-                this.emit('@', tag, oneString);
-                if (tag !== '@') this.emit(tag, tag, oneString);
-              } else {
-                this.emit(tag, tag, oneString);
-                this.emit('message', tag, oneString);
-              }
-              break;
-
-            case PAYLOAD_TYPE.BINARY:
-              if (tag.indexOf('@') === 0) {
-                this.emit('@', tag, payloadBuffer);
-                if (tag !== '@') this.emit(tag, tag, payloadBuffer);
-              } else {
-                this.emit(tag, tag, payloadBuffer);
-                this.emit('message', tag, payloadBuffer);
-              }
-              break;
-
-            case PAYLOAD_TYPE.OBJECT:
-              let oneObjectBuffer = decoder$4.decode(payloadBuffer);
-              let oneJSONObject = JSON.parse(oneObjectBuffer);
-              if (tag.indexOf('@') === 0) {
-                this.emit('@', tag, oneJSONObject);
-                if (tag !== '@') this.emit(tag, tag, oneJSONObject);
-              } else {
-                this.emit(tag, tag, oneJSONObject);
-                this.emit('message', tag, oneJSONObject);
-              }
-              break;
-
-            case PAYLOAD_TYPE.MJSON:
-              let mjsonBuffer = decoder$4.decode(payloadBuffer);
-              let mjson = JSON.parse(mjsonBuffer);
-              if (tag.indexOf('@') === 0) {
-                this.emit('@', tag, ...mjson);
-                if (tag !== '@') this.emit(tag, tag, ...mjson);
-              } else {
-                this.emit(tag, tag, ...mjson);
-                this.emit('message', tag, ...mjson);
-              }
-              break;
-
-            case PAYLOAD_TYPE.MBA:
-              let mbaObject = $$1.unpack(payloadBuffer);
-              if (tag.indexOf('@') === 0) {
-                this.emit('@', tag, ...mbaObject.args);
-                if (tag !== '@') this.emit(tag, tag, ...mbaObject.args);
-              } else {
-                this.emit(tag, tag, ...mbaObject.args);
-                this.emit('message', tag, ...mbaObject.args);
-              }
-              break;
-
-            default:
-            // console.log('## Unkown payloadtype', payloadType)
+          const args = decodeSignalArgs(payloadType, payloadBuffer);
+          if (args) {
+            if (tag.indexOf('@') === 0) {
+              this.emit('@', tag, ...args);
+              if (tag !== '@') this.emit(tag, tag, ...args);
+            } else {
+              this.emit(tag, tag, ...args);
+              this.emit('message', tag, ...args);
+            }
           }
 
         } catch (err) {
@@ -8745,6 +8713,264 @@ function deliveryAllowed(target, sender) {
   return policy.defaultAllow
 }
 
+const encoder$1 = new TextEncoder();
+const NAME = /^[A-Za-z0-9_.-]{1,64}$/;
+
+/**
+ * Validates one tag pattern of a host. A trailing '*' makes it a prefix; '*' is allowed nowhere else.
+ * Channel patterns (inbound, and own without '@'): global channel tags, so no '@' and no leading
+ * '#' (home channels belong to one network) or '$'. Unicast patterns (own, leading '@'): the topic
+ * of '<cid>@topic' messages.
+ * @returns {{ pattern: string, text: string, prefix: boolean, unicast: boolean }}
+ */
+function parsePattern(pattern, allowUnicast) {
+  if (typeof pattern !== 'string' || pattern.length === 0) throw new TypeError('host tag must be a non-empty string')
+  const prefix = pattern.endsWith('*');
+  const text = prefix ? pattern.slice(0, -1) : pattern;
+  if (text.includes('*')) throw new TypeError(`host tag ${pattern}: '*' is allowed only at the end`)
+  if (text.includes(',')) throw new TypeError(`host tag ${pattern}: ',' separates tags`)
+  if (encoder$1.encode(text).byteLength > SIZE_LIMIT.TAG_LEN1) throw new TypeError(`host tag ${pattern} exceeds 255 UTF-8 bytes`)
+  const unicast = text.startsWith('@');
+  if (unicast) {
+    if (!allowUnicast) throw new TypeError(`host tag ${pattern}: inbound tags are channel tags (no '@')`)
+    if (text.indexOf('@', 1) !== -1) throw new TypeError(`host tag ${pattern}: a unicast topic has one '@'`)
+    if (text.length === 1) throw new TypeError(`host tag ${pattern}: empty topic`)
+  } else {
+    if (text.includes('@')) throw new TypeError(`host tag ${pattern}: channel tags have no '@'`)
+    if (text.startsWith('#')) throw new TypeError(`host tag ${pattern}: home channel tags ('#...') cannot be hosted`)
+    if (text.startsWith('$')) throw new TypeError(`host tag ${pattern}: '$' prefix is reserved`)
+    if (text.length === 0) throw new TypeError(`host tag ${pattern}: empty tag`)
+  }
+  return { pattern, text, prefix, unicast }
+}
+
+function overlaps(a, b) {
+  if (a.prefix && b.text.startsWith(a.text)) return true
+  if (b.prefix && a.text.startsWith(b.text)) return true
+  return a.text === b.text
+}
+
+/**
+ * The tags all hosts of one server have claimed. Patterns never overlap, so a tag matches at most one.
+ */
+class HostTable {
+  constructor() {
+    this.exact = new Map(); // text -> entry
+    this.prefixes = [];     // entries
+    this.hosts = new Map(); // name -> Host
+  }
+
+  get size() {
+    return this.hosts.size
+  }
+
+  add(host, entries) {
+    if (this.hosts.has(host.name)) throw new Error(`host ${host.name} already exists`)
+    const all = [...this.exact.values(), ...this.prefixes];
+    entries.forEach((entry, i) => {
+      for (const other of [...all, ...entries.slice(0, i)]) {
+        if (overlaps(entry, other)) {
+          throw new Error(`host tag ${entry.pattern} overlaps ${other.pattern}` +
+            (other.host === host ? '' : ` of host ${other.host.name}`))
+        }
+      }
+    });
+    for (const entry of entries) {
+      if (entry.prefix) this.prefixes.push(entry);
+      else this.exact.set(entry.text, entry);
+    }
+    this.hosts.set(host.name, host);
+  }
+
+  remove(host) {
+    if (this.hosts.get(host.name) !== host) return
+    this.hosts.delete(host.name);
+    for (const [text, entry] of this.exact) if (entry.host === host) this.exact.delete(text);
+    this.prefixes = this.prefixes.filter(entry => entry.host !== host);
+  }
+
+  // tag: a client channel tag, or '@topic' of a unicast. Returns the entry or undefined.
+  match(tag) {
+    const entry = this.exact.get(tag);
+    if (entry) return entry
+    for (const p of this.prefixes) if (tag.startsWith(p.text)) return p
+    return undefined
+  }
+
+  // A connection closed. ownsCid: it still owned its CID (no newer connection took it over).
+  remoteClosed(remote, ownsCid) {
+    if (!ownsCid || !remote.cid) return
+    for (const host of this.hosts.values()) host._remoteClosed(remote);
+  }
+}
+
+/**
+ * Game logic (or any server-side logic) inside the server process. Created by server.host().
+ *
+ * Events:
+ *   'message' (from, tag, ...args)  a client signal to one of the inbound tags. from is the
+ *                                   server's view of the sender (never anything in the payload).
+ *   'leave' (from, reason)          a participant's connection closed (it no longer has its CID)
+ *   'error' (error)                 a 'message' or 'leave' handler threw
+ *   'close' ()                      the host was closed
+ */
+class Host extends require$$0$3 {
+
+  constructor(manager, name, options = {}) {
+    super();
+    if (typeof name !== 'string' || !NAME.test(name)) {
+      throw new TypeError('host name: 1-64 characters of A-Z a-z 0-9 _ . -')
+    }
+    if (options === null || typeof options !== 'object') throw new TypeError('host options must be an object')
+    for (const key of Object.keys(options)) {
+      if (!['inbound', 'own', 'fanout', 'retain'].includes(key)) throw new TypeError(`unknown host option: ${key}`)
+    }
+    const list = (key) => {
+      const value = options[key] ?? [];
+      if (!Array.isArray(value)) throw new TypeError(`host option ${key} must be an array of tags`)
+      return value
+    };
+    /** @type {Host} */
+    const host = this;
+    const inbound = list('inbound').map(p => ({ ...parsePattern(p, false), kind: 'inbound', host }));
+    const own = list('own').map(p => ({ ...parsePattern(p, true), kind: 'own', host }));
+    if (inbound.length === 0) throw new TypeError('host needs at least one inbound tag')
+
+    const fanout = options.fanout ?? null;
+    if (fanout !== null && !(Number.isSafeInteger(fanout) && fanout > 0)) {
+      throw new RangeError('host fanout must be null or a positive integer')
+    }
+    const retain = options.retain ?? {};
+    for (const key of ['tags', 'bytes']) {
+      if (retain[key] !== undefined && !(Number.isSafeInteger(retain[key]) && retain[key] > 0)) {
+        throw new RangeError(`host retain.${key} must be a positive integer`)
+      }
+    }
+
+    this.name = name;
+    this.manager = manager;
+    this.fanout = fanout;
+    this.retainTags = retain.tags ?? null;   // null: the server's retain.tagsPerOwner
+    this.retainBytes = retain.bytes ?? null; // null: the server's retain.bytesPerOwner
+    this.retainOwnerKey = 'host:' + name;
+    this.ownChannels = own.filter(e => !e.unicast);
+    this.closed = false;
+    /** @type {Map<string, Readonly<object>>} cid -> from, connections that sent to this host */
+    this._participants = new Map();
+
+    manager.hosts.add(this, [...inbound, ...own]);
+    // Values a client retained on these tags before the host claimed them are not the host's.
+    for (const tag of [...manager.retain_messages.keys()]) {
+      if (!tag.startsWith(manager.CHANNEL_PREFIX)) continue
+      const entry = manager.hosts.match(tag.slice(manager.CHANNEL_PREFIX.length));
+      if (entry?.host === this) manager.dropChannelRetain(tag);
+    }
+  }
+
+  /** Connections that have sent to this host and are still online: cid -> from. */
+  get participants() {
+    return this._participants
+  }
+
+  /** Stop tracking a participant; no 'leave' is emitted for it (until it sends again). */
+  forget(cid) {
+    return this._participants.delete(cid)
+  }
+
+  /**
+   * Publish to one of the host's own channel tags. A tag with '$' is also retained, owned by the
+   * host. Returns the number of connections it was delivered to.
+   */
+  publish(tag, ...args) {
+    this._open();
+    if (typeof tag !== 'string') throw new TypeError('tag should be string.')
+    const entry = this.manager.hosts.match(tag);
+    if (tag.startsWith('@') || entry?.host !== this || entry.kind !== 'own') {
+      throw new Error(`host ${this.name} does not own channel tag ${tag}`)
+    }
+    const message = getSignalPack(tag, ...args);
+    return this.manager.hostPublish(this, this.manager.CHANNEL_PREFIX + tag, message)
+  }
+
+  /**
+   * Send to one connection. It receives '@' + topic. Returns false when the CID is not online
+   * or its receive buffer is too small for the message.
+   */
+  to(cid, topic, ...args) {
+    this._open();
+    if (typeof topic !== 'string' || topic.length === 0 || topic.includes('@')) {
+      throw new TypeError('topic must be a non-empty string without @')
+    }
+    const remote = this.manager.cid2remote.get(cid);
+    const message = getSignalPack('@' + topic, ...args);
+    if (!remote || remote._closing) return false
+    const skipped = remote.peerRxLimitSkipped;
+    remote.send_enc_mode(message);
+    return remote.peerRxLimitSkipped === skipped
+  }
+
+  /** Release the tags (they become ordinary channels again) and the host's retained values. */
+  close() {
+    if (this.closed) return
+    this.closed = true;
+    this.manager.hosts.remove(this);
+    const owner = this.manager.retainOwners.get(this.retainOwnerKey);
+    if (owner) for (const tag of [...owner.tags]) this.manager.dropChannelRetain(tag);
+    this._participants.clear();
+    this.emit('close');
+  }
+
+  _open() {
+    if (this.closed) throw new Error(`host ${this.name} is closed`)
+  }
+
+  // The server's view of a sender; reused while nothing in it changes.
+  static from(remote) {
+    const authorized = remote.boho?.isAuthorized === true;
+    const f = remote._hostFrom;
+    if (f && f.cid === remote.cid && f.uid === remote.uid && f.role === remote.role &&
+        f.nick === remote.nick && f.authorized === authorized) return f
+    return remote._hostFrom = Object.freeze({
+      cid: remote.cid, uid: remote.uid || null, role: remote.role, authorized,
+      nick: remote.nick || '', ssid: remote.ssid
+    })
+  }
+
+  // A SIGNAL from a client to one of the inbound tags. Returns false if it was not delivered.
+  _receive(remote, tag, message) {
+    if (message[0] !== IOMsg.SIGNAL || !remote.cid) return false
+    const tagLen = message[1];
+    if (message.byteLength < tagLen + 3) return false
+    let args;
+    try {
+      args = decodeSignalArgs(message[2 + tagLen], message.subarray(3 + tagLen));
+    } catch {
+      return false
+    }
+    if (!args) return false
+    const from = Host.from(remote);
+    this._participants.set(from.cid, from);
+    this._emitSafely('message', from, tag, ...args);
+    return true
+  }
+
+  _remoteClosed(remote) {
+    const from = this._participants.get(remote.cid);
+    if (!from) return
+    this._participants.delete(remote.cid);
+    this._emitSafely('leave', Host.from(remote), remote.closeReason ?? 'close');
+  }
+
+  _emitSafely(name, ...args) {
+    try {
+      this.emit(name, ...args);
+    } catch (error) {
+      if (this.listenerCount('error')) this.emit('error', error);
+      else console.error(`host ${this.name} ${name} handler error:`, error);
+    }
+  }
+}
+
 // Characters of an anonymous CID after its '?': lowercase Crockford base32, easy to read aloud and type.
 const ANONYMOUS_CID_ALPHABET = '0123456789abcdefghjkmnpqrstvwxyz';
 
@@ -8766,7 +8992,10 @@ class Manager {
     this.counters = { rxMessages: 0, rxBytes: 0, txMessages: 0, txBytes: 0,
       publishes: 0, deliveryAttempts: 0, quotaExcluded: 0, oversizeRejected: 0, rateLimited: 0,
       peerRxLimitSkipped: 0, // messages not sent: larger than the peer's advertised RX buffer
-      policyDenied: 0 };     // unicasts and CID publications a device's delivery policy kept back
+      policyDenied: 0,       // unicasts and CID publications a device's delivery policy kept back
+      hostInbound: 0,        // client signals handed to a host (server.host)
+      hostRejected: 0,       // signals to a host tag that were not handed over (E2E, malformed payload)
+      hostDenied: 0 };       // client signals to a tag a host owns, dropped
 
     this.authManager = authManager;
 
@@ -8791,6 +9020,7 @@ class Manager {
     this.retainExpiry = new Map();     // key: channel retain tag in a grace pool -> expiry time
     this.retainBytes = 0;              // all retained messages, channel and CID
     this.channel_map = new Map();      // key: channelName -> value: < remote : Set >
+    this.hosts = new HostTable();      // tags claimed by server.host() hosts
     this.CHANNEL_PREFIX = 'CH:';
     this.CID_PREFIX = 'CID:';
     this.metrics = new Metrics(this);
@@ -8936,10 +9166,12 @@ class Manager {
     if (this.connectionLogger) this.connectionLogger.log(remoteInfo);
     // A replaced duplicate login no longer owns its CID; the new connection is still online.
     const cidOwner = this.cid2remote.get(remote.cid);
-    if (!remote.cid || !cidOwner || cidOwner === remote) {
+    const ownsCid = !remote.cid || !cidOwner || cidOwner === remote;
+    if (ownsCid) {
       this.deligateSignal(remote, '@state', 'close');
       this.deligateSignal(remote, '@$state', 'close');
     }
+    if (this.hosts.size) this.hosts.remoteClosed(remote, ownsCid);
 
     // remove subscriber 
     for (let ch of remote.channels.keys()) {
@@ -9062,6 +9294,26 @@ class Manager {
     if (tag.indexOf('$') == 0) return ['err', 'prefix $ is reserved for userSet tag.']
 
     let cidIndex = tag.indexOf('@');
+
+    // Hosts (server.host): a signal to an inbound tag goes to the host only, with its sender; a
+    // client may not send to a tag a host owns. CID publications ('@topic') name their sender and
+    // are never hosted.
+    if (this.hosts.size && cidIndex !== 0) {
+      const entry = this.hosts.match(cidIndex > 0 ? tag.slice(cidIndex) : tag);
+      if (entry?.kind === 'inbound') {
+        if (entry.host._receive(remote, tag, message)) {
+          this.counters.hostInbound++;
+          return ['ok', 1]
+        }
+        this.counters.hostRejected++;
+        return ['err', 'Not accepted by the host']
+      }
+      if (entry) {
+        this.counters.hostDenied++;
+        if (this.server?.listenerCount?.('host:denied')) this.server.emit('host:denied', remote, tag, entry.host.name);
+        return ['err', 'Tag is reserved by a host']
+      }
+    }
     // A device whose policy also covers its publications: each subscriber is checked (see deliveryPolicy.js).
     const publisher = cidIndex === 0 && remote.rxPolicy?.filterPublish ? remote : null;
     if (cidIndex === 0) {
@@ -9126,36 +9378,39 @@ class Manager {
     }
 
     this.counters.publishes++;
-    let sentCounter = 0;
-    if (this.channel_map.has(tag)) {
-      // console.log('raw channel_map matched tag:', tag)
-      let remotes = this.channel_map.get(tag);
-      if (remotes.size >= 1) {
-        const fanout = remote.quota.fanout;
-        const limit = fanout === null ? remotes.size : Math.min(fanout, remotes.size);
-        this.counters.quotaExcluded += remotes.size - limit;
-        let peers = remotes.values();
-        while (sentCounter < limit) {
-          let c = peers.next().value;
-          if (!c) {
-            // console.log('## null remote' )
-            break;
-          }
-          if (publisher && !deliveryAllowed(publisher, c)) {
-            this.deliveryDenied(publisher, c, 'publish');
-            continue
-          }
-          // change: from v4.x allow receiveSelfMessages.
-          c.send_enc_mode(message);
-          sentCounter++;
-        }
+    const sent = this.deliver(tag, message, remote.quota.fanout, publisher);
+    if (sent === null) return ['err', 'No subscriber.']
+    return ['ok', sent]
+  }
 
-        this.counters.deliveryAttempts += sentCounter;
-        return ['ok', sentCounter]
+  // Sends a SIGNAL to the subscribers of a full channel key ('CH:…', 'CID:…', home channel), at
+  // most fanout (null: all). publisher: a device whose delivery policy filters its publications.
+  // Returns the number sent, or null when the channel has no subscribers.
+  deliver(tag, message, fanout, publisher = null) {
+    const remotes = this.channel_map.get(tag);
+    if (!remotes || remotes.size === 0) return null
+    const limit = fanout === null ? remotes.size : Math.min(fanout, remotes.size);
+    this.counters.quotaExcluded += remotes.size - limit;
+    let sentCounter = 0;
+    for (const c of remotes) {
+      if (sentCounter >= limit) break;
+      if (publisher && !deliveryAllowed(publisher, c)) {
+        this.deliveryDenied(publisher, c, 'publish');
+        continue
       }
+      // change: from v4.x allow receiveSelfMessages.
+      c.send_enc_mode(message);
+      sentCounter++;
     }
-    // console.log('-- No subscriber. ch: ' , tag )
-    return ['err', 'No subscriber.']
+    this.counters.deliveryAttempts += sentCounter;
+    return sentCounter
+  }
+
+  // A host's publication (Host.publish): full channel key, already packed.
+  hostPublish(host, tag, message) {
+    if (tag.includes('$') && this.retainOptions.enabled) this.storeChannelRetain(tag, message, null, host);
+    this.counters.publishes++;
+    return this.deliver(tag, message, host.fanout) ?? 0
   }
 
 
@@ -9203,14 +9458,18 @@ class Manager {
     return owner
   }
 
-  storeChannelRetain(tag, message, remote) {
-    const owner = this.retainOwner(remote.boho.isAuthorized ? 'cid:' + remote.cid : 'conn:' + remote.ssid);
+  // host: a Host (server.host) writing its own tag, with its own budget; remote is then null.
+  storeChannelRetain(tag, message, remote, host = null) {
+    const owner = this.retainOwner(host ? host.retainOwnerKey
+      : remote.boho.isAuthorized ? 'cid:' + remote.cid : 'conn:' + remote.ssid);
+    const tagsPerOwner = host?.retainTags ?? this.retainOptions.tagsPerOwner;
+    const bytesPerOwner = host?.retainBytes ?? this.retainOptions.bytesPerOwner;
     const old = this.retain_messages.get(tag);
     const freed = old?.byteLength ?? 0;
     const room = old || (this.retain_messages.size < this.retainOptions.limitCounter &&
-      owner.tags.size < this.retainOptions.tagsPerOwner);
+      owner.tags.size < tagsPerOwner);
     const ownerBytes = owner.bytes - (this.retain_owner.get(tag) === owner ? freed : 0);
-    if (room && this.retainFits(message, freed, ownerBytes, this.retainOptions.bytesPerOwner)) {
+    if (room && this.retainFits(message, freed, ownerBytes, bytesPerOwner)) {
       if (old) this.releaseChannelRetain(tag, freed);
       this.retain_messages.set(tag, this.retainCopy(message));
       owner.bytes += message.byteLength;
@@ -9945,6 +10204,7 @@ class Server extends require$$0$3 {
     this.membersOnly = boolean('membersOnly', options.membersOnly ?? serverOption.membersOnly);
     this.serviceNames = new Set();
     this.services = new Map();   // name -> service module (for lifecycle hooks)
+    this.hosts = new Set();      // open hosts (server.host)
     // Stays null for a CongSocket-only server, so close() does not wait on a WebSocket server.
     this.wss = null;
     this.port = null;
@@ -10070,6 +10330,25 @@ class Server extends require$$0$3 {
     return this.manager.metrics.snapshot()
   }
 
+  /**
+   * Server-side logic (a game, a room) in this process. Signals clients send to the inbound tags go
+   * to the host only, with the server's view of the sender; clients cannot send to the tags it owns.
+   * @param {string} name 1-64 characters of A-Z a-z 0-9 _ . -
+   * @param {{ inbound: string[], own?: string[], fanout?: number|null,
+   *   retain?: { tags?: number, bytes?: number } }} options
+   *   inbound: channel tags clients send to the host (a trailing '*' is a prefix). Not relayed.
+   *   own: channel tags only the host publishes, and '@topic' unicast topics only the host sends.
+   *   fanout: most subscribers one publish reaches (default null: all).
+   *   retain: budget of the host's retained ('$') values (default: retain.tagsPerOwner/bytesPerOwner).
+   * @returns {Host}
+   */
+  host(name, options) {
+    const host = new Host(this.manager, name, options);
+    host.once('close', () => this.hosts.delete(host));
+    this.hosts.add(host);
+    return host
+  }
+
 /**
  * RPC service register.
  * service: service_name <string>
@@ -10129,6 +10408,7 @@ class Server extends require$$0$3 {
    */
   close(callback) {
     console.log('closing iosignal server...');
+    for (const host of [...this.hosts]) host.close();
     if (this.manager) {
       this.manager.close();
     }

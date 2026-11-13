@@ -81,3 +81,39 @@ export function getPayloadFromSignalPack(signalPack) {
   let tagLen = signalPack.readUint8(1)
   return signalPack.subarray(3 + tagLen)
 }
+const decoder = new TextDecoder()
+
+/**
+ * Arguments of a SIGNAL payload, as IO emits them after the tag: EMPTY [], TEXT [string] (the
+ * trailing NUL that C/C++ senders add is removed), BINARY [the buffer itself], OBJECT [value],
+ * MJSON [...values], MBA [...args]. null for an unknown payload type. Throws on malformed JSON/MBA.
+ * @param {number} payloadType
+ * @param {Uint8Array} payloadBuffer
+ * @returns {any[] | null}
+ */
+export function decodeSignalArgs(payloadType, payloadBuffer) {
+  switch (payloadType) {
+    case PAYLOAD_TYPE.EMPTY:
+      return []
+    case PAYLOAD_TYPE.TEXT: {
+      const end = payloadBuffer[payloadBuffer.byteLength - 1] === 0 ? payloadBuffer.byteLength - 1 : payloadBuffer.byteLength
+      return [decoder.decode(payloadBuffer.subarray(0, end))]
+    }
+    case PAYLOAD_TYPE.BINARY:
+      return [payloadBuffer]
+    case PAYLOAD_TYPE.OBJECT:
+      return [JSON.parse(decoder.decode(payloadBuffer))]
+    case PAYLOAD_TYPE.MJSON: {
+      const values = JSON.parse(decoder.decode(payloadBuffer))
+      if (!Array.isArray(values)) throw new TypeError('MJSON payload is not an array')
+      return values
+    }
+    case PAYLOAD_TYPE.MBA: {
+      const mba = MBP.unpack(payloadBuffer)
+      if (!mba) throw new TypeError('malformed MBA payload')
+      return mba.args
+    }
+    default:
+      return null
+  }
+}

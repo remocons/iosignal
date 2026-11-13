@@ -1,7 +1,7 @@
 import MBP from 'meta-buffer-pack'
 import { EventEmitter } from "eventemitter3";
 import { IOMsg, PAYLOAD_TYPE, SIZE_LIMIT, ENC_MODE, STATE } from '../common/constants.js'
-import { getSignalPack } from '../common/payload.js';
+import { getSignalPack, decodeSignalArgs } from '../common/payload.js';
 import Boho from "boho";
 
 /**
@@ -606,83 +606,15 @@ export class IOCore extends EventEmitter {
             > cid_sub message:  tag includes cid and @ both : 'cid@*'
             > ch_sub message:  else.
           */
-        //  console.log('payloadType', payloadType )
-          switch (payloadType) {
-
-            case PAYLOAD_TYPE.EMPTY:
-              if (tag.indexOf('@') === 0) {
-                this.emit('@', tag)
-                if (tag !== '@') this.emit(tag, tag)
-              } else {
-                this.emit(tag, tag)
-                this.emit('message', tag)
-              }
-              break;
-
-            case PAYLOAD_TYPE.TEXT:
-              // !! Must remove null char before decode in JS.
-              // string payload contains null char for the c/cpp devices.
-              let payloadStringWithoutNull = payloadBuffer
-              if (payloadBuffer[payloadBuffer.byteLength - 1] === 0) {
-                payloadStringWithoutNull = payloadBuffer.subarray(0, payloadBuffer.byteLength - 1)
-              }
-              let oneString = decoder.decode(payloadStringWithoutNull)
-              if (tag.indexOf('@') === 0) {
-                this.emit('@', tag, oneString)
-                if (tag !== '@') this.emit(tag, tag, oneString)
-              } else {
-                this.emit(tag, tag, oneString)
-                this.emit('message', tag, oneString)
-              }
-              break;
-
-            case PAYLOAD_TYPE.BINARY:
-              if (tag.indexOf('@') === 0) {
-                this.emit('@', tag, payloadBuffer)
-                if (tag !== '@') this.emit(tag, tag, payloadBuffer)
-              } else {
-                this.emit(tag, tag, payloadBuffer)
-                this.emit('message', tag, payloadBuffer)
-              }
-              break;
-
-            case PAYLOAD_TYPE.OBJECT:
-              let oneObjectBuffer = decoder.decode(payloadBuffer)
-              let oneJSONObject = JSON.parse(oneObjectBuffer)
-              if (tag.indexOf('@') === 0) {
-                this.emit('@', tag, oneJSONObject)
-                if (tag !== '@') this.emit(tag, tag, oneJSONObject)
-              } else {
-                this.emit(tag, tag, oneJSONObject)
-                this.emit('message', tag, oneJSONObject)
-              }
-              break;
-
-            case PAYLOAD_TYPE.MJSON:
-              let mjsonBuffer = decoder.decode(payloadBuffer)
-              let mjson = JSON.parse(mjsonBuffer)
-              if (tag.indexOf('@') === 0) {
-                this.emit('@', tag, ...mjson)
-                if (tag !== '@') this.emit(tag, tag, ...mjson)
-              } else {
-                this.emit(tag, tag, ...mjson)
-                this.emit('message', tag, ...mjson)
-              }
-              break;
-
-            case PAYLOAD_TYPE.MBA:
-              let mbaObject = MBP.unpack(payloadBuffer)
-              if (tag.indexOf('@') === 0) {
-                this.emit('@', tag, ...mbaObject.args)
-                if (tag !== '@') this.emit(tag, tag, ...mbaObject.args)
-              } else {
-                this.emit(tag, tag, ...mbaObject.args)
-                this.emit('message', tag, ...mbaObject.args)
-              }
-              break;
-
-            default:
-            // console.log('## Unkown payloadtype', payloadType)
+          const args = decodeSignalArgs(payloadType, payloadBuffer)
+          if (args) {
+            if (tag.indexOf('@') === 0) {
+              this.emit('@', tag, ...args)
+              if (tag !== '@') this.emit(tag, tag, ...args)
+            } else {
+              this.emit(tag, tag, ...args)
+              this.emit('message', tag, ...args)
+            }
           }
 
         } catch (err) {

@@ -643,6 +643,71 @@ declare class FileLogger {
     log(msg: any): void;
 }
 
+/**
+ * The tags all hosts of one server have claimed. Patterns never overlap, so a tag matches at most one.
+ */
+declare class HostTable {
+    exact: Map<any, any>;
+    prefixes: any[];
+    hosts: Map<any, any>;
+    get size(): number;
+    add(host: any, entries: any): void;
+    remove(host: any): void;
+    match(tag: any): any;
+    remoteClosed(remote: any, ownsCid: any): void;
+}
+/**
+ * Game logic (or any server-side logic) inside the server process. Created by server.host().
+ *
+ * Events:
+ *   'message' (from, tag, ...args)  a client signal to one of the inbound tags. from is the
+ *                                   server's view of the sender (never anything in the payload).
+ *   'leave' (from, reason)          a participant's connection closed (it no longer has its CID)
+ *   'error' (error)                 a 'message' or 'leave' handler threw
+ *   'close' ()                      the host was closed
+ */
+declare class Host extends EventEmitter$1<[never]> {
+    static from(remote: any): any;
+    constructor(manager: any, name: any, options?: {});
+    name: string;
+    manager: any;
+    fanout: any;
+    retainTags: any;
+    retainBytes: any;
+    retainOwnerKey: string;
+    ownChannels: {
+        kind: string;
+        host: Host;
+        pattern: string;
+        text: string;
+        prefix: boolean;
+        unicast: boolean;
+    }[];
+    closed: boolean;
+    /** @type {Map<string, Readonly<object>>} cid -> from, connections that sent to this host */
+    _participants: Map<string, Readonly<object>>;
+    /** Connections that have sent to this host and are still online: cid -> from. */
+    get participants(): Map<string, object>;
+    /** Stop tracking a participant; no 'leave' is emitted for it (until it sends again). */
+    forget(cid: any): boolean;
+    /**
+     * Publish to one of the host's own channel tags. A tag with '$' is also retained, owned by the
+     * host. Returns the number of connections it was delivered to.
+     */
+    publish(tag: any, ...args: any[]): any;
+    /**
+     * Send to one connection. It receives '@' + topic. Returns false when the CID is not online
+     * or its receive buffer is too small for the message.
+     */
+    to(cid: any, topic: any, ...args: any[]): boolean;
+    /** Release the tags (they become ordinary channels again) and the host's retained values. */
+    close(): void;
+    _open(): void;
+    _receive(remote: any, tag: any, message: any): boolean;
+    _remoteClosed(remote: any): void;
+    _emitSafely(name: any, ...args: any[]): void;
+}
+
 declare class Metrics {
     constructor(manager: any);
     manager: any;
@@ -793,6 +858,9 @@ declare class Manager {
         rateLimited: number;
         peerRxLimitSkipped: number;
         policyDenied: number;
+        hostInbound: number;
+        hostRejected: number;
+        hostDenied: number;
     };
     authManager: any;
     connectionLogger: FileLogger | undefined;
@@ -806,6 +874,7 @@ declare class Manager {
     retainExpiry: Map<any, any>;
     retainBytes: number;
     channel_map: Map<any, any>;
+    hosts: HostTable;
     CHANNEL_PREFIX: string;
     CID_PREFIX: string;
     metrics: Metrics;
@@ -848,11 +917,13 @@ declare class Manager {
     adminSignal(cid: any, message: any): "no cid" | undefined;
     serverSignalTo(tag: any, ...args: any[]): "no cid" | undefined;
     sender(tag: any, remote: any, message: any): (string | number)[];
+    deliver(tag: any, message: any, fanout: any, publisher?: null): number | null;
+    hostPublish(host: any, tag: any, message: any): number;
     retainFits(message: any, freed: any, ownerBytes: any, budget: any): boolean;
     retainCopy(message: any): Buffer<ArrayBuffer>;
     storeCidRetain(key: any, message: any, remote: any): void;
     retainOwner(key: any): any;
-    storeChannelRetain(tag: any, message: any, remote: any): void;
+    storeChannelRetain(tag: any, message: any, remote: any, host?: null): void;
     orphanChannelRetains(remote: any): void;
     expireChannelRetains(now?: number): void;
     dropChannelRetain(tag: any): void;
@@ -909,6 +980,7 @@ declare class Server extends EventEmitter$1<[never]> {
     membersOnly: boolean;
     serviceNames: Set<any>;
     services: Map<any, any>;
+    hosts: Set<any>;
     wss: any;
     port: number | null;
     congPort: number | null;
@@ -960,6 +1032,27 @@ declare class Server extends EventEmitter$1<[never]> {
             heapUsed: number;
         };
     };
+    /**
+     * Server-side logic (a game, a room) in this process. Signals clients send to the inbound tags go
+     * to the host only, with the server's view of the sender; clients cannot send to the tags it owns.
+     * @param {string} name 1-64 characters of A-Z a-z 0-9 _ . -
+     * @param {{ inbound: string[], own?: string[], fanout?: number|null,
+     *   retain?: { tags?: number, bytes?: number } }} options
+     *   inbound: channel tags clients send to the host (a trailing '*' is a prefix). Not relayed.
+     *   own: channel tags only the host publishes, and '@topic' unicast topics only the host sends.
+     *   fanout: most subscribers one publish reaches (default null: all).
+     *   retain: budget of the host's retained ('$') values (default: retain.tagsPerOwner/bytesPerOwner).
+     * @returns {Host}
+     */
+    host(name: string, options: {
+        inbound: string[];
+        own?: string[];
+        fanout?: number | null;
+        retain?: {
+            tags?: number;
+            bytes?: number;
+        };
+    }): Host;
     /**
      * RPC service register.
      * service: service_name <string>

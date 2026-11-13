@@ -7,6 +7,7 @@ import { getSignalPack } from '../common/payload.js';
 import { FileLogger } from './FileLogger.js'
 import { Metrics } from './Metrics.js'
 import { compileDeliveryPolicy, deliveryAllowed, normalizeDeliveryPolicy } from './deliveryPolicy.js'
+import { HostTable } from './Host.js'
 
 // Characters of an anonymous CID after its '?': lowercase Crockford base32, easy to read aloud and type.
 export const ANONYMOUS_CID_ALPHABET = '0123456789abcdefghjkmnpqrstvwxyz'
@@ -29,7 +30,10 @@ export class Manager {
     this.counters = { rxMessages: 0, rxBytes: 0, txMessages: 0, txBytes: 0,
       publishes: 0, deliveryAttempts: 0, quotaExcluded: 0, oversizeRejected: 0, rateLimited: 0,
       peerRxLimitSkipped: 0, // messages not sent: larger than the peer's advertised RX buffer
-      policyDenied: 0 };     // unicasts and CID publications a device's delivery policy kept back
+      policyDenied: 0,       // unicasts and CID publications a device's delivery policy kept back
+      hostInbound: 0,        // client signals handed to a host (server.host)
+      hostRejected: 0,       // signals to a host tag that were not handed over (E2E, malformed payload)
+      hostDenied: 0 };       // client signals to a tag a host owns, dropped
 
     this.authManager = authManager;
 
@@ -54,6 +58,7 @@ export class Manager {
     this.retainExpiry = new Map()     // key: channel retain tag in a grace pool -> expiry time
     this.retainBytes = 0              // all retained messages, channel and CID
     this.channel_map = new Map()      // key: channelName -> value: < remote : Set >
+    this.hosts = new HostTable()      // tags claimed by server.host() hosts
     this.CHANNEL_PREFIX = 'CH:'
     this.CID_PREFIX = 'CID:'
     this.metrics = new Metrics(this)
@@ -199,10 +204,12 @@ export class Manager {
     if (this.connectionLogger) this.connectionLogger.log(remoteInfo)
     // A replaced duplicate login no longer owns its CID; the new connection is still online.
     const cidOwner = this.cid2remote.get(remote.cid)
-    if (!remote.cid || !cidOwner || cidOwner === remote) {
+    const ownsCid = !remote.cid || !cidOwner || cidOwner === remote
+    if (ownsCid) {
       this.deligateSignal(remote, '@state', 'close')
       this.deligateSignal(remote, '@$state', 'close')
     }
+    if (this.hosts.size) this.hosts.remoteClosed(remote, ownsCid)
 
     // remove subscriber 
     for (let ch of remote.channels.keys()) {
@@ -331,6 +338,26 @@ export class Manager {
     if (tag.indexOf('$') == 0) return ['err', 'prefix $ is reserved for userSet tag.']
 
     let cidIndex = tag.indexOf('@');
+
+    // Hosts (server.host): a signal to an inbound tag goes to the host only, with its sender; a
+    // client may not send to a tag a host owns. CID publications ('@topic') name their sender and
+    // are never hosted.
+    if (this.hosts.size && cidIndex !== 0) {
+      const entry = this.hosts.match(cidIndex > 0 ? tag.slice(cidIndex) : tag)
+      if (entry?.kind === 'inbound') {
+        if (entry.host._receive(remote, tag, message)) {
+          this.counters.hostInbound++
+          return ['ok', 1]
+        }
+        this.counters.hostRejected++
+        return ['err', 'Not accepted by the host']
+      }
+      if (entry) {
+        this.counters.hostDenied++
+        if (this.server?.listenerCount?.('host:denied')) this.server.emit('host:denied', remote, tag, entry.host.name)
+        return ['err', 'Tag is reserved by a host']
+      }
+    }
     // A device whose policy also covers its publications: each subscriber is checked (see deliveryPolicy.js).
     const publisher = cidIndex === 0 && remote.rxPolicy?.filterPublish ? remote : null
     if (cidIndex === 0) {
@@ -398,36 +425,39 @@ export class Manager {
     }
 
     this.counters.publishes++;
-    let sentCounter = 0;
-    if (this.channel_map.has(tag)) {
-      // console.log('raw channel_map matched tag:', tag)
-      let remotes = this.channel_map.get(tag);
-      if (remotes.size >= 1) {
-        const fanout = remote.quota.fanout;
-        const limit = fanout === null ? remotes.size : Math.min(fanout, remotes.size);
-        this.counters.quotaExcluded += remotes.size - limit;
-        let peers = remotes.values();
-        while (sentCounter < limit) {
-          let c = peers.next().value
-          if (!c) {
-            // console.log('## null remote' )
-            break;
-          }
-          if (publisher && !deliveryAllowed(publisher, c)) {
-            this.deliveryDenied(publisher, c, 'publish')
-            continue
-          }
-          // change: from v4.x allow receiveSelfMessages.
-          c.send_enc_mode(message);
-          sentCounter++;
-        }
+    const sent = this.deliver(tag, message, remote.quota.fanout, publisher)
+    if (sent === null) return ['err', 'No subscriber.']
+    return ['ok', sent]
+  }
 
-        this.counters.deliveryAttempts += sentCounter;
-        return ['ok', sentCounter]
+  // Sends a SIGNAL to the subscribers of a full channel key ('CH:…', 'CID:…', home channel), at
+  // most fanout (null: all). publisher: a device whose delivery policy filters its publications.
+  // Returns the number sent, or null when the channel has no subscribers.
+  deliver(tag, message, fanout, publisher = null) {
+    const remotes = this.channel_map.get(tag)
+    if (!remotes || remotes.size === 0) return null
+    const limit = fanout === null ? remotes.size : Math.min(fanout, remotes.size);
+    this.counters.quotaExcluded += remotes.size - limit;
+    let sentCounter = 0;
+    for (const c of remotes) {
+      if (sentCounter >= limit) break;
+      if (publisher && !deliveryAllowed(publisher, c)) {
+        this.deliveryDenied(publisher, c, 'publish')
+        continue
       }
+      // change: from v4.x allow receiveSelfMessages.
+      c.send_enc_mode(message);
+      sentCounter++;
     }
-    // console.log('-- No subscriber. ch: ' , tag )
-    return ['err', 'No subscriber.']
+    this.counters.deliveryAttempts += sentCounter;
+    return sentCounter
+  }
+
+  // A host's publication (Host.publish): full channel key, already packed.
+  hostPublish(host, tag, message) {
+    if (tag.includes('$') && this.retainOptions.enabled) this.storeChannelRetain(tag, message, null, host)
+    this.counters.publishes++;
+    return this.deliver(tag, message, host.fanout) ?? 0
   }
 
 
@@ -475,14 +505,18 @@ export class Manager {
     return owner
   }
 
-  storeChannelRetain(tag, message, remote) {
-    const owner = this.retainOwner(remote.boho.isAuthorized ? 'cid:' + remote.cid : 'conn:' + remote.ssid)
+  // host: a Host (server.host) writing its own tag, with its own budget; remote is then null.
+  storeChannelRetain(tag, message, remote, host = null) {
+    const owner = this.retainOwner(host ? host.retainOwnerKey
+      : remote.boho.isAuthorized ? 'cid:' + remote.cid : 'conn:' + remote.ssid)
+    const tagsPerOwner = host?.retainTags ?? this.retainOptions.tagsPerOwner
+    const bytesPerOwner = host?.retainBytes ?? this.retainOptions.bytesPerOwner
     const old = this.retain_messages.get(tag)
     const freed = old?.byteLength ?? 0
     const room = old || (this.retain_messages.size < this.retainOptions.limitCounter &&
-      owner.tags.size < this.retainOptions.tagsPerOwner)
+      owner.tags.size < tagsPerOwner)
     const ownerBytes = owner.bytes - (this.retain_owner.get(tag) === owner ? freed : 0)
-    if (room && this.retainFits(message, freed, ownerBytes, this.retainOptions.bytesPerOwner)) {
+    if (room && this.retainFits(message, freed, ownerBytes, bytesPerOwner)) {
       if (old) this.releaseChannelRetain(tag, freed)
       this.retain_messages.set(tag, this.retainCopy(message))
       owner.bytes += message.byteLength

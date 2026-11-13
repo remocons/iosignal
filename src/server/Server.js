@@ -2,6 +2,7 @@ import net from 'net'
 import EventEmitter from 'events'
 import { WebSocketServer } from 'ws'
 import { Manager } from './Manager.js'
+import { Host } from './Host.js'
 import { serverOption } from './serverOption.js'
 import { STATUS } from '../services/constant.js'
 import { BohoAuth, validateDuplicateLogin } from '../auth/BohoAuth.js'
@@ -160,6 +161,7 @@ export class Server extends EventEmitter {
     this.membersOnly = boolean('membersOnly', options.membersOnly ?? serverOption.membersOnly);
     this.serviceNames = new Set()
     this.services = new Map()   // name -> service module (for lifecycle hooks)
+    this.hosts = new Set()      // open hosts (server.host)
     // Stays null for a CongSocket-only server, so close() does not wait on a WebSocket server.
     this.wss = null;
     this.port = null;
@@ -285,6 +287,25 @@ export class Server extends EventEmitter {
     return this.manager.metrics.snapshot()
   }
 
+  /**
+   * Server-side logic (a game, a room) in this process. Signals clients send to the inbound tags go
+   * to the host only, with the server's view of the sender; clients cannot send to the tags it owns.
+   * @param {string} name 1-64 characters of A-Z a-z 0-9 _ . -
+   * @param {{ inbound: string[], own?: string[], fanout?: number|null,
+   *   retain?: { tags?: number, bytes?: number } }} options
+   *   inbound: channel tags clients send to the host (a trailing '*' is a prefix). Not relayed.
+   *   own: channel tags only the host publishes, and '@topic' unicast topics only the host sends.
+   *   fanout: most subscribers one publish reaches (default null: all).
+   *   retain: budget of the host's retained ('$') values (default: retain.tagsPerOwner/bytesPerOwner).
+   * @returns {Host}
+   */
+  host(name, options) {
+    const host = new Host(this.manager, name, options)
+    host.once('close', () => this.hosts.delete(host))
+    this.hosts.add(host)
+    return host
+  }
+
 /**
  * RPC service register.
  * service: service_name <string>
@@ -344,6 +365,7 @@ export class Server extends EventEmitter {
    */
   close(callback) {
     console.log('closing iosignal server...')
+    for (const host of [...this.hosts]) host.close()
     if (this.manager) {
       this.manager.close()
     }
