@@ -13,6 +13,7 @@
     "src/common/constants.js",
     "src/common/payload.js",
     "src/common/util.js",
+    "src/server/Dashboard.js",
     "src/server/FileLogger.js",
     "src/server/Host.js",
     "src/server/Manager.js",
@@ -20,6 +21,8 @@
     "src/server/Remote.js",
     "src/server/RemoteCore.js",
     "src/server/Server.js",
+    "src/server/ServerStats.js",
+    "src/server/dashboardPage.js",
     "src/server/deliveryPolicy.js",
     "src/server/serverOption.js",
     "src/services/RedisService.js",
@@ -41,6 +44,7 @@
     "test/subscribe-signal/signalPack.js",
     "test/subscribe-signal/signaling.js",
     "test/integration/communication.test.mjs",
+    "test/integration/dashboard.test.mjs",
     "test/integration/host.test.mjs"
   ],
   "dist": [
