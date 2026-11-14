@@ -1,8 +1,10 @@
 import net from 'net'
+import http from 'http'
 import EventEmitter from 'events'
 import { WebSocketServer } from 'ws'
 import { Manager } from './Manager.js'
 import { Host } from './Host.js'
+import { Dashboard } from './Dashboard.js'
 import { serverOption } from './serverOption.js'
 import { STATUS } from '../services/constant.js'
 import { BohoAuth, validateDuplicateLogin } from '../auth/BohoAuth.js'
@@ -123,6 +125,9 @@ export class Server extends EventEmitter {
    *   options.anonymousQuota: profile of a connection that has not authenticated (default 'anonymous').
    *   options.duplicateLogin: 'keepOld' | 'keepNew' for this Server's connections; overrides the auth
    *   manager's own policy without changing it, so an auth manager can be shared between servers.
+   *   options.dashboard: true or { path, access, panels, history, maxViewers, showIdentities } shows a live
+   *   status page of the server and its hosts (see Dashboard.js); off by default. With `port` the Server
+   *   serves it itself; with your own httpServer call server.dashboard.handle(req, res) in its handler.
    *   A failed listen (e.g. EADDRINUSE) is emitted as 'error'.
    * @param {any} [authManager] Optional authentication manager.
    */
@@ -195,6 +200,16 @@ export class Server extends EventEmitter {
     }
 
     this.manager = new Manager(this, authManager)
+    // The status page; null when off.
+    this.dashboard = null
+    if (options.dashboard) {
+      try {
+        this.dashboard = new Dashboard(this, options.dashboard)
+      } catch (error) {
+        this.manager.close() // a bad dashboard option must not leave the heartbeat timer running
+        throw error
+      }
+    }
 
     this.serverCountToListen = 0;
     this.listeningServerCount = 0;
@@ -213,7 +228,15 @@ export class Server extends EventEmitter {
 
   startWSServer() {
     // console.log('optoins', options )
-    if (this.port || this.port == 0) {
+    if ((this.port || this.port == 0) && this.dashboard) {
+      // The WebSocket server alone answers plain HTTP with 426; the dashboard needs pages too.
+      this.ownHttp = http.createServer((req, res) => {
+        if (!this.dashboard.handle(req, res)) { res.writeHead(404, { 'Content-Type': 'text/plain' }); res.end('Not found') }
+      })
+      this.ownHttp.on('error', (err) => this.onListenerError('ws', err))
+      this.wss = new WebSocketServer({ server: this.ownHttp, path: this.wsPath, maxPayload: this.maxPayload })
+      this.ownHttp.listen(this.port)
+    } else if (this.port || this.port == 0) {
       this.wss = new WebSocketServer({ port: this.port , path: this.wsPath, maxPayload: this.maxPayload })
     } else if (this.httpServer ) {
       this.wss = new WebSocketServer({ server: this.httpServer, path: this.wsPath, maxPayload: this.maxPayload })
@@ -365,6 +388,7 @@ export class Server extends EventEmitter {
    */
   close(callback) {
     console.log('closing iosignal server...')
+    if (this.dashboard) this.dashboard.close()
     for (const host of [...this.hosts]) host.close()
     if (this.manager) {
       this.manager.close()
@@ -395,7 +419,10 @@ export class Server extends EventEmitter {
     if (this.wss) {
       this.wss.close(() => {
         // console.log('wss server closed.')
-        onClosed()
+        if (!this.ownHttp) return onClosed()
+        // The HTTP server this Server made for the dashboard closes with it.
+        this.ownHttp.close(() => onClosed())
+        this.ownHttp.closeAllConnections?.()
       })
     }
 

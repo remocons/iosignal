@@ -350,10 +350,12 @@ export class Manager {
           return ['ok', 1]
         }
         this.counters.hostRejected++
+        entry.host.counters.rejected++
         return ['err', 'Not accepted by the host']
       }
       if (entry) {
         this.counters.hostDenied++
+        entry.host._denied(remote, tag)
         if (this.server?.listenerCount?.('host:denied')) this.server.emit('host:denied', remote, tag, entry.host.name)
         return ['err', 'Tag is reserved by a host']
       }

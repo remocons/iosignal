@@ -16,8 +16,13 @@ var node_net = require('node:net');
 var os = require('os');
 var fs = require('fs');
 var process$1 = require('process');
+var promises = require('node:fs/promises');
+var node_crypto = require('node:crypto');
+var node_fs = require('node:fs');
+var node_os = require('node:os');
 var path = require('path');
 
+var _documentCurrentScript = typeof document !== 'undefined' ? document.currentScript : null;
 var version$1 = "9.13.0";
 var pkg = {
 	version: version$1};
@@ -8857,6 +8862,23 @@ class Host extends require$$0$3 {
     this.closed = false;
     /** @type {Map<string, Readonly<object>>} cid -> from, connections that sent to this host */
     this._participants = new Map();
+    /** cid -> { inputs, firstAt, lastAt }: activity of each participant, for the dashboard */
+    this._activity = new Map();
+    // Cumulative since the host opened; readers compute rates from deltas (see Dashboard).
+    this.counters = {
+      inbound: 0,     // inputs handed to 'message'
+      rejected: 0,    // inputs to an inbound tag that were not handed over (E2E, unreadable payload)
+      denied: 0,      // client messages to a tag this host owns, dropped
+      published: 0, delivered: 0, // publish() calls and the connections they reached
+      sent: 0,        // to() messages sent
+      joins: 0, leaves: 0, errors: 0,
+      handlerMs: 0,   // time spent in 'message' and 'leave' handlers
+    };
+    this.handlerMaxMs = 0;
+    this.reported = {};  // last host.report() values
+    this._journal = [];  // recent notable events (join, leave, denied, error), oldest first
+    this._journalSeq = 0;
+    this._loops = new Set();
 
     manager.hosts.add(this, [...inbound, ...own]);
     // Values a client retained on these tags before the host claimed them are not the host's.
@@ -8874,6 +8896,7 @@ class Host extends require$$0$3 {
 
   /** Stop tracking a participant; no 'leave' is emitted for it (until it sends again). */
   forget(cid) {
+    this._activity.delete(cid);
     return this._participants.delete(cid)
   }
 
@@ -8889,7 +8912,10 @@ class Host extends require$$0$3 {
       throw new Error(`host ${this.name} does not own channel tag ${tag}`)
     }
     const message = getSignalPack(tag, ...args);
-    return this.manager.hostPublish(this, this.manager.CHANNEL_PREFIX + tag, message)
+    const n = this.manager.hostPublish(this, this.manager.CHANNEL_PREFIX + tag, message);
+    this.counters.published++;
+    this.counters.delivered += n;
+    return n
   }
 
   /**
@@ -8906,17 +8932,100 @@ class Host extends require$$0$3 {
     if (!remote || remote._closing) return false
     const skipped = remote.peerRxLimitSkipped;
     remote.send_enc_mode(message);
-    return remote.peerRxLimitSkipped === skipped
+    if (remote.peerRxLimitSkipped !== skipped) return false
+    this.counters.sent++;
+    return true
+  }
+
+  /**
+   * Values to show on the server dashboard ("game" panel), e.g. { round: 3, players: 8 }.
+   * Merged into the last report; a key set to null is removed. Numbers, short strings and booleans,
+   * at most 20 keys.
+   */
+  report(values) {
+    if (values === null || typeof values !== 'object') throw new TypeError('report() takes an object')
+    for (const [key, value] of Object.entries(values)) {
+      if (value === null || value === undefined) { delete this.reported[key]; continue }
+      if (!['number', 'string', 'boolean'].includes(typeof value)) throw new TypeError(`report value ${key} must be a number, string or boolean`)
+      if (!(key in this.reported) && Object.keys(this.reported).length >= 20) continue
+      this.reported[String(key).slice(0, 32)] = typeof value === 'string' ? value.slice(0, 64) : value;
+    }
+    return this
+  }
+
+  /**
+   * Run fn(now) every intervalMs, like setInterval, and measure it for the dashboard: the gap between
+   * ticks and how long each tick took. A throwing tick is reported as an 'error' and the loop goes on.
+   * Returns a stop function; close() stops every loop.
+   */
+  loop(intervalMs, fn) {
+    this._open();
+    if (!(Number.isFinite(intervalMs) && intervalMs >= 1)) throw new RangeError('loop interval must be at least 1 ms')
+    if (typeof fn !== 'function') throw new TypeError('loop needs a function')
+    const stats = { intervalMs, ticks: 0, gaps: [], steps: [], last: 0 };
+    const timer = setInterval(() => {
+      const t0 = node_perf_hooks.performance.now();
+      if (stats.last) { stats.gaps.push(t0 - stats.last); if (stats.gaps.length > 200) stats.gaps.shift(); }
+      stats.last = t0;
+      try { fn(Date.now()); } catch (error) { this._failed(error); }
+      stats.steps.push(node_perf_hooks.performance.now() - t0); if (stats.steps.length > 200) stats.steps.shift();
+      stats.ticks++;
+    }, intervalMs);
+    const entry = { timer, stats };
+    this._loops.add(entry);
+    return () => { clearInterval(timer); this._loops.delete(entry); }
+  }
+
+  /** Timing of the loops started with loop(): target, ticks, gap p50/p99 and step average/max (ms). */
+  loopStats() {
+    const pct = (a, p) => { if (!a.length) return 0; const s = [...a].sort((x, y) => x - y); return s[Math.min(s.length - 1, Math.floor(p / 100 * s.length))] };
+    return [...this._loops].map(({ stats: s }) => ({
+      intervalMs: s.intervalMs, ticks: s.ticks,
+      gapP50: pct(s.gaps, 50), gapP99: pct(s.gaps, 99), gapMax: s.gaps.length ? Math.max(...s.gaps) : 0,
+      stepAvg: s.steps.length ? s.steps.reduce((a, b) => a + b, 0) / s.steps.length : 0,
+      stepMax: s.steps.length ? Math.max(...s.steps) : 0,
+    }))
+  }
+
+  /** Participants with their activity: [{ from, inputs, firstAt, lastAt }]. */
+  activity() {
+    return [...this._participants.values()].map((from) => ({ from, ...(this._activity.get(from.cid) ?? { inputs: 0, firstAt: 0, lastAt: 0 }) }))
+  }
+
+  /** Notable events after sequence `after`: [{ seq, at, kind: 'join'|'leave'|'denied'|'error', ... }]. */
+  journal(after = 0) {
+    return this._journal.filter((e) => e.seq > after)
+  }
+
+  _note(kind, data) {
+    this._journal.push({ seq: ++this._journalSeq, at: Date.now(), kind, ...data });
+    if (this._journal.length > 200) this._journal.shift();
+  }
+
+  // A client sent to a tag this host owns (Manager.sender dropped it).
+  _denied(remote, tag) {
+    this.counters.denied++;
+    this._note('denied', { cid: remote.cid, tag });
+  }
+
+  _failed(error) {
+    this.counters.errors++;
+    this._note('error', { message: String(error?.message ?? error).slice(0, 200) });
+    if (this.listenerCount('error')) this.emit('error', error);
+    else console.error(`host ${this.name} error:`, error);
   }
 
   /** Release the tags (they become ordinary channels again) and the host's retained values. */
   close() {
     if (this.closed) return
     this.closed = true;
+    for (const { timer } of this._loops) clearInterval(timer);
+    this._loops.clear();
     this.manager.hosts.remove(this);
     const owner = this.manager.retainOwners.get(this.retainOwnerKey);
     if (owner) for (const tag of [...owner.tags]) this.manager.dropChannelRetain(tag);
     this._participants.clear();
+    this._activity.clear();
     this.emit('close');
   }
 
@@ -8949,7 +9058,18 @@ class Host extends require$$0$3 {
     }
     if (!args) return false
     const from = Host.from(remote);
+    const now = Date.now();
+    let act = this._activity.get(from.cid);
+    if (!act) {
+      act = { inputs: 0, firstAt: now, lastAt: now };
+      this._activity.set(from.cid, act);
+      this.counters.joins++;
+      this._note('join', { cid: from.cid, nick: from.nick, authorized: from.authorized });
+    }
+    act.inputs++;
+    act.lastAt = now;
     this._participants.set(from.cid, from);
+    this.counters.inbound++;
     this._emitSafely('message', from, tag, ...args);
     return true
   }
@@ -8958,16 +9078,22 @@ class Host extends require$$0$3 {
     const from = this._participants.get(remote.cid);
     if (!from) return
     this._participants.delete(remote.cid);
+    this._activity.delete(remote.cid);
+    this.counters.leaves++;
+    this._note('leave', { cid: remote.cid, reason: remote.closeReason ?? 'close' });
     this._emitSafely('leave', Host.from(remote), remote.closeReason ?? 'close');
   }
 
   _emitSafely(name, ...args) {
+    const t0 = node_perf_hooks.performance.now();
     try {
       this.emit(name, ...args);
     } catch (error) {
-      if (this.listenerCount('error')) this.emit('error', error);
-      else console.error(`host ${this.name} ${name} handler error:`, error);
+      this._failed(error);
     }
+    const ms = node_perf_hooks.performance.now() - t0;
+    this.counters.handlerMs += ms;
+    if (ms > this.handlerMaxMs) this.handlerMaxMs = ms;
   }
 }
 
@@ -9306,10 +9432,12 @@ class Manager {
           return ['ok', 1]
         }
         this.counters.hostRejected++;
+        entry.host.counters.rejected++;
         return ['err', 'Not accepted by the host']
       }
       if (entry) {
         this.counters.hostDenied++;
+        entry.host._denied(remote, tag);
         if (this.server?.listenerCount?.('host:denied')) this.server.emit('host:denied', remote, tag, entry.host.name);
         return ['err', 'Tag is reserved by a host']
       }
@@ -9684,12 +9812,81 @@ class Manager {
   }
 }
 
-const STATUS = {
-  OK: 0,
-  //0~127: success
-  //128~255: fail
-  ERROR: 255
-};
+// Live server telemetry, sampled once a second and shared by every reader (the dashboard, the
+// monitor service): CPU, event-loop delay and utilisation, memory, connections by transport and
+// state, send queues of slow peers, and per-second rates of the manager's counters.
+// `value` holds the latest sample. dispose() stops the timer.
+class ServerStats {
+  // onSample(value): called after each sample (the dashboard keeps its history from it).
+  constructor(server, { onSample = null } = {}) {
+    this.server = server;
+    this.onSample = onSample;
+    // Traffic counters come from the manager's cumulative counters, counted since this service started.
+    this.base = { ...server.manager.counters };
+    this.counters = { opened: 0, closed: 0, authFailed: 0,
+      ...Object.fromEntries(Object.keys(this.base).map(key => [key, 0])) };
+    this.onState = (_peer, _previous) => {
+      if (_peer.state === STATE.OPEN) this.counters.opened++;
+      if (_peer.state === STATE.CLOSED) this.counters.closed++;
+      if (_peer.state === STATE.AUTH_FAIL) this.counters.authFailed++;
+    };
+    server.on('remote:state', this.onState);
+    this.delay = node_perf_hooks.monitorEventLoopDelay({ resolution: 20 }); this.delay.enable();
+    this.cpu = process.cpuUsage(); this.elu = node_perf_hooks.performance.eventLoopUtilization();
+    this.previousAt = node_perf_hooks.performance.now(); this.previous = { ...this.counters };
+    this.sample();
+    this.timer = setInterval(() => this.sample(), 1000); this.timer.unref();
+  }
+  sample() {
+    const now = node_perf_hooks.performance.now(), elapsed = Math.max(1, now - this.previousAt);
+    for (const key in this.base) this.counters[key] = this.server.manager.counters[key] - this.base[key];
+    let authenticated = 0, websocket = 0, queuedBytes = 0, maxQueuedBytes = 0;
+    let txQueuePeakBytes = 0, txWriteFalseCount = 0, txDrainMaxMs = 0;
+    let txBlockedConnections = 0, txBlockedMaxMs = 0;
+    const states = {};
+    const transports = { websocket: { total: 0, authenticated: 0 }, tcp: { total: 0, authenticated: 0 } };
+    for (const peer of this.server.manager.remotes) {
+      const transport = transports[peer.socketType === 'websocket' ? 'websocket' : 'tcp']; transport.total++;
+      if (peer.boho.isAuthorized) { authenticated++; transport.authenticated++; }
+      if (peer.socketType === 'websocket') websocket++;
+      const queued = peer.socket.bufferedAmount ?? peer.socket.writableLength ?? 0;
+      queuedBytes += queued; maxQueuedBytes = Math.max(maxQueuedBytes, queued);
+      txQueuePeakBytes = Math.max(txQueuePeakBytes, peer.txQueuePeakBytes ?? 0);
+      txWriteFalseCount += peer.txWriteFalseCount ?? 0;
+      txDrainMaxMs = Math.max(txDrainMaxMs, peer.txDrainMaxMs ?? 0);
+      if (peer.txBlockedSince != null) {
+        txBlockedConnections++;
+        txBlockedMaxMs = Math.max(txBlockedMaxMs, now - peer.txBlockedSince);
+      }
+      const name = peer.getStateName(); states[name] = (states[name] || 0) + 1;
+    }
+    const rates = Object.fromEntries(Object.entries(this.counters).map(([key, value]) => [key, (value - this.previous[key]) * 1000 / elapsed]));
+    const cpu = process.cpuUsage(), elu = node_perf_hooks.performance.eventLoopUtilization();
+    const delta = node_perf_hooks.performance.eventLoopUtilization(elu, this.elu);
+    const mem = process.memoryUsage(), total = this.server.manager.remotes.size;
+    let hostAvailableBytes = null;
+    if (process.platform === 'linux') {
+      try { const match = node_fs.readFileSync('/proc/meminfo', 'utf8').match(/^MemAvailable:\s+(\d+) kB/m); if (match) hostAvailableBytes = Number(match[1]) * 1024; }
+      catch { /* Optional host telemetry must not interrupt service. */ }
+    }
+    this.value = { at: Date.now(), total, authenticated, anonymous: total - authenticated, websocket,
+      transports, hostAvailableBytes, hostTotalBytes: node_os.totalmem(), channels: this.server.manager.channel_map.size, states, queuedBytes, maxQueuedBytes,
+      txQueuePeakBytes, txWriteFalseCount, txDrainMaxMs, txBlockedConnections, txBlockedMaxMs,
+      counters: { ...this.counters }, rates, rss: mem.rss, heapUsed: mem.heapUsed,
+      cpuPercent: ((cpu.user - this.cpu.user) + (cpu.system - this.cpu.system)) / (elapsed * 10),
+      eventLoopUtilization: delta.utilization,
+      eventLoopP99Ms: this.delay.percentile(99) / 1e6,
+      // anonymous: profile name of unauthenticated connections; profiles: the server's quotas now.
+      quota: { anonymous: this.server.anonymousQuota, profiles: structuredClone(this.server.quotas) } };
+    this.previousAt = now; this.previous = { ...this.counters }; this.cpu = cpu; this.elu = elu; this.delay.reset();
+    if (this.onSample) {
+      try { this.onSample(this.value); } catch (error) { console.error('server stats reader error:', error); }
+    }
+  }
+  dispose() {
+    clearInterval(this.timer); this.delay.disable(); this.server.off('remote:state', this.onState);
+  }
+}
 
 const decoder = new TextDecoder();
 const DUPLICATE_LOGIN_POLICIES = ['keepOld', 'keepNew'];
@@ -9994,6 +10191,718 @@ class BohoAuth {
 
 }
 
+// The dashboard web page, kept as a string so it ships inside the package (no CDN, works offline).
+// No backticks or template placeholders inside: the page is plain HTML, CSS and ES5-ish JavaScript.
+const PAGE = String.raw`<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IOSignal Dashboard</title>
+<style>
+:root {
+  --bg: #f3f5fa; --panel: #ffffff; --ink: #172036; --muted: #5f6a85; --line: #dde3ef; --grid: #e9edf5;
+  --a: #0ea5a0; --b: #4f6bed; --c: #f59e0b; --d: #e5484d; --e: #8b5cf6; --ok: #22b573;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --sans: system-ui, -apple-system, "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #0d1220; --panel: #151c30; --ink: #e6ebf7; --muted: #8e99b8; --line: #263050; --grid: #1d2640;
+    --a: #2dd4bf; --b: #7c93ff; --c: #fbbf24; --d: #ff6b6b; --e: #a78bfa; --ok: #34d399; color-scheme: dark; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.5 var(--sans); }
+header { position: sticky; top: 0; z-index: 5; display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center;
+  padding: 10px max(16px, env(safe-area-inset-left)); background: color-mix(in srgb, var(--bg) 88%, transparent);
+  backdrop-filter: blur(8px); border-bottom: 1px solid var(--line); }
+h1 { font-size: 16px; margin: 0; letter-spacing: .01em; }
+h1 b { color: var(--a); }
+.pill { font: 600 12px var(--mono); padding: 3px 10px; border-radius: 99px; background: var(--grid); color: var(--muted); }
+.pill.live { background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); }
+.pill.live::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--ok); margin-right: 6px; animation: blink 1.2s infinite; }
+.pill.bad { background: color-mix(in srgb, var(--d) 18%, transparent); color: var(--d); }
+@keyframes blink { 50% { opacity: .25; } }
+.meta { font: 12px var(--mono); color: var(--muted); }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-left: auto; }
+.chip { font: 600 12px var(--sans); border: 1px solid var(--line); background: var(--panel); color: var(--muted); border-radius: 99px; padding: 4px 11px; cursor: pointer; }
+.chip[aria-pressed="true"] { background: var(--ink); color: var(--panel); border-color: var(--ink); }
+.chip:focus-visible, button:focus-visible, input:focus-visible { outline: 2px solid var(--a); outline-offset: 2px; }
+main { padding: 16px max(16px, env(safe-area-inset-left)) 40px; display: grid; gap: 14px; grid-template-columns: repeat(12, minmax(0, 1fr)); }
+section.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; min-width: 0; display: grid; gap: 10px; align-content: start; }
+section.panel h2 { font-size: 13px; margin: 0; color: var(--muted); font-weight: 700; letter-spacing: .06em; text-transform: uppercase; display: flex; gap: 8px; align-items: baseline; }
+section.panel h2 small { text-transform: none; letter-spacing: 0; font-weight: 500; font-family: var(--mono); }
+.w12 { grid-column: span 12; } .w8 { grid-column: span 8; } .w6 { grid-column: span 6; } .w4 { grid-column: span 4; }
+@media (max-width: 1100px) { .w8, .w4 { grid-column: span 12; } .w6 { grid-column: span 12; } }
+.gauges { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+@media (max-width: 640px) { .gauges { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.gauge { display: grid; justify-items: center; gap: 2px; }
+.gauge canvas { width: 100%; max-width: 150px; aspect-ratio: 1.45; }
+.gauge span { font-size: 12px; color: var(--muted); }
+canvas.chart { width: 100%; height: 150px; display: block; }
+canvas.chart.tall { height: 190px; }
+.legend { display: flex; flex-wrap: wrap; gap: 12px; font: 12px var(--mono); color: var(--muted); }
+.legend i { display: inline-block; width: 10px; height: 3px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); gap: 8px; }
+.stat { border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; display: grid; gap: 2px; }
+.stat b { font: 700 20px var(--mono); font-variant-numeric: tabular-nums; }
+.stat span { font-size: 12px; color: var(--muted); }
+.stat.flash { animation: flash .8s ease-out; }
+@keyframes flash { from { background: color-mix(in srgb, var(--d) 30%, transparent); } }
+.hosts { display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); gap: 12px; }
+.host { border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: grid; gap: 8px; position: relative; overflow: hidden; }
+.host header { all: unset; display: flex; align-items: center; gap: 8px; }
+.host h3 { margin: 0; font: 700 15px var(--mono); }
+.pulse { width: 12px; height: 12px; border-radius: 50%; background: var(--a); box-shadow: 0 0 0 0 color-mix(in srgb, var(--a) 60%, transparent); }
+.host .big { font: 800 30px var(--mono); line-height: 1; font-variant-numeric: tabular-nums; }
+.host .row { display: flex; flex-wrap: wrap; gap: 4px 14px; font: 12px var(--mono); color: var(--muted); }
+.host .row b { color: var(--ink); font-weight: 600; }
+.host canvas { width: 100%; height: 56px; display: block; }
+.shield { position: absolute; right: 10px; top: 10px; font: 700 11px var(--mono); color: var(--d); opacity: 0; transition: opacity .3s; }
+.shield.on { opacity: 1; }
+.loop { display: grid; gap: 6px; }
+.bar { height: 10px; border-radius: 6px; background: var(--grid); position: relative; overflow: hidden; }
+.bar > i { position: absolute; inset: 0 auto 0 0; border-radius: 6px; background: var(--a); transition: width .4s; }
+.bar > em { position: absolute; top: -2px; bottom: -2px; width: 2px; background: var(--ink); opacity: .6; }
+.kv { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 6px; }
+.kv div { background: var(--grid); border-radius: 8px; padding: 6px 9px; display: grid; }
+.kv span { font-size: 11px; color: var(--muted); } .kv b { font: 700 16px var(--mono); overflow-wrap: anywhere; }
+.table { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font: 12.5px var(--mono); }
+th, td { padding: 6px 8px; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; }
+th { color: var(--muted); font-weight: 600; font-family: var(--sans); }
+.act { display: inline-block; height: 8px; border-radius: 4px; background: var(--b); vertical-align: middle; min-width: 2px; }
+.badge { font-size: 11px; padding: 1px 6px; border-radius: 6px; background: var(--grid); color: var(--muted); }
+.badge.auth { background: color-mix(in srgb, var(--ok) 20%, transparent); color: var(--ok); }
+.events { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; max-height: 340px; overflow: auto; font: 12.5px var(--mono); }
+.events li { display: flex; gap: 8px; align-items: baseline; padding: 4px 6px; border-radius: 6px; animation: slide .5s ease-out; }
+@keyframes slide { from { background: color-mix(in srgb, var(--a) 22%, transparent); transform: translateX(-6px); } }
+.events time { color: var(--muted); }
+.k { font: 700 11px var(--sans); padding: 1px 7px; border-radius: 6px; }
+.k.join { background: color-mix(in srgb, var(--ok) 22%, transparent); color: var(--ok); }
+.k.leave { background: var(--grid); color: var(--muted); }
+.k.denied { background: color-mix(in srgb, var(--d) 22%, transparent); color: var(--d); }
+.k.error { background: color-mix(in srgb, var(--c) 25%, transparent); color: var(--c); }
+.empty { color: var(--muted); font-size: 13px; padding: 6px 0; }
+.overlay { position: fixed; inset: 0; z-index: 10; display: grid; place-items: center; background: color-mix(in srgb, var(--bg) 80%, transparent); backdrop-filter: blur(6px); padding: 16px; }
+.overlay form { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 20px; width: min(360px, 100%); display: grid; gap: 10px; box-shadow: 0 20px 50px rgba(0,0,0,.2); }
+.overlay h2 { margin: 0; font-size: 18px; }
+.overlay input { padding: 9px 11px; border-radius: 9px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); font: 14px var(--mono); }
+.overlay button { padding: 10px; border: 0; border-radius: 10px; background: var(--a); color: #fff; font-weight: 700; cursor: pointer; }
+.overlay p { margin: 0; color: var(--muted); font-size: 13px; }
+.overlay .err { color: var(--d); }
+[hidden] { display: none !important; }
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+</style>
+</head>
+<body>
+<header>
+  <h1><b>IOSignal</b> Dashboard</h1>
+  <span id="status" class="pill">연결 중</span>
+  <span id="meta" class="meta"></span>
+  <nav class="chips" id="chips" aria-label="패널"></nav>
+</header>
+<main id="main">
+  <section class="panel w12" data-panel="server">
+    <h2>서버 <small id="uptime"></small></h2>
+    <div class="gauges">
+      <div class="gauge"><canvas id="gCpu"></canvas><span>CPU</span></div>
+      <div class="gauge"><canvas id="gEld"></canvas><span>이벤트 루프 지연 p99</span></div>
+      <div class="gauge"><canvas id="gElu"></canvas><span>이벤트 루프 사용률</span></div>
+      <div class="gauge"><canvas id="gMem"></canvas><span>메모리 (RSS)</span></div>
+    </div>
+    <canvas class="chart" id="cLoad"></canvas>
+    <div class="legend"><span><i style="background:var(--a)"></i>CPU %</span><span><i style="background:var(--c)"></i>지연 p99 ms</span><span><i style="background:var(--e)"></i>연결 수</span></div>
+    <div class="stats" id="sConn"></div>
+  </section>
+  <section class="panel w8" data-panel="traffic">
+    <h2>트래픽 <small>초당</small></h2>
+    <canvas class="chart tall" id="cMsg"></canvas>
+    <div class="legend"><span><i style="background:var(--b)"></i>받은 메시지</span><span><i style="background:var(--a)"></i>보낸 메시지</span><span><i style="background:var(--d)"></i>버린 메시지(쿼터)</span></div>
+    <canvas class="chart" id="cBytes"></canvas>
+    <div class="legend"><span><i style="background:var(--b)"></i>받은 바이트</span><span><i style="background:var(--a)"></i>보낸 바이트</span></div>
+  </section>
+  <section class="panel w4" data-panel="traffic">
+    <h2>전송 상태</h2>
+    <div class="stats" id="sTraffic"></div>
+  </section>
+  <section class="panel w12" data-panel="hosts">
+    <h2>호스트 <small id="hostCount"></small></h2>
+    <div class="hosts" id="hosts"></div>
+  </section>
+  <section class="panel w6" data-panel="game">
+    <h2>게임 루프</h2>
+    <div id="game" class="loop"></div>
+  </section>
+  <section class="panel w6" data-panel="events">
+    <h2>이벤트 <small>입장 · 퇴장 · 위조 차단 · 오류</small></h2>
+    <ul class="events" id="events"></ul>
+  </section>
+  <section class="panel w12" data-panel="participants">
+    <h2>참가자</h2>
+    <div class="table" id="players"></div>
+  </section>
+</main>
+
+<div class="overlay" id="gate" hidden>
+  <form id="gateForm">
+    <h2 id="gateTitle">대시보드 로그인</h2>
+    <p id="gateHelp"></p>
+    <input id="gateId" placeholder="ID" autocomplete="username">
+    <input id="gateKey" type="password" placeholder="키" autocomplete="current-password">
+    <p id="gateErr" class="err" hidden></p>
+    <button type="submit">보기</button>
+  </form>
+</div>
+
+<script>var CONFIG = __CONFIG__;</script>
+<script src="__IO__"></script>
+<script>
+(function () {
+  "use strict";
+  var $ = function (id) { return document.getElementById(id); };
+  var css = function (name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); };
+  var store = { get: function (k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
+    set: function (k, v) { try { localStorage.setItem(k, v); } catch (e) {} },
+    sget: function (k) { try { return sessionStorage.getItem(k); } catch (e) { return null; } },
+    sset: function (k, v) { try { sessionStorage.setItem(k, v); } catch (e) {} } };
+  var esc = function (s) { return String(s == null ? "" : s).replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); };
+  var fmtB = function (n) { n = n || 0; return n >= 1048576 ? (n / 1048576).toFixed(1) + " MB" : n >= 1024 ? (n / 1024).toFixed(1) + " KB" : Math.round(n) + " B"; };
+  var fmtN = function (n) { n = n || 0; return n >= 10000 ? (n / 1000).toFixed(1) + "k" : n >= 100 ? Math.round(n) + "" : (Math.round(n * 10) / 10) + ""; };
+  var fmtT = function (ms) { var s = Math.floor(ms / 1000), h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60); return (h ? h + "시간 " : "") + m + "분 " + (s % 60) + "초"; };
+
+  // ------------------------------------------------ panels the viewer turns on and off
+  var NAMES = { server: "서버", traffic: "트래픽", hosts: "호스트", game: "게임 루프", participants: "참가자", events: "이벤트" };
+  var saved = store.get("iosignal.dashboard.panels");
+  var shown = saved ? saved.split(",") : CONFIG.panels.slice();
+  function applyPanels() {
+    var nodes = document.querySelectorAll("[data-panel]");
+    for (var i = 0; i < nodes.length; i++) nodes[i].hidden = shown.indexOf(nodes[i].getAttribute("data-panel")) < 0;
+    var chips = $("chips").children;
+    for (var j = 0; j < chips.length; j++) chips[j].setAttribute("aria-pressed", String(shown.indexOf(chips[j].getAttribute("data-p")) >= 0));
+    store.set("iosignal.dashboard.panels", shown.join(","));
+    draw();
+  }
+  Object.keys(NAMES).forEach(function (p) {
+    var b = document.createElement("button");
+    b.className = "chip"; b.type = "button"; b.textContent = NAMES[p]; b.setAttribute("data-p", p);
+    b.onclick = function () { var i = shown.indexOf(p); if (i >= 0) shown.splice(i, 1); else shown.push(p); applyPanels(); };
+    $("chips").appendChild(b);
+  });
+
+  // ------------------------------------------------ state
+  var series = [], latest = null, hosts = [], events = [], info = null, startedAt = 0, hostHist = {};
+  var pulses = {};
+
+  // ------------------------------------------------ canvas helpers
+  function fit(cv) {
+    var r = cv.getBoundingClientRect(), d = Math.min(2, window.devicePixelRatio || 1);
+    var w = Math.max(10, Math.round(r.width * d)), h = Math.max(10, Math.round(r.height * d));
+    if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
+    var c = cv.getContext("2d"); c.setTransform(d, 0, 0, d, 0, 0);
+    return { c: c, w: r.width, h: r.height };
+  }
+  // Lines over time with a soft area under the first one. lines: [{ values, color, scale? }]
+  function chart(cv, lines, opts) {
+    if (!cv.offsetParent) return;
+    var f = fit(cv), c = f.c, w = f.w, h = f.h, pad = { l: 58, r: 12, t: 8, b: 18 };
+    c.clearRect(0, 0, w, h);
+    var max = (opts && opts.max) || 1;
+    lines.forEach(function (l) { if (!l.own) l.values.forEach(function (v) { if (v > max) max = v; }); });
+    max = niceMax(max);
+    var n = Math.max(2, CONFIG.history), x0 = pad.l, x1 = w - pad.r, y0 = h - pad.b, y1 = pad.t;
+    c.strokeStyle = css("--grid"); c.lineWidth = 1; c.fillStyle = css("--muted"); c.font = "11px " + css("--mono"); c.textAlign = "right";
+    for (var g = 0; g <= 3; g++) {
+      var y = y0 - (y0 - y1) * g / 3;
+      c.beginPath(); c.moveTo(x0, y); c.lineTo(x1, y); c.stroke();
+      c.fillText((opts && opts.fmt ? opts.fmt(max * g / 3) : fmtN(max * g / 3)), x0 - 6, y + 4);
+    }
+    c.textAlign = "left"; c.fillText("-" + Math.round(n / 60) + "분", x0, h - 3); c.textAlign = "right"; c.fillText("지금", x1, h - 3);
+    lines.forEach(function (l, li) {
+      var v = l.values, m = l.own ? niceMax(Math.max.apply(null, v.concat([1]))) : max;
+      if (!v.length) return;
+      var X = function (i) { return x1 - (v.length - 1 - i) * (x1 - x0) / (n - 1); };
+      var Y = function (val) { return y0 - (y0 - y1) * Math.min(1, (val || 0) / m); };
+      c.beginPath();
+      for (var i = 0; i < v.length; i++) { var px = X(i), py = Y(v[i]); if (i) c.lineTo(px, py); else c.moveTo(px, py); }
+      c.strokeStyle = css(l.color); c.lineWidth = 2; c.lineJoin = "round"; c.stroke();
+      if (li === 0) {
+        c.lineTo(X(v.length - 1), y0); c.lineTo(X(0), y0); c.closePath();
+        var grad = c.createLinearGradient(0, y1, 0, y0);
+        grad.addColorStop(0, hexA(css(l.color), 0.28)); grad.addColorStop(1, hexA(css(l.color), 0));
+        c.fillStyle = grad; c.fill();
+      }
+      var lx = X(v.length - 1), ly = Y(v[v.length - 1]);
+      c.fillStyle = css(l.color); c.beginPath(); c.arc(lx, ly, 3.5, 0, 6.3); c.fill();
+    });
+  }
+  function niceMax(v) { var p = Math.pow(10, Math.floor(Math.log10(Math.max(v, 1e-9)))); var m = v / p; return (m <= 1 ? 1 : m <= 2 ? 2 : m <= 5 ? 5 : 10) * p; }
+  function hexA(col, a) {
+    if (col.charAt(0) === "#") { var n = parseInt(col.slice(1), 16); return "rgba(" + (n >> 16) + "," + ((n >> 8) & 255) + "," + (n & 255) + "," + a + ")"; }
+    return col;
+  }
+  // Half-ring gauge with an animated needle value.
+  var gaugeNow = {};
+  function gauge(id, value, max, label, color) {
+    var cv = $(id); if (!cv.offsetParent) return;
+    var cur = gaugeNow[id] == null ? value : gaugeNow[id] + (value - gaugeNow[id]) * 0.18;
+    gaugeNow[id] = cur;
+    var f = fit(cv), c = f.c, w = f.w, h = f.h, r = Math.min(w / 2, h) * 0.86, cx = w / 2, cy = h * 0.9;
+    c.clearRect(0, 0, w, h);
+    c.lineCap = "round"; c.lineWidth = r * 0.17;
+    c.strokeStyle = css("--grid"); c.beginPath(); c.arc(cx, cy, r, Math.PI, 2 * Math.PI); c.stroke();
+    var frac = Math.max(0, Math.min(1, cur / max));
+    var col = frac > 0.85 ? css("--d") : frac > 0.6 ? css("--c") : css(color);
+    c.strokeStyle = col; c.beginPath(); c.arc(cx, cy, r, Math.PI, Math.PI + Math.PI * Math.max(0.01, frac)); c.stroke();
+    c.fillStyle = css("--ink"); c.textAlign = "center"; c.font = "700 " + Math.round(r * 0.36) + "px " + css("--mono");
+    c.fillText(label(cur), cx, cy - r * 0.2);
+  }
+  function spark(cv, values, color) {
+    if (!cv.offsetParent) return;
+    var f = fit(cv), c = f.c, w = f.w, h = f.h; c.clearRect(0, 0, w, h);
+    if (!values.length) return;
+    var m = niceMax(Math.max.apply(null, values.concat([1]))), n = 60;
+    c.beginPath();
+    for (var i = 0; i < values.length; i++) {
+      var x = w - (values.length - 1 - i) * w / (n - 1), y = h - 3 - (h - 6) * values[i] / m;
+      if (i) c.lineTo(x, y); else c.moveTo(x, y);
+    }
+    c.strokeStyle = css(color); c.lineWidth = 1.8; c.stroke();
+    c.lineTo(w, h); c.lineTo(w - (values.length - 1) * w / (n - 1), h); c.closePath();
+    c.fillStyle = hexA(css(color), 0.18); c.fill();
+  }
+
+  // ------------------------------------------------ render
+  function stat(label, value, flash) { return '<div class="stat' + (flash ? " flash" : "") + '"><b>' + value + "</b><span>" + label + "</span></div>"; }
+  var prevDropped = 0, prevDenied = {};
+  function render() {
+    if (!latest) return;
+    var p = latest.point, s = latest.server;
+    $("uptime").textContent = "가동 " + fmtT(s.uptime);
+    $("meta").textContent = "시청 " + s.own.viewers + "명" + (info ? " · Node " + info.node : "");
+    $("sConn").innerHTML = stat("연결", p.conns) + stat("WebSocket", p.ws) + stat("TCP (보드)", p.tcp) + stat("로그인", p.auth) + stat("채널", s.channels);
+    var dropped = s.counters.rateLimited + s.counters.oversizeRejected;
+    $("sTraffic").innerHTML = stat("버린 메시지 (누적)", fmtN(dropped), dropped > prevDropped) +
+      stat("느린 연결", s.txBlockedConnections) + stat("밀린 송신", fmtB(s.queuedBytes)) +
+      stat("가장 많이 밀린 연결", fmtB(s.maxQueuedBytes)) + stat("수신 버퍼 초과로 안 보냄", fmtN(s.counters.peerRxLimitSkipped));
+    prevDropped = dropped;
+    renderHosts();
+    renderGame();
+    renderPlayers();
+  }
+  function renderHosts() {
+    $("hostCount").textContent = hosts.length ? hosts.length + "개" : "";
+    if (!hosts.length) { $("hosts").innerHTML = '<p class="empty">등록된 호스트가 없습니다. server.host()로 게임을 올리면 여기에 나옵니다.</p>'; return; }
+    var box = $("hosts");
+    hosts.forEach(function (h) {
+      var el = box.querySelector('[data-host="' + CSS.escape(h.name) + '"]');
+      if (!el) {
+        el = document.createElement("div"); el.className = "host"; el.setAttribute("data-host", h.name);
+        el.innerHTML = '<header><span class="pulse"></span><h3></h3></header><span class="shield">위조 차단!</span>' +
+          '<div><span class="big"></span> <span class="meta">참가자</span></div><canvas></canvas><div class="row"></div>';
+        el.querySelector("h3").textContent = h.name;
+        box.appendChild(el);
+      }
+      el.querySelector(".big").textContent = h.participants;
+      var r = h.rates;
+      el.querySelector(".row").innerHTML = "<span>입력 <b>" + fmtN(r.inbound) + "/s</b></span><span>방송 <b>" + fmtN(r.published) + "/s</b></span>" +
+        "<span>1:1 <b>" + fmtN(r.sent) + "/s</b></span><span>처리 <b>" + h.handlerAvgMs.toFixed(2) + "ms</b> (최대 " + h.handlerMaxMs.toFixed(1) + ")</span>" +
+        "<span>차단 <b>" + h.totals.denied + "</b></span><span>오류 <b>" + h.totals.errors + "</b></span>";
+      var shield = el.querySelector(".shield");
+      if ((prevDenied[h.name] || 0) < h.totals.denied) { shield.classList.add("on"); setTimeout(function () { shield.classList.remove("on"); }, 1500); }
+      prevDenied[h.name] = h.totals.denied;
+      pulses[h.name] = r.inbound;
+      spark(el.querySelector("canvas"), (hostHist[h.name] || []).map(function (x) { return x.in || 0; }), "--a");
+    });
+    Array.prototype.slice.call(box.children).forEach(function (el) {
+      if (!hosts.some(function (h) { return h.name === el.getAttribute("data-host"); })) el.remove();
+    });
+  }
+  function renderGame() {
+    if (!hosts.length) { $("game").innerHTML = '<p class="empty">호스트가 없습니다.</p>'; return; }
+    var html = "";
+    hosts.forEach(function (h) {
+      html += '<div><b style="font-family:var(--mono)">' + esc(h.name) + "</b></div>";
+      if (!h.loops.length) html += '<p class="empty">host.loop(ms, fn)를 쓰면 틱 간격과 처리 시간이 여기에 나옵니다.</p>';
+      h.loops.forEach(function (l) {
+        var scale = l.intervalMs * 2, gap = Math.min(1, l.gapP99 / scale), target = l.intervalMs / scale;
+        html += '<div class="row" style="display:flex;gap:12px;font:12px var(--mono);color:var(--muted)"><span>목표 <b style="color:var(--ink)">' + l.intervalMs + 'ms</b></span><span>틱 간격 p50 <b style="color:var(--ink)">' + l.gapP50.toFixed(1) + '</b> · p99 <b style="color:var(--ink)">' + l.gapP99.toFixed(1) + '</b></span><span>처리 평균 <b style="color:var(--ink)">' + l.stepAvg.toFixed(2) + 'ms</b> · 최대 ' + l.stepMax.toFixed(1) + '</span><span>' + l.ticks + '틱</span></div>' +
+          '<div class="bar" title="틱 간격 p99 (선: 목표)"><i style="width:' + (gap * 100).toFixed(1) + '%;background:' + (l.gapP99 > l.intervalMs * 1.5 ? "var(--d)" : l.gapP99 > l.intervalMs * 1.15 ? "var(--c)" : "var(--a)") + '"></i><em style="left:' + (target * 100).toFixed(1) + '%"></em></div>' +
+          '<div class="bar" title="처리 시간 / 목표"><i style="width:' + Math.min(100, l.stepAvg / l.intervalMs * 100).toFixed(1) + '%;background:var(--b)"></i></div>';
+      });
+      var keys = Object.keys(h.report || {});
+      if (keys.length) {
+        html += '<div class="kv">' + keys.map(function (k) { return "<div><span>" + esc(k) + "</span><b>" + esc(h.report[k]) + "</b></div>"; }).join("") + "</div>";
+      } else html += '<p class="empty">host.report({ ... })로 보낸 값이 여기에 나옵니다.</p>';
+    });
+    $("game").innerHTML = html;
+  }
+  function renderPlayers() {
+    var rows = [];
+    hosts.forEach(function (h) { (h.players || []).forEach(function (p) { rows.push([h.name, p]); }); });
+    if (!rows.length) { $("players").innerHTML = '<p class="empty">아직 입력을 보낸 참가자가 없습니다.</p>'; return; }
+    var max = Math.max.apply(null, rows.map(function (r) { return r[1].inputs; }).concat([1]));
+    $("players").innerHTML = "<table><thead><tr><th>호스트</th><th>CID</th><th>이름</th><th>로그인</th><th>입력</th><th>참가</th><th>마지막 입력</th></tr></thead><tbody>" +
+      rows.map(function (r) {
+        var p = r[1];
+        return "<tr><td>" + esc(r[0]) + "</td><td>" + esc(p.cid) + "</td><td>" + esc(p.nick || "-") + "</td><td>" +
+          (p.authorized ? '<span class="badge auth">로그인</span>' : '<span class="badge">익명</span>') + '</td><td><span class="act" style="width:' + Math.round(80 * p.inputs / max) + 'px"></span> ' + p.inputs +
+          "</td><td>" + fmtT(p.since) + "</td><td>" + (p.idle < 1000 ? "방금" : Math.round(p.idle / 1000) + "초 전") + "</td></tr>";
+      }).join("") + "</tbody></table>";
+  }
+  var KIND = { join: "입장", leave: "퇴장", denied: "위조 차단", error: "오류" };
+  function addEvents(list, initial) {
+    if (!list || !list.length) return;
+    var ul = $("events");
+    list.forEach(function (e) {
+      events.push(e);
+      var li = document.createElement("li");
+      var t = new Date(e.at);
+      var detail = e.kind === "denied" ? (e.cid || "") + " → " + (e.tag || "") : e.kind === "error" ? (e.message || "") : (e.cid || "") + (e.reason ? " (" + e.reason + ")" : "");
+      li.innerHTML = "<time>" + t.toLocaleTimeString() + '</time><span class="k ' + e.kind + '">' + (KIND[e.kind] || e.kind) + "</span><span>" + esc(e.host) + "</span><span>" + esc(detail) + "</span>";
+      if (initial) li.style.animation = "none";
+      ul.insertBefore(li, ul.firstChild);
+    });
+    while (ul.children.length > 120) ul.removeChild(ul.lastChild);
+    if (!ul.children.length) ul.innerHTML = '<li class="empty">아직 이벤트가 없습니다.</li>';
+  }
+
+  function draw() {
+    var pick = function (k) { return series.map(function (p) { return p[k] || 0; }); };
+    chart($("cLoad"), [{ values: pick("cpu"), color: "--a" }, { values: pick("eld"), color: "--c" }, { values: pick("conns"), color: "--e", own: true }], { max: 10 });
+    chart($("cMsg"), [{ values: pick("rxMsg"), color: "--b" }, { values: pick("txMsg"), color: "--a" }, { values: pick("dropped"), color: "--d" }], { max: 10 });
+    chart($("cBytes"), [{ values: pick("rxB"), color: "--b" }, { values: pick("txB"), color: "--a" }], { max: 1024, fmt: fmtB });
+  }
+  // Gauges and host pulses move every frame; charts redraw on each sample.
+  function frame(t) {
+    if (latest) {
+      var p = latest.point, total = latest.server.hostTotalBytes || 1;
+      gauge("gCpu", p.cpu, 100, function (v) { return Math.round(v) + "%"; }, "--a");
+      gauge("gEld", p.eld, 100, function (v) { return v.toFixed(1) + "ms"; }, "--c");
+      gauge("gElu", p.elu * 100, 100, function (v) { return Math.round(v) + "%"; }, "--b");
+      gauge("gMem", p.rss / 1048576, Math.max(256, Math.min(total / 1048576, 2048)), function (v) { return Math.round(v) + "MB"; }, "--e");
+    }
+    var dots = document.querySelectorAll(".host");
+    for (var i = 0; i < dots.length; i++) {
+      var rate = pulses[dots[i].getAttribute("data-host")] || 0;
+      var speed = Math.min(8, 0.6 + rate / 8);
+      var k = (Math.sin(t / 1000 * speed * Math.PI) + 1) / 2;
+      var dot = dots[i].querySelector(".pulse");
+      dot.style.boxShadow = rate > 0 ? "0 0 0 " + (k * 7).toFixed(1) + "px " + hexA(css("--a"), 0.35 * (1 - k)) : "none";
+      dot.style.background = rate > 0 ? css("--a") : css("--muted");
+    }
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+  addEventListener("resize", draw);
+
+  // ------------------------------------------------ IOSignal connection
+  var io = null, helloTimer = 0, cred = {};
+  function status(text, cls) { var el = $("status"); el.textContent = text; el.className = "pill" + (cls ? " " + cls : ""); }
+  function connect() {
+    if (io) { try { io.destroy(); } catch (e) {} }
+    io = new IO();
+    if (CONFIG.access === "login" && cred.id) io.auth(cred.id, cred.key);
+    io.on("change", function () {
+      if (io.stateName !== "ready") status(io.stateName === "closed" ? "연결 끊김" : "연결 중", io.stateName === "closed" ? "bad" : "");
+    });
+    io.on("ready", function () { hello(); });
+    io.on(CONFIG.topic, function (tag, msg) { onMessage(msg); });
+    io.open((location.protocol === "https:" ? "wss://" : "ws://") + location.host + CONFIG.ws);
+    clearInterval(helloTimer);
+    helloTimer = setInterval(hello, 5000);
+  }
+  function hello() { if (io && io.stateName === "ready") io.signal(CONFIG.tag, { op: "hello", token: cred.token }); }
+  function onMessage(m) {
+    if (!m || !m.type) return;
+    if (m.type === "denied") { status("권한 없음", "bad"); askAccess(true); return; }
+    if (m.type === "full") { status("시청자가 가득 찼습니다", "bad"); return; }
+    if (m.type === "init") {
+      $("gate").hidden = true;
+      status("실시간", "live");
+      info = m.server; startedAt = m.startedAt; series = m.series.slice();
+      hostHist = {};
+      series.forEach(function (p) { Object.keys(p.hosts || {}).forEach(function (n) { (hostHist[n] = hostHist[n] || []).push(p.hosts[n]); }); });
+      $("events").innerHTML = "";
+      addEvents(m.events, true);
+      if (!saved) { shown = m.panels.slice(); applyPanels(); }
+      return;
+    }
+    if (m.type === "tick") {
+      latest = m; hosts = m.hosts;
+      series.push(m.point); if (series.length > CONFIG.history) series.shift();
+      Object.keys(m.point.hosts || {}).forEach(function (n) { var a = (hostHist[n] = hostHist[n] || []); a.push(m.point.hosts[n]); if (a.length > 60) a.shift(); });
+      addEvents(m.events, false);
+      render(); draw();
+    }
+  }
+  function askAccess(failed) {
+    var gate = $("gate");
+    $("gateErr").hidden = !failed; $("gateErr").textContent = failed ? "확인하지 못했습니다. 다시 입력해 주세요." : "";
+    if (CONFIG.access === "token") {
+      $("gateTitle").textContent = "대시보드 토큰"; $("gateHelp").textContent = "서버 설정의 dashboard.access.token 값을 입력하세요.";
+      $("gateId").hidden = true; $("gateKey").placeholder = "토큰";
+    } else {
+      $("gateTitle").textContent = "대시보드 로그인"; $("gateHelp").textContent = "이 서버에 로그인할 수 있는 ID와 키를 입력하세요(허용된 역할 또는 CID).";
+    }
+    gate.hidden = false;
+    (CONFIG.access === "token" ? $("gateKey") : $("gateId")).focus();
+  }
+  $("gateForm").addEventListener("submit", function (e) {
+    e.preventDefault();
+    if (CONFIG.access === "token") { cred = { token: $("gateKey").value }; store.sset("iosignal.dashboard.token", cred.token); hello(); }
+    else { cred = { id: $("gateId").value.trim(), key: $("gateKey").value }; connect(); }
+  });
+  addEventListener("pagehide", function () { if (io && io.stateName === "ready") io.signal(CONFIG.tag, { op: "bye" }); });
+
+  applyPanels();
+  addEvents([], true);
+  if (CONFIG.access === "token") { var t = store.sget("iosignal.dashboard.token") || new URLSearchParams(location.search).get("key"); if (t) cred = { token: t }; }
+  connect();
+  if (CONFIG.access === "login" || (CONFIG.access === "token" && !cred.token)) askAccess(false);
+})();
+</script>
+</body>
+</html>`;
+
+/** The page with its settings: { io, ws, access, panels, history, tag, topic }. */
+function dashboardPage(config) {
+  const json = JSON.stringify(config).replace(/</g, '\\u003c');
+  return PAGE.replace('__CONFIG__', json).replace('__IO__', config.io.replace(/"/g, ''))
+}
+
+/** Tags of the dashboard's own host. Viewers send to IN; the host sends to one viewer as '@' + TOPIC. */
+const DASHBOARD = { HOST: 'iosignal.dashboard', IN: 'iosignal.dashboard#in', TOPIC: 'iosignal.dashboard' };
+const DASHBOARD_PANELS = ['server', 'traffic', 'hosts', 'game', 'participants', 'events'];
+
+const IO_BUNDLE = new URL('../../dist/browser/iife/io.js', (typeof document === 'undefined' ? require('u' + 'rl').pathToFileURL(__filename).href : (_documentCurrentScript && _documentCurrentScript.tagName.toUpperCase() === 'SCRIPT' && _documentCurrentScript.src || new URL('iosignal.cjs', document.baseURI).href)));
+const VIEWER_TTL_MS = 15000;
+const PARTICIPANT_LIMIT = 60;
+const sha = (s) => node_crypto.createHash('sha256').update(String(s)).digest();
+
+/**
+ * The server dashboard: a web page (options.path) that shows the server and its hosts live.
+ * It talks to the page through IOSignal itself: viewers send 'hello' to DASHBOARD.IN, a host checks
+ * access, and every second it sends the latest sample to each viewer with host.to().
+ *
+ * options (all optional):
+ *   path:           '/dashboard'
+ *   access:         'open' | { token: '...' } | { login: { roles: ['admin'], cids: [] } }
+ *   panels:         panels shown first (DASHBOARD_PANELS); viewers can switch them
+ *   history:        seconds kept for the charts (default 300, 10-3600)
+ *   maxViewers:     default 20
+ *   showIdentities: show participant CIDs and names (default: true unless access is 'open')
+ */
+class Dashboard {
+  constructor(server, options = {}) {
+    if (options === true) options = {};
+    if (options === null || typeof options !== 'object') throw new TypeError('dashboard options must be an object or true')
+    for (const key of Object.keys(options)) {
+      if (!['path', 'access', 'panels', 'history', 'maxViewers', 'showIdentities'].includes(key)) {
+        throw new TypeError(`unknown dashboard option: ${key}`)
+      }
+    }
+    const path = options.path ?? '/dashboard';
+    if (typeof path !== 'string' || !/^\/[A-Za-z0-9._~\-/]*$/.test(path) || path.length > 64) {
+      throw new TypeError("dashboard path must start with '/' and use URL-safe characters")
+    }
+    this.path = path.length > 1 ? path.replace(/\/+$/, '') : path;
+    this.access = this.#access(options.access ?? 'open');
+    const panels = options.panels ?? DASHBOARD_PANELS;
+    if (!Array.isArray(panels) || panels.some((p) => !DASHBOARD_PANELS.includes(p))) {
+      throw new TypeError(`dashboard panels must be some of: ${DASHBOARD_PANELS.join(', ')}`)
+    }
+    this.panels = [...new Set(panels)];
+    this.history = Number.isInteger(options.history) && options.history >= 10 && options.history <= 3600 ? options.history : 300;
+    if (options.history !== undefined && this.history !== options.history) throw new RangeError('dashboard history: 10-3600 seconds')
+    this.maxViewers = options.maxViewers ?? 20;
+    if (!Number.isInteger(this.maxViewers) || this.maxViewers < 1 || this.maxViewers > 200) throw new RangeError('dashboard maxViewers: 1-200')
+    this.showIdentities = options.showIdentities ?? this.access.mode !== 'open';
+
+    this.server = server;
+    this.startedAt = Date.now();
+    this.viewers = new Map();       // cid -> { lastAt }
+    this.series = [];               // [{ at, ... }] one point a second, at most `history`
+    this.lastHostCounters = new Map();
+    this.lastJournal = new Map();   // host name -> last journal seq sent
+    this.events = [];               // recent events for a viewer that just arrived
+
+    this.host = server.host(DASHBOARD.HOST, { inbound: [DASHBOARD.IN], own: ['@' + DASHBOARD.TOPIC] });
+    this.host.on('message', (from, tag, msg) => this.#onViewer(from, msg));
+    this.host.on('leave', (from) => this.viewers.delete(from.cid));
+    this.host.on('error', (error) => console.error('dashboard error:', error));
+    this.stats = new ServerStats(server, { onSample: (value) => this.#onSample(value) });
+  }
+
+  #access(access) {
+    if (access === 'open') return { mode: 'open' }
+    if (access && typeof access === 'object' && typeof access.token === 'string') {
+      if (access.token.length < 8) throw new RangeError('dashboard token: at least 8 characters')
+      return { mode: 'token', hash: sha(access.token) }
+    }
+    if (access && typeof access === 'object' && access.login && typeof access.login === 'object') {
+      const roles = access.login.roles ?? ['admin'];
+      const cids = access.login.cids ?? [];
+      if (!Array.isArray(roles) || !Array.isArray(cids)) throw new TypeError('dashboard login: roles and cids are arrays')
+      for (const role of roles) if (!ROLES.includes(role)) throw new RangeError(`dashboard login role must be one of: ${ROLES.join(', ')}`)
+      return { mode: 'login', roles, cids: new Set(cids) }
+    }
+    throw new TypeError("dashboard access must be 'open', { token } or { login: { roles, cids } }")
+  }
+
+  /** Whether this viewer (the server's view of it) may watch. */
+  allowed(from, msg) {
+    const a = this.access;
+    if (a.mode === 'open') return true
+    if (a.mode === 'token') return typeof msg?.token === 'string' && node_crypto.timingSafeEqual(sha(msg.token), a.hash)
+    if (!from.authorized) return false
+    return a.cids.has(from.cid) || a.roles.some((role) => hasRole({ role: from.role, boho: { isAuthorized: true } }, role))
+  }
+
+  #onViewer(from, msg) {
+    if (msg?.op === 'bye') { this.viewers.delete(from.cid); return }
+    if (msg?.op !== 'hello') return
+    const known = this.viewers.get(from.cid);
+    if (!this.allowed(from, msg)) { this.host.to(from.cid, DASHBOARD.TOPIC, { type: 'denied', mode: this.access.mode }); return }
+    if (!known && this.viewers.size >= this.maxViewers) { this.host.to(from.cid, DASHBOARD.TOPIC, { type: 'full' }); return }
+    this.viewers.set(from.cid, { lastAt: Date.now() });
+    if (!known) this.host.to(from.cid, DASHBOARD.TOPIC, this.#init());
+  }
+
+  #init() {
+    return {
+      type: 'init', at: Date.now(), startedAt: this.startedAt, panels: this.panels, history: this.history,
+      showIdentities: this.showIdentities, server: this.#serverInfo(), series: this.series, events: this.events.slice(-60),
+    }
+  }
+
+  #serverInfo() {
+    const s = this.server;
+    return {
+      ws: s.port ?? null, tcp: s.congPort ?? null, membersOnly: s.membersOnly, anonymousQuota: s.anonymousQuota,
+      quota: s.quotas?.[s.anonymousQuota] ?? null, node: process.version,
+    }
+  }
+
+  #mask(cid) {
+    if (this.showIdentities) return cid
+    const s = String(cid ?? '');
+    return s.length <= 2 ? '••' : s.slice(0, 2) + '•'.repeat(Math.min(4, s.length - 2))
+  }
+
+  #hosts(now) {
+    const out = [];
+    for (const host of this.server.hosts) {
+      if (host === this.host || host.closed) continue
+      const c = host.counters;
+      const prev = this.lastHostCounters.get(host) ?? { ...c, at: now - 1000 };
+      const sec = Math.max(0.001, (now - prev.at) / 1000);
+      const rate = (k) => (c[k] - prev[k]) / sec;
+      const handled = (c.inbound - prev.inbound) + (c.leaves - prev.leaves);
+      this.lastHostCounters.set(host, { ...c, at: now });
+      const item = {
+        name: host.name, participants: host.participants.size,
+        rates: { inbound: rate('inbound'), denied: rate('denied'), rejected: rate('rejected'), published: rate('published'), delivered: rate('delivered'), sent: rate('sent'), errors: rate('errors') },
+        totals: { inbound: c.inbound, denied: c.denied, rejected: c.rejected, joins: c.joins, leaves: c.leaves, errors: c.errors },
+        handlerAvgMs: handled > 0 ? (c.handlerMs - prev.handlerMs) / handled : 0,
+        handlerMaxMs: host.handlerMaxMs,
+        loops: host.loopStats(), report: host.reported,
+      };
+      {
+        item.players = host.activity()
+          .sort((a, b) => b.lastAt - a.lastAt).slice(0, PARTICIPANT_LIMIT)
+          .map(({ from, inputs, firstAt, lastAt }) => ({
+            cid: this.#mask(from.cid), nick: this.showIdentities ? from.nick : '', authorized: from.authorized,
+            inputs, since: now - firstAt, idle: now - lastAt,
+          }));
+      }
+      const after = this.lastJournal.get(host.name) ?? 0;
+      const fresh = host.journal(after);
+      if (fresh.length) this.lastJournal.set(host.name, fresh.at(-1).seq);
+      for (const e of fresh) {
+        this.events.push({ host: host.name, at: e.at, kind: e.kind, cid: e.cid ? this.#mask(e.cid) : undefined, tag: e.tag, reason: e.reason, message: e.message });
+      }
+      out.push(item);
+    }
+    if (this.events.length > 200) this.events.splice(0, this.events.length - 200);
+    return out
+  }
+
+  #onSample(v) {
+    const now = v.at;
+    for (const [cid, viewer] of this.viewers) if (now - viewer.lastAt > VIEWER_TTL_MS) this.viewers.delete(cid);
+    const eventsBefore = this.events.length;
+    const hosts = this.#hosts(now);
+    // The dashboard's own traffic, so it can be told apart from the game's.
+    const own = { viewers: this.viewers.size };
+    const point = {
+      at: now, cpu: v.cpuPercent, elu: v.eventLoopUtilization, eld: v.eventLoopP99Ms, rss: v.rss, heap: v.heapUsed,
+      conns: v.total, ws: v.websocket, tcp: v.total - v.websocket, auth: v.authenticated,
+      rxMsg: v.rates.rxMessages ?? 0, txMsg: v.rates.txMessages ?? 0, rxB: v.rates.rxBytes ?? 0, txB: v.rates.txBytes ?? 0,
+      dropped: (v.rates.rateLimited ?? 0) + (v.rates.oversizeRejected ?? 0),
+      hosts: Object.fromEntries(hosts.map((h) => [h.name, { in: h.rates.inbound, denied: h.rates.denied, players: h.participants, step: h.loops[0]?.stepAvg ?? null, gap: h.loops[0]?.gapP99 ?? null }])),
+    };
+    this.series.push(point);
+    if (this.series.length > this.history) this.series.shift();
+    if (!this.viewers.size) return
+    const frame = {
+      type: 'tick', point,
+      server: {
+        uptime: now - this.startedAt, states: v.states, queuedBytes: v.queuedBytes, maxQueuedBytes: v.maxQueuedBytes,
+        txBlockedConnections: v.txBlockedConnections, channels: v.channels, hostTotalBytes: v.hostTotalBytes,
+        counters: { rateLimited: v.counters.rateLimited, oversizeRejected: v.counters.oversizeRejected, peerRxLimitSkipped: v.counters.peerRxLimitSkipped },
+        own,
+      },
+      hosts, events: this.events.slice(eventsBefore),
+    };
+    for (const cid of this.viewers.keys()) this.host.to(cid, DASHBOARD.TOPIC, frame);
+  }
+
+  /**
+   * Serves the page (GET path) and the browser client (path + '/io.js'). Returns true when it
+   * answered. A Server with `port` calls it itself; with your own httpServer call it first in
+   * your request handler: if (server.dashboard.handle(req, res)) return
+   */
+  handle(req, res) {
+    let pathname;
+    try { pathname = new URL(req.url || '/', 'http://localhost').pathname; } catch { return false }
+    const root = this.path === '/' ? '' : this.path;
+    if (pathname !== this.path && pathname !== root + '/' && pathname !== root + '/io.js') return false
+    if (req.method !== 'GET' && req.method !== 'HEAD') { res.writeHead(405, { Allow: 'GET, HEAD' }); res.end(); return true }
+    const headers = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer' };
+    if (pathname === root + '/io.js') {
+      promises.readFile(IO_BUNDLE).then((js) => {
+        res.writeHead(200, { ...headers, 'Content-Type': 'text/javascript; charset=utf-8' });
+        res.end(req.method === 'HEAD' ? undefined : js);
+      }, () => { res.writeHead(500); res.end('IOSignal browser bundle not found (build dist first)'); });
+      return true
+    }
+    const config = {
+      io: root + '/io.js', ws: this.server.wsPath || '/', access: this.access.mode, panels: this.panels,
+      history: this.history, tag: DASHBOARD.IN, topic: '@' + DASHBOARD.TOPIC,
+    };
+    res.writeHead(200, {
+      ...headers, 'Content-Type': 'text/html; charset=utf-8',
+      'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; img-src 'self' data:",
+    });
+    res.end(req.method === 'HEAD' ? undefined : dashboardPage(config));
+    return true
+  }
+
+  close() {
+    this.stats.dispose();
+    this.host.close();
+    this.viewers.clear();
+  }
+}
+
+const STATUS = {
+  OK: 0,
+  //0~127: success
+  //128~255: fail
+  ERROR: 255
+};
+
 /**
  * LocalKeyProvider.js
  *
@@ -10166,6 +11075,9 @@ class Server extends require$$0$3 {
    *   options.anonymousQuota: profile of a connection that has not authenticated (default 'anonymous').
    *   options.duplicateLogin: 'keepOld' | 'keepNew' for this Server's connections; overrides the auth
    *   manager's own policy without changing it, so an auth manager can be shared between servers.
+   *   options.dashboard: true or { path, access, panels, history, maxViewers, showIdentities } shows a live
+   *   status page of the server and its hosts (see Dashboard.js); off by default. With `port` the Server
+   *   serves it itself; with your own httpServer call server.dashboard.handle(req, res) in its handler.
    *   A failed listen (e.g. EADDRINUSE) is emitted as 'error'.
    * @param {any} [authManager] Optional authentication manager.
    */
@@ -10238,6 +11150,16 @@ class Server extends require$$0$3 {
     }
 
     this.manager = new Manager(this, authManager);
+    // The status page; null when off.
+    this.dashboard = null;
+    if (options.dashboard) {
+      try {
+        this.dashboard = new Dashboard(this, options.dashboard);
+      } catch (error) {
+        this.manager.close(); // a bad dashboard option must not leave the heartbeat timer running
+        throw error
+      }
+    }
 
     this.serverCountToListen = 0;
     this.listeningServerCount = 0;
@@ -10256,7 +11178,15 @@ class Server extends require$$0$3 {
 
   startWSServer() {
     // console.log('optoins', options )
-    if (this.port || this.port == 0) {
+    if ((this.port || this.port == 0) && this.dashboard) {
+      // The WebSocket server alone answers plain HTTP with 426; the dashboard needs pages too.
+      this.ownHttp = require$$2$1.createServer((req, res) => {
+        if (!this.dashboard.handle(req, res)) { res.writeHead(404, { 'Content-Type': 'text/plain' }); res.end('Not found'); }
+      });
+      this.ownHttp.on('error', (err) => this.onListenerError('ws', err));
+      this.wss = new WebSocketServer({ server: this.ownHttp, path: this.wsPath, maxPayload: this.maxPayload });
+      this.ownHttp.listen(this.port);
+    } else if (this.port || this.port == 0) {
       this.wss = new WebSocketServer({ port: this.port , path: this.wsPath, maxPayload: this.maxPayload });
     } else if (this.httpServer ) {
       this.wss = new WebSocketServer({ server: this.httpServer, path: this.wsPath, maxPayload: this.maxPayload });
@@ -10408,6 +11338,7 @@ class Server extends require$$0$3 {
    */
   close(callback) {
     console.log('closing iosignal server...');
+    if (this.dashboard) this.dashboard.close();
     for (const host of [...this.hosts]) host.close();
     if (this.manager) {
       this.manager.close();
@@ -10438,7 +11369,10 @@ class Server extends require$$0$3 {
     if (this.wss) {
       this.wss.close(() => {
         // console.log('wss server closed.')
-        onClosed();
+        if (!this.ownHttp) return onClosed()
+        // The HTTP server this Server made for the dashboard closes with it.
+        this.ownHttp.close(() => onClosed());
+        this.ownHttp.closeAllConnections?.();
       });
     }
 

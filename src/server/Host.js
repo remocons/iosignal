@@ -1,3 +1,4 @@
+import { performance } from 'node:perf_hooks'
 import EventEmitter from 'events'
 import { IOMsg, SIZE_LIMIT } from '../common/constants.js'
 import { getSignalPack, decodeSignalArgs } from '../common/payload.js'
@@ -146,6 +147,23 @@ export class Host extends EventEmitter {
     this.closed = false
     /** @type {Map<string, Readonly<object>>} cid -> from, connections that sent to this host */
     this._participants = new Map()
+    /** cid -> { inputs, firstAt, lastAt }: activity of each participant, for the dashboard */
+    this._activity = new Map()
+    // Cumulative since the host opened; readers compute rates from deltas (see Dashboard).
+    this.counters = {
+      inbound: 0,     // inputs handed to 'message'
+      rejected: 0,    // inputs to an inbound tag that were not handed over (E2E, unreadable payload)
+      denied: 0,      // client messages to a tag this host owns, dropped
+      published: 0, delivered: 0, // publish() calls and the connections they reached
+      sent: 0,        // to() messages sent
+      joins: 0, leaves: 0, errors: 0,
+      handlerMs: 0,   // time spent in 'message' and 'leave' handlers
+    }
+    this.handlerMaxMs = 0
+    this.reported = {}  // last host.report() values
+    this._journal = []  // recent notable events (join, leave, denied, error), oldest first
+    this._journalSeq = 0
+    this._loops = new Set()
 
     manager.hosts.add(this, [...inbound, ...own])
     // Values a client retained on these tags before the host claimed them are not the host's.
@@ -163,6 +181,7 @@ export class Host extends EventEmitter {
 
   /** Stop tracking a participant; no 'leave' is emitted for it (until it sends again). */
   forget(cid) {
+    this._activity.delete(cid)
     return this._participants.delete(cid)
   }
 
@@ -178,7 +197,10 @@ export class Host extends EventEmitter {
       throw new Error(`host ${this.name} does not own channel tag ${tag}`)
     }
     const message = getSignalPack(tag, ...args)
-    return this.manager.hostPublish(this, this.manager.CHANNEL_PREFIX + tag, message)
+    const n = this.manager.hostPublish(this, this.manager.CHANNEL_PREFIX + tag, message)
+    this.counters.published++
+    this.counters.delivered += n
+    return n
   }
 
   /**
@@ -195,17 +217,100 @@ export class Host extends EventEmitter {
     if (!remote || remote._closing) return false
     const skipped = remote.peerRxLimitSkipped
     remote.send_enc_mode(message)
-    return remote.peerRxLimitSkipped === skipped
+    if (remote.peerRxLimitSkipped !== skipped) return false
+    this.counters.sent++
+    return true
+  }
+
+  /**
+   * Values to show on the server dashboard ("game" panel), e.g. { round: 3, players: 8 }.
+   * Merged into the last report; a key set to null is removed. Numbers, short strings and booleans,
+   * at most 20 keys.
+   */
+  report(values) {
+    if (values === null || typeof values !== 'object') throw new TypeError('report() takes an object')
+    for (const [key, value] of Object.entries(values)) {
+      if (value === null || value === undefined) { delete this.reported[key]; continue }
+      if (!['number', 'string', 'boolean'].includes(typeof value)) throw new TypeError(`report value ${key} must be a number, string or boolean`)
+      if (!(key in this.reported) && Object.keys(this.reported).length >= 20) continue
+      this.reported[String(key).slice(0, 32)] = typeof value === 'string' ? value.slice(0, 64) : value
+    }
+    return this
+  }
+
+  /**
+   * Run fn(now) every intervalMs, like setInterval, and measure it for the dashboard: the gap between
+   * ticks and how long each tick took. A throwing tick is reported as an 'error' and the loop goes on.
+   * Returns a stop function; close() stops every loop.
+   */
+  loop(intervalMs, fn) {
+    this._open()
+    if (!(Number.isFinite(intervalMs) && intervalMs >= 1)) throw new RangeError('loop interval must be at least 1 ms')
+    if (typeof fn !== 'function') throw new TypeError('loop needs a function')
+    const stats = { intervalMs, ticks: 0, gaps: [], steps: [], last: 0 }
+    const timer = setInterval(() => {
+      const t0 = performance.now()
+      if (stats.last) { stats.gaps.push(t0 - stats.last); if (stats.gaps.length > 200) stats.gaps.shift() }
+      stats.last = t0
+      try { fn(Date.now()) } catch (error) { this._failed(error) }
+      stats.steps.push(performance.now() - t0); if (stats.steps.length > 200) stats.steps.shift()
+      stats.ticks++
+    }, intervalMs)
+    const entry = { timer, stats }
+    this._loops.add(entry)
+    return () => { clearInterval(timer); this._loops.delete(entry) }
+  }
+
+  /** Timing of the loops started with loop(): target, ticks, gap p50/p99 and step average/max (ms). */
+  loopStats() {
+    const pct = (a, p) => { if (!a.length) return 0; const s = [...a].sort((x, y) => x - y); return s[Math.min(s.length - 1, Math.floor(p / 100 * s.length))] }
+    return [...this._loops].map(({ stats: s }) => ({
+      intervalMs: s.intervalMs, ticks: s.ticks,
+      gapP50: pct(s.gaps, 50), gapP99: pct(s.gaps, 99), gapMax: s.gaps.length ? Math.max(...s.gaps) : 0,
+      stepAvg: s.steps.length ? s.steps.reduce((a, b) => a + b, 0) / s.steps.length : 0,
+      stepMax: s.steps.length ? Math.max(...s.steps) : 0,
+    }))
+  }
+
+  /** Participants with their activity: [{ from, inputs, firstAt, lastAt }]. */
+  activity() {
+    return [...this._participants.values()].map((from) => ({ from, ...(this._activity.get(from.cid) ?? { inputs: 0, firstAt: 0, lastAt: 0 }) }))
+  }
+
+  /** Notable events after sequence `after`: [{ seq, at, kind: 'join'|'leave'|'denied'|'error', ... }]. */
+  journal(after = 0) {
+    return this._journal.filter((e) => e.seq > after)
+  }
+
+  _note(kind, data) {
+    this._journal.push({ seq: ++this._journalSeq, at: Date.now(), kind, ...data })
+    if (this._journal.length > 200) this._journal.shift()
+  }
+
+  // A client sent to a tag this host owns (Manager.sender dropped it).
+  _denied(remote, tag) {
+    this.counters.denied++
+    this._note('denied', { cid: remote.cid, tag })
+  }
+
+  _failed(error) {
+    this.counters.errors++
+    this._note('error', { message: String(error?.message ?? error).slice(0, 200) })
+    if (this.listenerCount('error')) this.emit('error', error)
+    else console.error(`host ${this.name} error:`, error)
   }
 
   /** Release the tags (they become ordinary channels again) and the host's retained values. */
   close() {
     if (this.closed) return
     this.closed = true
+    for (const { timer } of this._loops) clearInterval(timer)
+    this._loops.clear()
     this.manager.hosts.remove(this)
     const owner = this.manager.retainOwners.get(this.retainOwnerKey)
     if (owner) for (const tag of [...owner.tags]) this.manager.dropChannelRetain(tag)
     this._participants.clear()
+    this._activity.clear()
     this.emit('close')
   }
 
@@ -238,7 +343,18 @@ export class Host extends EventEmitter {
     }
     if (!args) return false
     const from = Host.from(remote)
+    const now = Date.now()
+    let act = this._activity.get(from.cid)
+    if (!act) {
+      act = { inputs: 0, firstAt: now, lastAt: now }
+      this._activity.set(from.cid, act)
+      this.counters.joins++
+      this._note('join', { cid: from.cid, nick: from.nick, authorized: from.authorized })
+    }
+    act.inputs++
+    act.lastAt = now
     this._participants.set(from.cid, from)
+    this.counters.inbound++
     this._emitSafely('message', from, tag, ...args)
     return true
   }
@@ -247,15 +363,21 @@ export class Host extends EventEmitter {
     const from = this._participants.get(remote.cid)
     if (!from) return
     this._participants.delete(remote.cid)
+    this._activity.delete(remote.cid)
+    this.counters.leaves++
+    this._note('leave', { cid: remote.cid, reason: remote.closeReason ?? 'close' })
     this._emitSafely('leave', Host.from(remote), remote.closeReason ?? 'close')
   }
 
   _emitSafely(name, ...args) {
+    const t0 = performance.now()
     try {
       this.emit(name, ...args)
     } catch (error) {
-      if (this.listenerCount('error')) this.emit('error', error)
-      else console.error(`host ${this.name} ${name} handler error:`, error)
+      this._failed(error)
     }
+    const ms = performance.now() - t0
+    this.counters.handlerMs += ms
+    if (ms > this.handlerMaxMs) this.handlerMaxMs = ms
   }
 }

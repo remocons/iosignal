@@ -6,6 +6,8 @@ import { EventEmitter } from 'eventemitter3';
 import * as stream from 'stream';
 import { Transform } from 'stream';
 import EventEmitter$1 from 'events';
+import * as perf_hooks from 'perf_hooks';
+import http from 'http';
 export { default as MBP } from 'meta-buffer-pack';
 
 type STATE = {
@@ -686,6 +688,25 @@ declare class Host extends EventEmitter$1<[never]> {
     closed: boolean;
     /** @type {Map<string, Readonly<object>>} cid -> from, connections that sent to this host */
     _participants: Map<string, Readonly<object>>;
+    /** cid -> { inputs, firstAt, lastAt }: activity of each participant, for the dashboard */
+    _activity: Map<any, any>;
+    counters: {
+        inbound: number;
+        rejected: number;
+        denied: number;
+        published: number;
+        delivered: number;
+        sent: number;
+        joins: number;
+        leaves: number;
+        errors: number;
+        handlerMs: number;
+    };
+    handlerMaxMs: number;
+    reported: {};
+    _journal: any[];
+    _journalSeq: number;
+    _loops: Set<any>;
     /** Connections that have sent to this host and are still online: cid -> from. */
     get participants(): Map<string, object>;
     /** Stop tracking a participant; no 'leave' is emitted for it (until it sends again). */
@@ -700,6 +721,35 @@ declare class Host extends EventEmitter$1<[never]> {
      * or its receive buffer is too small for the message.
      */
     to(cid: any, topic: any, ...args: any[]): boolean;
+    /**
+     * Values to show on the server dashboard ("game" panel), e.g. { round: 3, players: 8 }.
+     * Merged into the last report; a key set to null is removed. Numbers, short strings and booleans,
+     * at most 20 keys.
+     */
+    report(values: any): this;
+    /**
+     * Run fn(now) every intervalMs, like setInterval, and measure it for the dashboard: the gap between
+     * ticks and how long each tick took. A throwing tick is reported as an 'error' and the loop goes on.
+     * Returns a stop function; close() stops every loop.
+     */
+    loop(intervalMs: any, fn: any): () => void;
+    /** Timing of the loops started with loop(): target, ticks, gap p50/p99 and step average/max (ms). */
+    loopStats(): {
+        intervalMs: any;
+        ticks: any;
+        gapP50: any;
+        gapP99: any;
+        gapMax: number;
+        stepAvg: number;
+        stepMax: number;
+    }[];
+    /** Participants with their activity: [{ from, inputs, firstAt, lastAt }]. */
+    activity(): any[];
+    /** Notable events after sequence `after`: [{ seq, at, kind: 'join'|'leave'|'denied'|'error', ... }]. */
+    journal(after?: number): any[];
+    _note(kind: any, data: any): void;
+    _denied(remote: any, tag: any): void;
+    _failed(error: any): void;
     /** Release the tags (they become ordinary channels again) and the host's retained values. */
     close(): void;
     _open(): void;
@@ -936,6 +986,135 @@ declare class Manager {
     close(): void;
 }
 
+declare class ServerStats {
+    constructor(server: any, { onSample }?: {
+        onSample?: null | undefined;
+    });
+    server: any;
+    onSample: any;
+    base: any;
+    counters: {
+        opened: number;
+        closed: number;
+        authFailed: number;
+    };
+    onState: (_peer: any, _previous: any) => void;
+    delay: perf_hooks.IntervalHistogram;
+    cpu: NodeJS.CpuUsage;
+    elu: perf_hooks.EventLoopUtilization;
+    previousAt: number;
+    previous: {
+        opened: number;
+        closed: number;
+        authFailed: number;
+    };
+    timer: NodeJS.Timeout;
+    sample(): void;
+    value: {
+        at: number;
+        total: any;
+        authenticated: number;
+        anonymous: number;
+        websocket: number;
+        transports: {
+            websocket: {
+                total: number;
+                authenticated: number;
+            };
+            tcp: {
+                total: number;
+                authenticated: number;
+            };
+        };
+        hostAvailableBytes: number | null;
+        hostTotalBytes: number;
+        channels: any;
+        states: {};
+        queuedBytes: number;
+        maxQueuedBytes: number;
+        txQueuePeakBytes: number;
+        txWriteFalseCount: number;
+        txDrainMaxMs: number;
+        txBlockedConnections: number;
+        txBlockedMaxMs: number;
+        counters: {
+            opened: number;
+            closed: number;
+            authFailed: number;
+        };
+        rates: {
+            [k: string]: number;
+        };
+        rss: number;
+        heapUsed: number;
+        cpuPercent: number;
+        eventLoopUtilization: number;
+        eventLoopP99Ms: number;
+        quota: {
+            anonymous: any;
+            profiles: any;
+        };
+    } | undefined;
+    dispose(): void;
+}
+
+/**
+ * The server dashboard: a web page (options.path) that shows the server and its hosts live.
+ * It talks to the page through IOSignal itself: viewers send 'hello' to DASHBOARD.IN, a host checks
+ * access, and every second it sends the latest sample to each viewer with host.to().
+ *
+ * options (all optional):
+ *   path:           '/dashboard'
+ *   access:         'open' | { token: '...' } | { login: { roles: ['admin'], cids: [] } }
+ *   panels:         panels shown first (DASHBOARD_PANELS); viewers can switch them
+ *   history:        seconds kept for the charts (default 300, 10-3600)
+ *   maxViewers:     default 20
+ *   showIdentities: show participant CIDs and names (default: true unless access is 'open')
+ */
+declare class Dashboard {
+    constructor(server: any, options?: {});
+    path: string;
+    access: {
+        mode: string;
+        hash?: undefined;
+        roles?: undefined;
+        cids?: undefined;
+    } | {
+        mode: string;
+        hash: NonSharedBuffer;
+        roles?: undefined;
+        cids?: undefined;
+    } | {
+        mode: string;
+        roles: any[];
+        cids: Set<any>;
+        hash?: undefined;
+    };
+    panels: any[];
+    history: any;
+    maxViewers: any;
+    showIdentities: any;
+    server: any;
+    startedAt: number;
+    viewers: Map<any, any>;
+    series: any[];
+    lastHostCounters: Map<any, any>;
+    lastJournal: Map<any, any>;
+    events: any[];
+    host: any;
+    stats: ServerStats;
+    /** Whether this viewer (the server's view of it) may watch. */
+    allowed(from: any, msg: any): boolean;
+    /**
+     * Serves the page (GET path) and the browser client (path + '/io.js'). Returns true when it
+     * answered. A Server with `port` calls it itself; with your own httpServer call it first in
+     * your request handler: if (server.dashboard.handle(req, res)) return
+     */
+    handle(req: any, res: any): boolean;
+    close(): void;
+    #private;
+}
+
 declare class Server extends EventEmitter$1<[never]> {
     /**
      * @param {object} options Server configuration.
@@ -962,6 +1141,9 @@ declare class Server extends EventEmitter$1<[never]> {
      *   options.anonymousQuota: profile of a connection that has not authenticated (default 'anonymous').
      *   options.duplicateLogin: 'keepOld' | 'keepNew' for this Server's connections; overrides the auth
      *   manager's own policy without changing it, so an auth manager can be shared between servers.
+     *   options.dashboard: true or { path, access, panels, history, maxViewers, showIdentities } shows a live
+     *   status page of the server and its hosts (see Dashboard.js); off by default. With `port` the Server
+     *   serves it itself; with your own httpServer call server.dashboard.handle(req, res) in its handler.
      *   A failed listen (e.g. EADDRINUSE) is emitted as 'error'.
      * @param {any} [authManager] Optional authentication manager.
      */
@@ -988,9 +1170,11 @@ declare class Server extends EventEmitter$1<[never]> {
     httpServer: any;
     wsPath: any;
     manager: Manager;
+    dashboard: Dashboard | null;
     serverCountToListen: number;
     listeningServerCount: number;
     startWSServer(): void;
+    ownHttp: http.Server<typeof http.IncomingMessage, typeof http.ServerResponse> | undefined;
     startCongServer(): void;
     congServer: any;
     onListenerError(name: any, err: any): void;
