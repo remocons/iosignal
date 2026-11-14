@@ -23,7 +23,7 @@ var node_os = require('node:os');
 var path = require('path');
 
 var _documentCurrentScript = typeof document !== 'undefined' ? document.currentScript : null;
-var version$1 = "9.13.0";
+var version$1 = "9.14.0";
 var pkg = {
 	version: version$1};
 
