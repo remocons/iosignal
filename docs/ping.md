@@ -1,4 +1,4 @@
-# Server ping and peer ping
+# Server ping
 
 [README](https://github.com/remocons/iosignal/blob/main/README.md) | [English](https://github.com/remocons/iosignal/blob/main/docs/ping.md) | [한국어](https://github.com/remocons/iosignal/blob/main/docs/ping.ko.md)
 
@@ -13,26 +13,10 @@ io.ping();
 
 Native WebSocket heartbeat frames remain separate.
 
-Peer ping uses ordinary direct signals, with **one TEXT argument** carrying the
-sender CID. Register an application responder before sending:
-
-```js
-io.on('@ping', (tag, senderCid) => {
-  io.signal(`${senderCid}@pong`, io.cid);
-});
-io.listen('@pong', (tag, senderCid) => {
-  console.log(`Peer pong (${senderCid})`);
-});
-
-// Send after the connection is ready, using the peer's actual CID.
-io.signal(`${targetCid}@ping`, io.cid);
-```
-
-Both peer handlers can use `on()` or `listen()` without subscribing. An `@`
-handler can also receive and distinguish `@ping` and `@pong` by the `tag`
-argument; choose one handling approach to avoid duplicate replies.
-Peer responses do not emit the protocol `pong` event. CLI clients implement
-replies, and Arduino's `peer_ping_pong` example implements them in user code.
-
-
-[Related example: Arduino peer_ping_pong](https://github.com/remocons/iosignal-arduino/tree/main/examples/peer_ping_pong)
+An application `@pong` tag received as a direct message never emits the
+protocol `pong` event. Check a round trip between two devices with direct
+messages (`<cid>@topic`) your application defines. A direct message carries no
+sender verified by the server, so do not reply automatically to a CID written in
+the message. The earlier peer ping
+convention (`@ping`/`@pong`), the Arduino `peer_ping_pong` example and the CLI
+`ping <cid>` were removed on 2026-11-16.

@@ -261,7 +261,7 @@ replacement.
 ## Detailed guides
 
 - [Signal tags and direct messages](https://github.com/remocons/iosignal/blob/main/docs/messaging.md)
-- [Server ping and peer ping](https://github.com/remocons/iosignal/blob/main/docs/ping.md)
+- [Server ping](https://github.com/remocons/iosignal/blob/main/docs/ping.md)
 - [Boho authentication, encryption and E2E](https://github.com/remocons/iosignal/blob/main/docs/boho.md)
 - [Building and verification](https://github.com/remocons/iosignal/blob/main/docs/development.md)
 

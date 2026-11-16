@@ -248,7 +248,7 @@ const server = new Server({
 ## 상세 문서
 
 - [시그널 태그와 직접 메시지](https://github.com/remocons/iosignal/blob/main/docs/messaging.ko.md)
-- [서버 ping과 peer ping](https://github.com/remocons/iosignal/blob/main/docs/ping.ko.md)
+- [서버 ping](https://github.com/remocons/iosignal/blob/main/docs/ping.ko.md)
 - [Boho 인증·암호화와 E2E](https://github.com/remocons/iosignal/blob/main/docs/boho.ko.md)
 - [소스 빌드 및 검증](https://github.com/remocons/iosignal/blob/main/docs/development.ko.md)
 
