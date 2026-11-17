@@ -9,6 +9,12 @@ import { createHash } from 'node:crypto';
 import { networkInterfaces } from 'node:os';
 import { WebSocket } from 'ws';
 
+// The CongSocket server listens on the wildcard address ('::' where IPv6 exists). On macOS another
+// process may hold the same port on 127.0.0.1, and an IPv4 connection to 127.0.0.1 then reaches that
+// process instead (a 3 s 'ready' timeout, about 1 run in 600). Connect over the family the server bound.
+const congHost = server => server.congServer.address().family === 'IPv6' ? '::1' : '127.0.0.1';
+const congUrl = server => `cong://${congHost(server) === '::1' ? '[::1]' : '127.0.0.1'}:${server.congPort}`;
+
 // Private source entry in development; package self-reference for public builds.
 const pkg = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url)));
 const variants = [[pkg.private ? 'source' : 'esm', await import(pkg.private ? '../../index.js' : 'iosignal')]];
@@ -68,7 +74,7 @@ async function fixture(t, api, authenticated = false, tcp = false, security = {}
   const ready = event(server, 'ready', t.signal);
   http.listen(0, '127.0.0.1');
   await ready;
-  const url = tcp ? `cong://127.0.0.1:${server.congPort}` : `ws://127.0.0.1:${http.address().port}`;
+  const url = tcp ? congUrl(server) : `ws://127.0.0.1:${http.address().port}`;
   function client(credentials) {
     const io = tcp ? new api.IOCongSocket() : new api.IO();
     clients.push(io);
@@ -1201,7 +1207,7 @@ for (const [format, api] of variants) {
     assert.equal(server.wss, null);
     const io = new api.IOCongSocket();
     const ready = event(io, 'ready', t.signal);
-    io.open(`cong://127.0.0.1:${server.congPort}`);
+    io.open(congUrl(server));
     await ready;
     io.stop();
     await new Promise(resolve => server.close(resolve));
@@ -1213,7 +1219,7 @@ for (const [format, api] of variants) {
     t.after(() => new Promise(resolve => server.close(resolve)));
     await event(server, 'ready', t.signal);
     const accepted = event(server.congServer, 'connection', t.signal);
-    const socket = net.connect(server.congPort, '127.0.0.1');
+    const socket = net.connect(server.congPort, congHost(server));
     socket.on('error', () => {}); // the server may reset while we write
     t.after(() => socket.destroy());
     const [serverSocket] = await accepted;
@@ -1233,7 +1239,7 @@ for (const [format, api] of variants) {
     // As the Arduino library sends it: [CLOSE, reason], each in a CongSocket frame.
     async function closeWith(...frames) {
       const accepted = event(server.congServer, 'connection', t.signal);
-      const socket = net.connect(server.congPort, '127.0.0.1');
+      const socket = net.connect(server.congPort, congHost(server));
       socket.on('error', () => {});
       socket.resume(); // read to the server's FIN, so the client side ends too
       t.after(() => socket.destroy());

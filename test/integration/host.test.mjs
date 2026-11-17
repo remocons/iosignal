@@ -4,6 +4,12 @@ import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
 import { readFileSync } from 'node:fs';
 
+// The CongSocket server listens on the wildcard address ('::' where IPv6 exists). On macOS another
+// process may hold the same port on 127.0.0.1, and an IPv4 connection to 127.0.0.1 then reaches that
+// process instead (a 3 s 'ready' timeout, about 1 run in 600). Connect over the family the server bound.
+const congHost = server => server.congServer.address().family === 'IPv6' ? '::1' : '127.0.0.1';
+const congUrl = server => `cong://${congHost(server) === '::1' ? '[::1]' : '127.0.0.1'}:${server.congPort}`;
+
 // Private source entry in development; package self-reference for public builds.
 const pkg = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url)));
 const variants = [[pkg.private ? 'source' : 'esm', await import(pkg.private ? '../../index.js' : 'iosignal')]];
@@ -50,7 +56,7 @@ async function fixture(t, api, options = {}) {
     clients.push(io);
     if (credentials) io.auth(...credentials);
     const opened = event(io, 'ready', t.signal);
-    io.open(tcp ? `cong://127.0.0.1:${server.congPort}` : `ws://127.0.0.1:${http.address().port}`);
+    io.open(tcp ? congUrl(server) : `ws://127.0.0.1:${http.address().port}`);
     await opened;
     return io;
   }
