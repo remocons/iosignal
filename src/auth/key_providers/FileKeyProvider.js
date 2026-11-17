@@ -1,5 +1,6 @@
 import { readFileSync } from 'fs'
 import Boho from 'boho'
+import { checkLoginId } from '../../common/util.js'
 import path from 'path'
 
 export class FileKeyProvider {
@@ -24,7 +25,6 @@ export class FileKeyProvider {
   //loaded when server start.
   loadAuthInfoFile_JS(path) {
     import(path).then((file) => {
-      console.log(file.authInfo);
       file.authInfo.forEach(item => {
         this.addAuth(...item)
       })
@@ -54,6 +54,7 @@ export class FileKeyProvider {
 
   // Each item: [id, key, cid, role?, quota?]; see StringKeyProvider.
   addAuth(id, keyStr, cid, role, quota) {
+    checkLoginId(id)
     let Base64hashKey = Buffer.from(Boho.sha256.hash(keyStr)).toString('base64')
     this.AUTH.set(id, { key: Base64hashKey, cid, ...(role && { role }), ...(quota && { quota }) })
   }

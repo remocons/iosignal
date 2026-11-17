@@ -598,13 +598,16 @@ for (const [format, api] of variants) {
   });
 
   test(`${format}: replaced duplicate login does not publish close for the online CID`, { timeout: 10000 }, async t => {
-    const { server, auth, connect } = await fixture(t, api, true);
+    // membersOnly: the watcher logs in too, since an anonymous connection may not subscribe.
+    const { server, auth, connect } = await fixture(t, api, true, false, {}, {
+      authManager: new api.BohoAuth(new api.StringKeyProvider('tester.fixture-key.fixture-client,watch.watch-key.watch-client'))
+    });
     auth.keepOldConnection = false;
     const old = await connect(['tester', 'fixture-key']);
     old.autoReconnect = false;
     const cid = old.cid;
     const oldRemote = server.manager.cid2remote.get(cid);
-    const watcher = await connect();
+    const watcher = await connect(['watch', 'watch-key']);
     const states = [];
     watcher.on(`${cid}@state`, (tag, state) => states.push([tag, state]));
     watcher.on(`${cid}@$state`, (tag, state) => states.push([tag, state]));
@@ -1829,7 +1832,7 @@ for (const [format, api] of variants) {
       const subscriber = await connect(), publisher = await connect();
       const remote = server.manager.cid2remote.get(publisher.cid);
       assert.deepEqual([remote.role, remote.quotaName, remote.quota], ['anonymous', 'tiny', server.quotas.tiny]);
-      assert.deepEqual(server.quotas.tiny, { maxMessageBytes: 2000, fanout: null, msgPerSec: null, bytesPerSec: null, maxConnections: null });
+      assert.deepEqual(server.quotas.tiny, { maxMessageBytes: 2000, fanout: null, msgPerSec: null, bytesPerSec: null, maxConnections: null, maxSubscriptions: null });
       // QUOTA is sent before CID_RES, so the client knows its limit once ready.
       assert.deepEqual(publisher.quota, { maxMessageBytes: 2000 });
       if (tcp) assert.equal(remote.congRx.maxFrameSize, 2000);

@@ -4,6 +4,8 @@ import { serverOption } from '../server/serverOption.js'
 import { IOMsg, STATE } from '../common/constants.js'
 import { FileLogger } from '../server/FileLogger.js'
 import { compileDeliveryPolicy } from '../server/deliveryPolicy.js'
+import { getSignalPack } from '../common/payload.js'
+import { isPrivateIP } from '../common/util.js'
 
 const decoder = new TextDecoder()
 const DUPLICATE_LOGIN_POLICIES = ['keepOld', 'keepNew']
@@ -63,6 +65,7 @@ export class BohoAuth {
     if (options.duplicateLogin !== undefined) this.duplicateLogin = options.duplicateLogin;
     this.onAuthEvent = options.onAuthEvent ?? null;
     this.resolveQuota = options.resolveQuota ?? defaultQuota;
+    this.addressFailures = new Map(); // public address -> { count, since } of wrong logins
     this.authLogger;
     if (serverOption.fileLogger.auth.use) {
       this.authLogger = new FileLogger(serverOption.fileLogger.auth.path)
@@ -103,9 +106,46 @@ export class BohoAuth {
     }
   }
 
-  send_auth_fail(peer, reason) {
+  // Wrong logins of a public address in the current window (see serverOption.auth).
+  #addressEntry(ip, now = Date.now()) {
+    if (typeof ip !== 'string' || !ip || isPrivateIP(ip)) return null
+    let entry = this.addressFailures.get(ip)
+    if (entry && now - entry.since >= serverOption.auth.failureWindowMs) {
+      this.addressFailures.delete(ip)
+      entry = undefined
+    }
+    return entry ?? { count: 0, since: now, fresh: true }
+  }
+
+  /** True while this address has too many wrong logins: its logins are closed without a check. */
+  addressBlocked(ip) {
+    const entry = this.#addressEntry(ip)
+    return !!entry && entry.count >= serverOption.auth.maxFailuresPerAddress
+  }
+
+  #countFailure(peer) {
+    peer.authFailures = (peer.authFailures ?? 0) + 1
+    const entry = this.#addressEntry(peer.ip)
+    if (!entry) return
+    if (entry.fresh) {
+      delete entry.fresh
+      // Bounded: forget windows that have passed before adding another address.
+      if (this.addressFailures.size >= 10000) {
+        const now = Date.now()
+        for (const [ip, e] of this.addressFailures) if (now - e.since >= serverOption.auth.failureWindowMs) this.addressFailures.delete(ip)
+        if (this.addressFailures.size >= 10000) this.addressFailures.clear()
+      }
+      this.addressFailures.set(peer.ip, entry)
+    }
+    entry.count++
+  }
+
+  // countFailure: a wrong ID or key (not a refusal of a valid key, such as a duplicate login).
+  send_auth_fail(peer, reason, countFailure = false) {
     if (peer._closing || peer.state === STATE.CLOSED) return;
     peer.boho.isAuthorized = false;
+    if (countFailure) this.#countFailure(peer)
+    const lastTry = countFailure && peer.authFailures >= serverOption.auth.maxFailuresPerConnection
     if (this.authLogger) {
       let peerInfo = `FAIL #${peer.ssid} reason:${reason} `
       this.authLogger.log(peerInfo)
@@ -116,10 +156,23 @@ export class BohoAuth {
     setTimeout(e => {
       if (!peer._closing && peer.state === STATE.AUTH_FAIL) {
         peer.send(Buffer.from([Boho.BohoMsg.AUTH_FAIL]))
+        // Too many wrong logins on this connection: it has to connect again to go on.
+        if (lastTry) peer.close()
       }
     }, serverOption.auth.failDelay)
   }
 
+
+  // The login could not be checked (key store unreachable): not an answer about the key. The
+  // connection is closed, so the client connects and logs in again, instead of AUTH_FAIL, which
+  // clients take as "wrong key" and do not retry.
+  close_unavailable(peer, reason) {
+    if (peer._closing || peer.state === STATE.CLOSED) return;
+    console.error('BohoAuth: login not checked, closing the connection:', reason)
+    if (this.authLogger) this.authLogger.log(`UNAVAILABLE #${peer.ssid} reason:${reason} `)
+    peer.boho.isAuthorized = false;
+    peer.close();
+  }
 
   /**
    * Hook for a subclass: decide where a verified login belongs before it is accepted.
@@ -169,11 +222,23 @@ export class BohoAuth {
         id = decoder.decode(infoPack.id8);
       }
 
+      // Too many wrong logins from this address: not checked until its window has passed.
+      if (this.addressBlocked(peer.ip)) {
+        this.close_unavailable(peer, 'too many wrong logins from ' + peer.ip)
+        return
+      }
+
       //2. get key of id from DB
-      let authInfo = await this.keyProvider.getAuth(id)
+      let authInfo
+      try {
+        authInfo = await this.keyProvider.getAuth(id)
+      } catch (error) {
+        this.close_unavailable(peer, 'key provider: ' + (error?.message ?? error))
+        return
+      }
       if (!peer.checkAuthChallenge()) return;
       if (!authInfo) {
-        this.send_auth_fail(peer, 'NO ID:' + id);
+        this.send_auth_fail(peer, 'NO ID:' + id, true);
         return
       }
 
@@ -198,7 +263,7 @@ export class BohoAuth {
       //3. check hmac
       let auth_res = peer.boho.verify_auth_req(infoPack)
       if (!auth_res) {
-        this.send_auth_fail(peer, 'hmac dismatched');
+        this.send_auth_fail(peer, 'hmac dismatched', true);
         return
       }
 
@@ -222,7 +287,13 @@ export class BohoAuth {
         peer.close();
         return
       }
-      const quotaName = await this.resolveQuota(authInfo, role);
+      let quotaName
+      try {
+        quotaName = await this.resolveQuota(authInfo, role);
+      } catch (error) {
+        this.close_unavailable(peer, 'quota: ' + (error?.message ?? error))
+        return
+      }
       const quota = Object.hasOwn(peer.manager.quotas, quotaName) ? peer.manager.quotas[quotaName] : undefined;
       if (!quota) {
         this.send_auth_fail(peer, 'unknown quota: ' + quotaName);
@@ -277,9 +348,19 @@ export class BohoAuth {
       }
 
       //6. delete current (or anonymouse)cid if exist.
-      if (peer.cid) {
-        // console.log('if peer has cid', peer.cid)
-        peer.manager.cid2remote.delete(peer.cid)
+      if (peer.cid && peer.cid !== authInfo.cid) {
+        // Subscribers of the CID it had (an anonymous one, before login()) are told it is gone, as when
+        // a connection closes. Sent to them only: nothing is retained under the new CID.
+        const manager = peer.manager
+        for (const topic of ['@state', '@$state']) {
+          const tag = peer.cid + topic
+          manager.deliver(manager.CID_PREFIX + tag, getSignalPack(tag, 'close'), null)
+        }
+        // What it retained carries the old CID in its tag: dropped, the device publishes again when ready.
+        for (const message of peer.retain_signal.values()) manager.retainBytes -= message.byteLength
+        peer.retain_signal.clear()
+        peer.retainBytes = 0
+        manager.cid2remote.delete(peer.cid)
       }
 
       //7. setting info.

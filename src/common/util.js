@@ -76,4 +76,13 @@ export function getLocalAddress() {
 }
 
 
+// A login ID travels as 8 bytes (Boho id8): a longer one would be cut and could never match, or
+// match another entry. Key providers refuse it when it is added.
+export function checkLoginId(id) {
+  if (typeof id !== 'string' || !id || new TextEncoder().encode(id).byteLength > 8) {
+    throw new RangeError(`login ID must be 1-8 bytes: ${typeof id === 'string' ? id : typeof id}`)
+  }
+  return id
+}
+
 export const delay = ms => new Promise(resolve => setTimeout(resolve, ms));

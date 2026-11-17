@@ -6,6 +6,11 @@ import { IOMsg, ENC_MODE, STATE } from '../common/constants.js'
 
 const decoder = new TextDecoder()
 
+// With security.requireEncryption, what a logged-in connection without TLS may not send in plain.
+// PING, PONG, CID_REQ, ECHO and CLOSE carry nothing and stay plain, as clients send them.
+const PLAINTEXT_REFUSED = new Set([IOMsg.SIGNAL, IOMsg.SIGNAL_E2E, IOMsg.SUBSCRIBE, IOMsg.SUBSCRIBE_REQ,
+  IOMsg.UNSUBSCRIBE, IOMsg.CALL, IOMsg.IAM])
+
 const NB = MBP.NB
 const MB = MBP.MB
 
@@ -44,6 +49,7 @@ export class RemoteCore {
     this.security = manager.server.security;
     this._challengeIssuedAt = null;
     this._challengeUsed = false;
+    this.authFailures = 0; // failed logins on this connection (BohoAuth)
     this._replayBuckets = new Map();
     this._replayEntries = 0;
     this._replayExpiredBefore = 0;
@@ -317,6 +323,11 @@ export class RemoteCore {
       } else {
         // console.log( `[P] ${ IOMsg[ msgType] || Boho.BohoMsg[cmd]}  LEN: ${message.byteLength}` )
       }
+      if (!encrypted && this.security.requireEncryption && this.boho.isAuthorized && !this.TLS &&
+          PLAINTEXT_REFUSED.has(msgType)) {
+        this.securityMismatch('PLAINTEXT_AFTER_LOGIN');
+        return;
+      }
       if (logMessages) this.logMessage(msgType, message, encrypted)
 
       switch (msgType) {
@@ -430,8 +441,10 @@ export class RemoteCore {
               tag = decoder.decode(tag)
               let tagList = tag.split(',')
               // console.log('>> SUBSCRIBE_REQ from:', this.cid, tagList)
-              this.manager.subscribe(tagList, this)
-              this.response(msgID, 0)
+              const rejected = this.subscriptionsRejected ?? 0
+              if (this.manager.subscribe(tagList, this) === false) return
+              // 255: some tags were over the quota's maxSubscriptions and were not subscribed.
+              this.response(msgID, (this.subscriptionsRejected ?? 0) > rejected ? 255 : 0)
             } else {
               this.response(msgID, 255)
             }
@@ -466,7 +479,11 @@ export class RemoteCore {
 
         // client's auth requst
         case Boho.BohoMsg.AUTH_REQ:
-          if (!this.manager.authManager) return
+          // No login on this server: say so, or the client would wait in auth_req forever.
+          if (!this.manager.authManager) {
+            this.send(Buffer.from([Boho.BohoMsg.AUTH_FAIL]))
+            return
+          }
           // A second request while verification is pending must not restart auth.
           if (this.state === STATE.AUTH_REQ) {
             this.securityMismatch('AUTH_IN_PROGRESS');

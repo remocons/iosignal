@@ -44,6 +44,14 @@ function sendSubscription(io, tag) {
   ]))
 }
 
+// Names the client emits itself. A signal, SERVER_SIGNAL or SET with one of these as its tag is not
+// emitted under that name, so nothing from the network can pose as a connection event (a signal
+// on a channel called 'close' would otherwise run the client's own close handling).
+const INTERNAL_EVENTS = new Set(['open', 'close', 'closed', 'socket_data', 'change', 'error', 'message',
+  'connecting', 'closing', 'server_ready', 'auth_req', 'auth_res', 'auth_fail', 'auth_clear',
+  'cid_req', 'cid_res', 'ready', 'stop', 'redirecting', 'pong', 'echo', 'iam_res', 'over_size',
+  'text_message'])
+
 function byteToUrl(buffer) {
   //ipv4(4bytes) , port(2bytes)
   if (buffer.byteLength != 6) return
@@ -121,6 +129,16 @@ export class IOCore extends EventEmitter {
      * @type {number}
      */
     this.lastTxRxTime = Date.now();
+    /**
+     * Last time anything was received from the server (see keepAlive()).
+     * @type {number}
+     */
+    this.lastRxTime = Date.now();
+    /** @private Time of a PING that has had no answer yet; 0 when none is pending. */
+    this._pingSentAt = 0;
+    /** @private Connections closed since the last ready, and the earliest time of the next automatic attempt. */
+    this._reconnectAttempts = 0;
+    this._nextConnectAt = 0;
     /**
      * Period for connection checker.
      * @type {number}
@@ -236,6 +254,7 @@ export class IOCore extends EventEmitter {
   close() {
     // console.log('####### IOCOre.js close() called')
     this.clearHelloTimer();
+    this._pingSentAt = 0;
     // If auto-reconnect is disabled, we must stop the keep-alive timer.
     if (this.autoReconnect === false) {
       clearInterval(this.connectionCheckerIntervalID);
@@ -243,6 +262,7 @@ export class IOCore extends EventEmitter {
     }
     if (this._closed) return;
     this._closed = true;
+    this.scheduleReconnect();
 
     // socket clean
     if (this.socket) {
@@ -316,10 +336,35 @@ export class IOCore extends EventEmitter {
    * is implemented keepConnection() in the child classes (IOWS, IOCongSocket, etc.).
    */
   keepAlive() {
-    this.keepConnection();
-    if( Date.now() - this.lastTxRxTime > SIZE_LIMIT.CLIENT_PING_PERIOD ){
+    if (Date.now() >= this._nextConnectAt) this.keepConnection();
+    if (!this.isLinkUp()) return;
+    const now = Date.now();
+    // A PING the server did not answer with anything: the connection is dead although the socket
+    // still looks open (lost Wi-Fi, a sleeping phone, a NAT that dropped it). Close it; with
+    // autoReconnect the next keepAlive() connects again.
+    if (this._pingSentAt && now - this._pingSentAt > SIZE_LIMIT.PONG_TIMEOUT) {
+      this.emit('error', new Error('no reply from the server in ' + SIZE_LIMIT.PONG_TIMEOUT / 1000 + ' s; reconnecting'));
+      this.close();
+      return;
+    }
+    // Sending does not show the server is there, so this follows what was received.
+    if (!this._pingSentAt && now - this.lastRxTime > SIZE_LIMIT.CLIENT_PING_PERIOD) {
       this.ping();
     }
+  }
+
+  /** @private When keepAlive() may connect again after this close: see SIZE_LIMIT.RECONNECT_*. */
+  scheduleReconnect() {
+    const attempt = this._reconnectAttempts++;
+    const delay = attempt === 0
+      ? Math.random() * SIZE_LIMIT.RECONNECT_JITTER
+      : Math.min(SIZE_LIMIT.RECONNECT_MAX, SIZE_LIMIT.RECONNECT_BASE * 2 ** (attempt - 1)) * (0.8 + Math.random() * 0.4);
+    this._nextConnectAt = Date.now() + delay;
+  }
+
+  /** @private True from the socket opening until it closes (any state a server message can arrive in). */
+  isLinkUp() {
+    return !!this.socket && !this._closed && (this.state === STATE.OPEN || this.state >= STATE.SERVER_READY);
   }
 
   /**
@@ -392,6 +437,8 @@ export class IOCore extends EventEmitter {
    */
   onOpen() {
     this._closed = false;
+    this.lastRxTime = Date.now();
+    this._pingSentAt = 0;
     if (this.url.includes("wss://")) {
       this.TLS = true;
     } else {
@@ -418,6 +465,8 @@ export class IOCore extends EventEmitter {
       this.auth(id, key)
       this.useAuth = true
       let auth_pack = this.boho.auth_req(this.serverTimeNonce )
+      // false: no key was set (bad arguments), or the server has not said hello on this connection yet.
+      if (!auth_pack) return this
       this.send(auth_pack)
       this.stateChange('auth_req', 'auth_req')
     }
@@ -431,17 +480,21 @@ export class IOCore extends EventEmitter {
    * @returns {this} 
    */
   auth(id, key) {
-    if (!id && !key) {
-      this.emit('error', new Error('auth failed. no id and key.'))
+    if (key === null || key === '') key = undefined // auth('id.key', '') from a form with one field
+    if (typeof id !== 'string' || !id || (key === undefined ? !/^[^.]+\..+$/.test(id) : typeof key !== 'string')) {
+      this.emit('error', new Error("auth failed. use auth('id', 'key') or auth('id.key')."))
+      return this
     }
-
-    if (!key && id.includes('.')) {
+    // The ID travels as 8 bytes; a longer one is cut (as before), which the server may not know.
+    const loginId = key === undefined ? id.slice(0, id.indexOf('.')) : id
+    if (encoder.encode(loginId).byteLength > SIZE_LIMIT.DID) {
+      this.emit('error', new Error(`auth: login ID '${loginId}' is longer than ${SIZE_LIMIT.DID} bytes and is cut to them.`))
+    }
+    if (key === undefined) {
       this.boho.set_id_key(id)
-    } else if (id && key) {
+    } else {
       this.boho.set_id8(id)
       this.boho.set_key(key)
-    } else {
-      this.emit('error', new Error('auth failed. no id or key.'))
     }
     this.useAuth = true
     return this
@@ -452,6 +505,8 @@ export class IOCore extends EventEmitter {
    * @param {Buffer} buffer - The incoming data buffer.
    */
   onData(buffer) {
+    this.lastRxTime = Date.now();
+    this._pingSentAt = 0;
     let msgType = buffer[0];
     let decoded;
 
@@ -461,7 +516,8 @@ export class IOCore extends EventEmitter {
         msgType = decoded[0]
         buffer = decoded
       } else {
-        // console.log('DEC_FAIL', buffer.byteLength)
+        // Not from this session (or damaged): dropped, never passed on as a text message.
+        return
       }
     } else if (msgType === Boho.BohoMsg.ENC_E2E) {
 
@@ -535,6 +591,7 @@ export class IOCore extends EventEmitter {
         // State first (subscribe_channels needs READY), then the stored subscriptions, and only then
         // 'ready': a signal sent from a ready handler reaches the server after our own subscriptions.
         // stateChange() without a message emits 'change' only; false means a handler moved the state on.
+        this._reconnectAttempts = 0;
         if (!this.stateChange('ready')) break;
         this.subscribe_channels()
         this._readyDispatch = true
@@ -597,7 +654,7 @@ export class IOCore extends EventEmitter {
           let str = decoder.decode(buffer.subarray(1))
           let ss = JSON.parse(str)
 
-          if (ss.event && ss.data) {
+          if (typeof ss.event === 'string' && ss.event && ss.data && !INTERNAL_EVENTS.has(ss.event)) {
             this.serverSet = ss.data;
             this.emit(ss.event, ss.data)
           }
@@ -610,8 +667,8 @@ export class IOCore extends EventEmitter {
       case IOMsg.SET:
         try {
           let setPack = MBP.unpack(buffer)
-          if (setPack) {
-            this.emit(setPack.topic, ...setPack.args)
+          if (setPack && typeof setPack.topic === 'string' && !INTERNAL_EVENTS.has(setPack.topic)) {
+            this.emit(setPack.topic, ...(setPack.args ?? []))
           }
         } catch (error) {
           this.emit('error', new Error('SET parsing error'))
@@ -639,7 +696,8 @@ export class IOCore extends EventEmitter {
               this.emit('@', tag, ...args)
               if (tag !== '@') this.emit(tag, tag, ...args)
             } else {
-              this.emit(tag, tag, ...args)
+              // A channel whose name is one of the client's own events reaches 'message' only.
+              if (!INTERNAL_EVENTS.has(tag)) this.emit(tag, tag, ...args)
               this.emit('message', tag, ...args)
             }
           }
@@ -706,6 +764,8 @@ export class IOCore extends EventEmitter {
    * Sends a PING message to the server.
    */
   ping() {
+    // Any message from the server answers it (see keepAlive()).
+    if (!this._pingSentAt && this.isLinkUp()) this._pingSentAt = Date.now();
     this.send(Buffer.from([IOMsg.PING]))
   }
 

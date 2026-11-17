@@ -45,6 +45,10 @@ export type SIZE_LIMIT = {
     TAG_LEN2: number;
     CONNECTION_CHECKER_PERIOD: number;
     CLIENT_PING_PERIOD: number;
+    PONG_TIMEOUT: number;
+    RECONNECT_JITTER: number;
+    RECONNECT_BASE: number;
+    RECONNECT_MAX: number;
     SERVER_HELLO_TIMEOUT: number;
     PROMISE_TIMEOUT: number;
     DID: number;
@@ -55,6 +59,10 @@ export namespace SIZE_LIMIT {
     let TAG_LEN2: number;
     let CONNECTION_CHECKER_PERIOD: number;
     let CLIENT_PING_PERIOD: number;
+    let PONG_TIMEOUT: number;
+    let RECONNECT_JITTER: number;
+    let RECONNECT_BASE: number;
+    let RECONNECT_MAX: number;
     let SERVER_HELLO_TIMEOUT: number;
     let PROMISE_TIMEOUT: number;
     let DID: number;

@@ -196,7 +196,7 @@ new Server({ port: 7777, localAuth: 'idKey' })                                //
 new Server({ port: 7777, localAuth: { mode: 'sharedKey', key: 'lab2026' } })  // io.auth('dev1', 'lab2026')
 ```
 
-익명 연결의 시그널을 막으려면 `membersOnly: true`를 함께 지정합니다.
+익명 연결이 시그널을 보내거나 구독하지 못하게 하려면 `membersOnly: true`를 함께 지정합니다(시도하면 연결이 닫힙니다).
 [로컬 테스트 로그인](https://github.com/remocons/iosignal/blob/main/docs/boho.ko.md#로컬-테스트-로그인-localauth)을 참고하세요.
 
 ## 역할과 쿼터
@@ -210,7 +210,8 @@ new Server({ port: 7777, localAuth: { mode: 'sharedKey', key: 'lab2026' } })  //
   `RedisService(client, minRole)`의 기본값은 `service`입니다.
 - 쿼터 프로필은 `quotas` 서버 옵션에 이름으로 정의한 제한 묶음입니다.
   `maxMessageBytes`, `fanout`(발행 한 건이 전달되는 구독자 수), `msgPerSec`, `bytesPerSec`,
-  계정별 `maxConnections`를 지정하며 `null`은 무제한입니다. 서버가 항상 적용합니다.
+  계정별 `maxConnections`, 연결 하나가 구독할 수 있는 태그 수 `maxSubscriptions`를 지정하며
+  `null`은 무제한입니다. 서버가 항상 적용합니다.
   미로그인 연결은 `anonymousQuota`를, 로그인은 키 항목의 quota 또는
   `BohoAuth`의 `resolveQuota(authInfo, role)` 옵션 결과를 사용합니다.
 - 내장 프로필(`serverOption.quotas`의 `anonymous`, `basic`, `pro`, `unlimited`)은 운영자가
@@ -244,6 +245,19 @@ const server = new Server({
   `duplicateLogin`, `retain`의 소유자별 저장 예산.
 - 쿼터는 새 `QUOTA` 메시지로 전달됩니다. 이전 클라이언트는 이를 무시하고 기존
   로컬 크기 제한을 유지합니다.
+
+## 9.21 변경 사항
+
+- `membersOnly`는 익명 연결이 구독할 때도 연결을 닫습니다(이전에는 시그널을 보낼 때만).
+- 쿼터 `maxSubscriptions`: 넘는 태그는 구독되지 않습니다(`SUBSCRIBE_REQ`는 255로 응답).
+- 틀린 로그인: 한 연결에서 5번이면 연결을 닫고, 공인 주소 하나에서 1분에 30번이면 1분이 지날 때까지
+  그 주소의 로그인을 확인하지 않고 닫습니다(`serverOption.auth`). 키 저장소를 읽지 못하면 `AUTH_FAIL` 대신
+  연결을 닫아 클라이언트가 다시 로그인합니다.
+- 키 제공자는 8바이트를 넘는 로그인 ID를 등록할 때 거부합니다(이전에는 8바이트로 잘려 일치하지 않았습니다).
+- `security.requireEncryption`(기본 꺼짐): TLS가 아닌 로그인 연결은 시그널·구독·호출을 평문으로 보낼 수 없습니다.
+- 클라이언트: 서버에서 40초 동안 받은 것이 없으면 PING을 보내고, 15초 안에 아무것도 오지 않으면 연결을 닫고 다시 접속합니다.
+  재접속은 최대 1초 뒤 처음 시도하고, `ready`에 이르지 못하는 동안 3·6·12·24·30초 간격으로 늘립니다(이전에는 항상 3초).
+- 클라이언트: `close`, `ready`, `error`, `change` 같은 클라이언트 자체 이벤트 이름의 채널 시그널은 `message`로만 전달됩니다.
 
 ## 상세 문서
 

@@ -18,7 +18,8 @@ export const serverOption = {
   // A peer whose unsent data exceeds this many bytes (it stopped reading) is closed instead of
   // letting its send queue grow without limit.
   maxBufferedBytes: 64 * 1024 * 1024,
-  // Drop signals from connections that are not authenticated.
+  // Only authenticated connections may send signals or subscribe; an anonymous one that tries
+  // gets AUTH_CLEAR and is closed.
   membersOnly: false,
   // Observability. logMessages: log each received message (type and tag, never the payload).
   // logStats: print a one-line summary every N ms (0 = off).
@@ -30,7 +31,11 @@ export const serverOption = {
   security: {
     maxClockSkewMs: 60000,
     authChallengeMaxAgeMs: 60000,
-    maxReplayEntries: 65536
+    maxReplayEntries: 65536,
+    // true: a logged-in connection without TLS must send its signals, subscriptions and calls
+    // encrypted (as clients do in ENC_MODE.AUTO); a plain one closes it (PLAINTEXT_AFTER_LOGIN).
+    // Off by default: a client with encMode NO would be closed.
+    requireEncryption: false
   },
   // Named quota profiles. A connection uses one: an anonymous connection the Server's
   // anonymousQuota, an authenticated one the profile its account resolves to (see BohoAuth
@@ -40,11 +45,12 @@ export const serverOption = {
   //   fanout:          most subscribers one channel publish is delivered to
   //   msgPerSec, bytesPerSec: sustained receive rate (token bucket, 1 s burst); over: dropped
   //   maxConnections:  connections of one account (uid) at a time; over: the login fails
+  //   maxSubscriptions: tags one connection may be subscribed to at a time; over: the tag is left out
   quotas: {
-    anonymous: { maxMessageBytes: 256 * 1024, fanout: 1000, msgPerSec: 100, bytesPerSec: 2 * 1024 * 1024, maxConnections: null },
-    basic: { maxMessageBytes: 1024 * 1024, fanout: 1000, msgPerSec: 200, bytesPerSec: 4 * 1024 * 1024, maxConnections: 20 },
-    pro: { maxMessageBytes: 4 * 1024 * 1024, fanout: 10000, msgPerSec: 1000, bytesPerSec: 16 * 1024 * 1024, maxConnections: 200 },
-    unlimited: { maxMessageBytes: null, fanout: null, msgPerSec: null, bytesPerSec: null, maxConnections: null }
+    anonymous: { maxMessageBytes: 256 * 1024, fanout: 1000, msgPerSec: 100, bytesPerSec: 2 * 1024 * 1024, maxConnections: null, maxSubscriptions: 1000 },
+    basic: { maxMessageBytes: 1024 * 1024, fanout: 1000, msgPerSec: 200, bytesPerSec: 4 * 1024 * 1024, maxConnections: 20, maxSubscriptions: 2000 },
+    pro: { maxMessageBytes: 4 * 1024 * 1024, fanout: 10000, msgPerSec: 1000, bytesPerSec: 16 * 1024 * 1024, maxConnections: 200, maxSubscriptions: 10000 },
+    unlimited: { maxMessageBytes: null, fanout: null, msgPerSec: null, bytesPerSec: null, maxConnections: null, maxSubscriptions: null }
   },
   anonymousQuota: 'anonymous', // profile of a connection that has not authenticated
 
@@ -84,6 +90,13 @@ export const serverOption = {
 
   auth: {
     failDelay: 600, // ms before AUTH_FAIL is sent
+    // Wrong logins: a connection is closed after maxFailuresPerConnection; a public address with
+    // maxFailuresPerAddress in failureWindowMs gets its next logins closed unchecked until the window
+    // has passed (closed, not AUTH_FAIL, so a device with the right key there connects again).
+    // Loopback and private addresses are not counted (a proxy, a LAN, tests).
+    maxFailuresPerConnection: 5,
+    maxFailuresPerAddress: 30,
+    failureWindowMs: 60000,
     // Default for BohoAuth, when the same authenticated CID is already online:
     // 'keepNew' replaces the old connection, 'keepOld' rejects the new login.
     // Override per BohoAuth with its duplicateLogin option, and per Server with options.duplicateLogin

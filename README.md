@@ -202,7 +202,8 @@ new Server({ port: 7777, localAuth: 'idKey' })                                //
 new Server({ port: 7777, localAuth: { mode: 'sharedKey', key: 'lab2026' } })  // io.auth('dev1', 'lab2026')
 ```
 
-Add `membersOnly: true` to drop signals from anonymous connections. See
+Add `membersOnly: true` to close anonymous connections that send a signal or
+subscribe. See
 [Local test logins](https://github.com/remocons/iosignal/blob/main/docs/boho.md#local-test-logins-localauth).
 
 ## Roles and quotas
@@ -217,7 +218,8 @@ how much it may send. They are independent.
   `admin`, `RedisService(client, minRole)` defaults to `service`.
 - Quota profiles are named sets of limits in the `quotas` server option:
   `maxMessageBytes`, `fanout` (subscribers one publish reaches), `msgPerSec`,
-  `bytesPerSec` and `maxConnections` per account. `null` means unlimited.
+  `bytesPerSec`, `maxConnections` per account and `maxSubscriptions` (tags one
+  connection may be subscribed to). `null` means unlimited.
   The server always enforces them. Unauthenticated connections use
   `anonymousQuota`; a login uses its key entry's quota, or the result of the
   `BohoAuth` `resolveQuota(authInfo, role)` option.
@@ -257,6 +259,27 @@ replacement.
   per owner in `retain`.
 - The quota is sent in a new `QUOTA` message; older clients ignore it and
   keep their previous local size limit.
+
+## Changes in 9.21
+
+- `membersOnly` also closes an anonymous connection that subscribes (before,
+  only one that sent a signal).
+- Quota `maxSubscriptions`: tags over it are not subscribed
+  (`SUBSCRIBE_REQ` answers 255).
+- Wrong logins: a connection is closed after 5; a public address with 30 in a
+  minute has its next logins closed without a check until the minute has
+  passed (`serverOption.auth`). A key store that cannot be read closes the
+  connection instead of answering `AUTH_FAIL`, so the client logs in again.
+- Key providers refuse a login ID longer than 8 bytes when it is added (it was
+  cut to 8 bytes and could not match).
+- `security.requireEncryption` (off by default): a logged-in connection without
+  TLS may not send plain signals, subscriptions or calls.
+- Client: after 40 s without anything from the server it sends a PING, and
+  closes the connection when nothing arrives within 15 s (then reconnects).
+  Reconnect attempts start after up to 1 s and, while none reaches `ready`,
+  wait 3, 6, 12, 24 and then 30 s instead of always 3 s.
+- Client: a signal on a channel named like one of the client's own events
+  (`close`, `ready`, `error`, `change`, ...) is emitted as `message` only.
 
 ## Detailed guides
 

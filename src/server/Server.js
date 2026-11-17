@@ -49,7 +49,7 @@ function integer(name, value, min, max = Number.MAX_SAFE_INTEGER) {
 }
 const positive = (name, value) => integer(name, value, 1)
 const nonNegative = (name, value) => integer(name, value, 0)
-const QUOTA_LIMITS = ['maxMessageBytes', 'fanout', 'msgPerSec', 'bytesPerSec', 'maxConnections']
+const QUOTA_LIMITS = ['maxMessageBytes', 'fanout', 'msgPerSec', 'bytesPerSec', 'maxConnections', 'maxSubscriptions']
 
 // This Server's quota profiles: the defaults with each given profile merged over its default
 // (a new name starts from no limits). Every limit is a positive integer or null (unlimited).
@@ -114,13 +114,13 @@ export class Server extends EventEmitter {
    *   loopback/private peer, true always, false never, or N trusted proxy hops.
    *   options.maxPayload: largest WebSocket message and CongSocket frame in bytes (default 32 MiB).
    *   options.maxBufferedBytes: close a peer whose unsent data exceeds this (default 64 MiB).
-   *   options.membersOnly: drop signals from connections that are not authenticated.
+   *   options.membersOnly: only authenticated connections may send signals or subscribe.
    *   options.logMessages: log each received message after decryption: type and tag, never the payload.
    *   options.logStats: print a one-line summary every N ms (>= 1000; 0 = off); see stats().
-   *   options.security: { maxClockSkewMs, authChallengeMaxAgeMs, maxReplayEntries }.
+   *   options.security: { maxClockSkewMs, authChallengeMaxAgeMs, maxReplayEntries, requireEncryption }.
    *   options.retain: retained message limits, see serverOption.retain; adjustable later on server.retain.
    *   options.quotas: named quota profiles { name: { maxMessageBytes, fanout, msgPerSec, bytesPerSec,
-   *   maxConnections } }, merged over serverOption.quotas; always enforced, null is unlimited.
+   *   maxConnections, maxSubscriptions } }, merged over serverOption.quotas; always enforced, null is unlimited.
    *   Adjustable later on server.quotas. The client is told its maxMessageBytes.
    *   options.anonymousQuota: profile of a connection that has not authenticated (default 'anonymous').
    *   options.duplicateLogin: 'keepOld' | 'keepNew' for this Server's connections; overrides the auth
@@ -141,7 +141,7 @@ export class Server extends EventEmitter {
     // never written, so servers in one process do not affect each other.
     checkRemoved(options);
     this.security = Object.freeze(group('security', options.security,
-      { maxClockSkewMs: positive, authChallengeMaxAgeMs: positive, maxReplayEntries: positive }));
+      { maxClockSkewMs: positive, authChallengeMaxAgeMs: positive, maxReplayEntries: positive, requireEncryption: boolean }));
     // retain and quotas may be adjusted on a running server, e.g. server.quotas.basic.fanout = 50.
     this.retain = group('retain', options.retain, {
       enabled: boolean, limitSize: positive, limitCounter: positive, tagsPerOwner: positive,

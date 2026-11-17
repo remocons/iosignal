@@ -12,6 +12,7 @@
  */
 
 import Boho from 'boho'
+import { checkLoginId } from '../../common/util.js'
 import { ROLES } from '../BohoAuth.js'
 
 const ACCOUNT_ROLES = ROLES.filter(role => role !== 'anonymous')
@@ -45,6 +46,7 @@ export class StringKeyProvider {
   }
 
   addAuth(id, keyStr, cid, role, quota) {
+    checkLoginId(id)
     let Base64hashKey = Buffer.from(Boho.sha256.hash(keyStr)).toString('base64')
     this.AUTH.set(id, { key: Base64hashKey, cid, ...(role && { role }), ...(quota && { quota }) })
   }

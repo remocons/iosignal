@@ -58,6 +58,10 @@ for (let c in ENC_MODE) { ENC_MODE[ENC_MODE[c]] = c }
  * @property {number} TAG_LEN2
  * @property {number} CONNECTION_CHECKER_PERIOD
  * @property {number} CLIENT_PING_PERIOD
+ * @property {number} PONG_TIMEOUT
+ * @property {number} RECONNECT_JITTER
+ * @property {number} RECONNECT_BASE
+ * @property {number} RECONNECT_MAX
  * @property {number} SERVER_HELLO_TIMEOUT
  * @property {number} PROMISE_TIMEOUT
  * @property {number} DID
@@ -68,6 +72,17 @@ export const SIZE_LIMIT = {
   TAG_LEN2: 65535,
   CONNECTION_CHECKER_PERIOD: 3000,
   CLIENT_PING_PERIOD: 40000,
+  // After a client PING (sent when nothing was received for CLIENT_PING_PERIOD): with no message
+  // from the server in this time the connection is taken as dead and closed, so the client
+  // reconnects. A lost Wi-Fi or mobile link may leave a socket open for many minutes otherwise.
+  PONG_TIMEOUT: 15000,
+  // Reconnecting (autoReconnect): the first attempt after a connection closes waits a random time
+  // up to RECONNECT_JITTER, so the clients of a restarted server do not all return at once; each
+  // further attempt without reaching ready waits RECONNECT_BASE, doubled each time up to
+  // RECONNECT_MAX (each +-20%). Reaching ready starts over.
+  RECONNECT_JITTER: 1000,
+  RECONNECT_BASE: 3000,
+  RECONNECT_MAX: 30000,
   // From starting a connection to the server's hello (SERVER_TIME_NONCE). A connection that hangs
   // longer is closed, so the client reconnects to its own URL (after a redirect: the original one).
   SERVER_HELLO_TIMEOUT: 15000,

@@ -1,4 +1,5 @@
 import Boho from 'boho'
+import { checkLoginId } from '../../common/util.js'
 const DEVICE_PREFIX = "device:"
 // Every device CID in use. The account service picks new CIDs outside it, so a device added here
 // is listed too and no member can be given its CID.
@@ -13,14 +14,12 @@ export class RedisKeyProvider {
   }
 
   // get device key from DB. (for Boho auth.)
+  // null: no such device. A Redis failure throws, so BohoAuth closes the connection (the client
+  // connects again) instead of answering AUTH_FAIL as if the ID were unknown.
   async getAuth(id) {
-    try {
-      let result = await this.redis.hGetAll(DEVICE_PREFIX + id)
-      if (result && result.key) return result
-      else return null;
-    } catch (error) {
-      console.log('getAuth', error)
-    }
+    let result = await this.redis.hGetAll(DEVICE_PREFIX + id)
+    if (result && result.key) return result
+    else return null;
   }
 
   //sudoService call
@@ -31,13 +30,18 @@ export class RedisKeyProvider {
 
   // Keys matching pattern, by SCAN: KEYS blocks Redis until it has walked every key.
   // Falls back to KEYS for a client without scan, or a redis-service from before 2026-11-17 that refuses it
-  // (RemoteRedisClient answers a refused command with undefined).
+  // (RemoteRedisClient throws on a refused command; an undefined reply is treated the same).
   async scanKeys(pattern) {
     if (typeof this.redis.scan === 'function') {
       const keys = new Set() // SCAN may return a key more than once
       let cursor = '0'
       do {
-        const reply = await this.redis.scan(cursor, { MATCH: pattern, COUNT: 1000 })
+        let reply
+        try {
+          reply = await this.redis.scan(cursor, { MATCH: pattern, COUNT: 1000 })
+        } catch {
+          break
+        }
         if (!reply || !Array.isArray(reply.keys)) break
         for (const key of reply.keys) keys.add(key)
         cursor = String(reply.cursor)
@@ -50,6 +54,7 @@ export class RedisKeyProvider {
   // add device auth info
   // role and quota are optional (see StringKeyProvider); an omitted one is not stored.
   async addAuth(id, keyStr, cid = '', role, quota) {
+    checkLoginId(id)
     let Base64hashKey = Buffer.from(Boho.sha256.hash(keyStr)).toString('base64')
     const fields = { 'key': Base64hashKey, 'cid': cid }
     if (role) fields.role = role

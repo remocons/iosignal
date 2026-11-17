@@ -449,6 +449,10 @@ for (let c in ENC_MODE) { ENC_MODE[ENC_MODE[c]] = c; }
  * @property {number} TAG_LEN2
  * @property {number} CONNECTION_CHECKER_PERIOD
  * @property {number} CLIENT_PING_PERIOD
+ * @property {number} PONG_TIMEOUT
+ * @property {number} RECONNECT_JITTER
+ * @property {number} RECONNECT_BASE
+ * @property {number} RECONNECT_MAX
  * @property {number} SERVER_HELLO_TIMEOUT
  * @property {number} PROMISE_TIMEOUT
  * @property {number} DID
@@ -459,6 +463,17 @@ const SIZE_LIMIT = {
   TAG_LEN2: 65535,
   CONNECTION_CHECKER_PERIOD: 3000,
   CLIENT_PING_PERIOD: 40000,
+  // After a client PING (sent when nothing was received for CLIENT_PING_PERIOD): with no message
+  // from the server in this time the connection is taken as dead and closed, so the client
+  // reconnects. A lost Wi-Fi or mobile link may leave a socket open for many minutes otherwise.
+  PONG_TIMEOUT: 15000,
+  // Reconnecting (autoReconnect): the first attempt after a connection closes waits a random time
+  // up to RECONNECT_JITTER, so the clients of a restarted server do not all return at once; each
+  // further attempt without reaching ready waits RECONNECT_BASE, doubled each time up to
+  // RECONNECT_MAX (each +-20%). Reaching ready starts over.
+  RECONNECT_JITTER: 1000,
+  RECONNECT_BASE: 3000,
+  RECONNECT_MAX: 30000,
   // From starting a connection to the server's hello (SERVER_TIME_NONCE). A connection that hangs
   // longer is closed, so the client reconnects to its own URL (after a redirect: the original one).
   SERVER_HELLO_TIMEOUT: 15000,
@@ -779,6 +794,14 @@ function sendSubscription(io, tag) {
   ]));
 }
 
+// Names the client emits itself. A signal, SERVER_SIGNAL or SET with one of these as its tag is not
+// emitted under that name, so nothing from the network can pose as a connection event (a signal
+// on a channel called 'close' would otherwise run the client's own close handling).
+const INTERNAL_EVENTS = new Set(['open', 'close', 'closed', 'socket_data', 'change', 'error', 'message',
+  'connecting', 'closing', 'server_ready', 'auth_req', 'auth_res', 'auth_fail', 'auth_clear',
+  'cid_req', 'cid_res', 'ready', 'stop', 'redirecting', 'pong', 'echo', 'iam_res', 'over_size',
+  'text_message']);
+
 function byteToUrl(buffer) {
   //ipv4(4bytes) , port(2bytes)
   if (buffer.byteLength != 6) return
@@ -856,6 +879,16 @@ class IOCore extends EventEmitter {
      * @type {number}
      */
     this.lastTxRxTime = Date.now();
+    /**
+     * Last time anything was received from the server (see keepAlive()).
+     * @type {number}
+     */
+    this.lastRxTime = Date.now();
+    /** @private Time of a PING that has had no answer yet; 0 when none is pending. */
+    this._pingSentAt = 0;
+    /** @private Connections closed since the last ready, and the earliest time of the next automatic attempt. */
+    this._reconnectAttempts = 0;
+    this._nextConnectAt = 0;
     /**
      * Period for connection checker.
      * @type {number}
@@ -971,6 +1004,7 @@ class IOCore extends EventEmitter {
   close() {
     // console.log('####### IOCOre.js close() called')
     this.clearHelloTimer();
+    this._pingSentAt = 0;
     // If auto-reconnect is disabled, we must stop the keep-alive timer.
     if (this.autoReconnect === false) {
       clearInterval(this.connectionCheckerIntervalID);
@@ -978,6 +1012,7 @@ class IOCore extends EventEmitter {
     }
     if (this._closed) return;
     this._closed = true;
+    this.scheduleReconnect();
 
     // socket clean
     if (this.socket) {
@@ -1051,10 +1086,35 @@ class IOCore extends EventEmitter {
    * is implemented keepConnection() in the child classes (IOWS, IOCongSocket, etc.).
    */
   keepAlive() {
-    this.keepConnection();
-    if( Date.now() - this.lastTxRxTime > SIZE_LIMIT.CLIENT_PING_PERIOD ){
+    if (Date.now() >= this._nextConnectAt) this.keepConnection();
+    if (!this.isLinkUp()) return;
+    const now = Date.now();
+    // A PING the server did not answer with anything: the connection is dead although the socket
+    // still looks open (lost Wi-Fi, a sleeping phone, a NAT that dropped it). Close it; with
+    // autoReconnect the next keepAlive() connects again.
+    if (this._pingSentAt && now - this._pingSentAt > SIZE_LIMIT.PONG_TIMEOUT) {
+      this.emit('error', new Error('no reply from the server in ' + SIZE_LIMIT.PONG_TIMEOUT / 1000 + ' s; reconnecting'));
+      this.close();
+      return;
+    }
+    // Sending does not show the server is there, so this follows what was received.
+    if (!this._pingSentAt && now - this.lastRxTime > SIZE_LIMIT.CLIENT_PING_PERIOD) {
       this.ping();
     }
+  }
+
+  /** @private When keepAlive() may connect again after this close: see SIZE_LIMIT.RECONNECT_*. */
+  scheduleReconnect() {
+    const attempt = this._reconnectAttempts++;
+    const delay = attempt === 0
+      ? Math.random() * SIZE_LIMIT.RECONNECT_JITTER
+      : Math.min(SIZE_LIMIT.RECONNECT_MAX, SIZE_LIMIT.RECONNECT_BASE * 2 ** (attempt - 1)) * (0.8 + Math.random() * 0.4);
+    this._nextConnectAt = Date.now() + delay;
+  }
+
+  /** @private True from the socket opening until it closes (any state a server message can arrive in). */
+  isLinkUp() {
+    return !!this.socket && !this._closed && (this.state === STATE.OPEN || this.state >= STATE.SERVER_READY);
   }
 
   /**
@@ -1127,6 +1187,8 @@ class IOCore extends EventEmitter {
    */
   onOpen() {
     this._closed = false;
+    this.lastRxTime = Date.now();
+    this._pingSentAt = 0;
     if (this.url.includes("wss://")) {
       this.TLS = true;
     } else {
@@ -1153,6 +1215,8 @@ class IOCore extends EventEmitter {
       this.auth(id, key);
       this.useAuth = true;
       let auth_pack = this.boho.auth_req(this.serverTimeNonce );
+      // false: no key was set (bad arguments), or the server has not said hello on this connection yet.
+      if (!auth_pack) return this
       this.send(auth_pack);
       this.stateChange('auth_req', 'auth_req');
     }
@@ -1166,17 +1230,21 @@ class IOCore extends EventEmitter {
    * @returns {this} 
    */
   auth(id, key) {
-    if (!id && !key) {
-      this.emit('error', new Error('auth failed. no id and key.'));
+    if (key === null || key === '') key = undefined; // auth('id.key', '') from a form with one field
+    if (typeof id !== 'string' || !id || (key === undefined ? !/^[^.]+\..+$/.test(id) : typeof key !== 'string')) {
+      this.emit('error', new Error("auth failed. use auth('id', 'key') or auth('id.key')."));
+      return this
     }
-
-    if (!key && id.includes('.')) {
+    // The ID travels as 8 bytes; a longer one is cut (as before), which the server may not know.
+    const loginId = key === undefined ? id.slice(0, id.indexOf('.')) : id;
+    if (encoder$2.encode(loginId).byteLength > SIZE_LIMIT.DID) {
+      this.emit('error', new Error(`auth: login ID '${loginId}' is longer than ${SIZE_LIMIT.DID} bytes and is cut to them.`));
+    }
+    if (key === undefined) {
       this.boho.set_id_key(id);
-    } else if (id && key) {
+    } else {
       this.boho.set_id8(id);
       this.boho.set_key(key);
-    } else {
-      this.emit('error', new Error('auth failed. no id or key.'));
     }
     this.useAuth = true;
     return this
@@ -1187,6 +1255,8 @@ class IOCore extends EventEmitter {
    * @param {Buffer} buffer - The incoming data buffer.
    */
   onData(buffer) {
+    this.lastRxTime = Date.now();
+    this._pingSentAt = 0;
     let msgType = buffer[0];
     let decoded;
 
@@ -1195,6 +1265,9 @@ class IOCore extends EventEmitter {
       if (decoded) {
         msgType = decoded[0];
         buffer = decoded;
+      } else {
+        // Not from this session (or damaged): dropped, never passed on as a text message.
+        return
       }
     } else if (msgType === it.BohoMsg.ENC_E2E) {
 
@@ -1268,6 +1341,7 @@ class IOCore extends EventEmitter {
         // State first (subscribe_channels needs READY), then the stored subscriptions, and only then
         // 'ready': a signal sent from a ready handler reaches the server after our own subscriptions.
         // stateChange() without a message emits 'change' only; false means a handler moved the state on.
+        this._reconnectAttempts = 0;
         if (!this.stateChange('ready')) break;
         this.subscribe_channels();
         this._readyDispatch = true;
@@ -1327,7 +1401,7 @@ class IOCore extends EventEmitter {
           let str = decoder$4.decode(buffer.subarray(1));
           let ss = JSON.parse(str);
 
-          if (ss.event && ss.data) {
+          if (typeof ss.event === 'string' && ss.event && ss.data && !INTERNAL_EVENTS.has(ss.event)) {
             this.serverSet = ss.data;
             this.emit(ss.event, ss.data);
           }
@@ -1340,8 +1414,8 @@ class IOCore extends EventEmitter {
       case IOMsg.SET:
         try {
           let setPack = $$1.unpack(buffer);
-          if (setPack) {
-            this.emit(setPack.topic, ...setPack.args);
+          if (setPack && typeof setPack.topic === 'string' && !INTERNAL_EVENTS.has(setPack.topic)) {
+            this.emit(setPack.topic, ...(setPack.args ?? []));
           }
         } catch (error) {
           this.emit('error', new Error('SET parsing error'));
@@ -1369,7 +1443,8 @@ class IOCore extends EventEmitter {
               this.emit('@', tag, ...args);
               if (tag !== '@') this.emit(tag, tag, ...args);
             } else {
-              this.emit(tag, tag, ...args);
+              // A channel whose name is one of the client's own events reaches 'message' only.
+              if (!INTERNAL_EVENTS.has(tag)) this.emit(tag, tag, ...args);
               this.emit('message', tag, ...args);
             }
           }
@@ -1436,6 +1511,8 @@ class IOCore extends EventEmitter {
    * Sends a PING message to the server.
    */
   ping() {
+    // Any message from the server answers it (see keepAlive()).
+    if (!this._pingSentAt && this.isLinkUp()) this._pingSentAt = Date.now();
     this.send(Buffer$1.from([IOMsg.PING]));
   }
 
@@ -7400,7 +7477,8 @@ const serverOption = {
   // A peer whose unsent data exceeds this many bytes (it stopped reading) is closed instead of
   // letting its send queue grow without limit.
   maxBufferedBytes: 64 * 1024 * 1024,
-  // Drop signals from connections that are not authenticated.
+  // Only authenticated connections may send signals or subscribe; an anonymous one that tries
+  // gets AUTH_CLEAR and is closed.
   membersOnly: false,
   // Observability. logMessages: log each received message (type and tag, never the payload).
   // logStats: print a one-line summary every N ms (0 = off).
@@ -7412,7 +7490,11 @@ const serverOption = {
   security: {
     maxClockSkewMs: 60000,
     authChallengeMaxAgeMs: 60000,
-    maxReplayEntries: 65536
+    maxReplayEntries: 65536,
+    // true: a logged-in connection without TLS must send its signals, subscriptions and calls
+    // encrypted (as clients do in ENC_MODE.AUTO); a plain one closes it (PLAINTEXT_AFTER_LOGIN).
+    // Off by default: a client with encMode NO would be closed.
+    requireEncryption: false
   },
   // Named quota profiles. A connection uses one: an anonymous connection the Server's
   // anonymousQuota, an authenticated one the profile its account resolves to (see BohoAuth
@@ -7422,11 +7504,12 @@ const serverOption = {
   //   fanout:          most subscribers one channel publish is delivered to
   //   msgPerSec, bytesPerSec: sustained receive rate (token bucket, 1 s burst); over: dropped
   //   maxConnections:  connections of one account (uid) at a time; over: the login fails
+  //   maxSubscriptions: tags one connection may be subscribed to at a time; over: the tag is left out
   quotas: {
-    anonymous: { maxMessageBytes: 256 * 1024, fanout: 1000, msgPerSec: 100, bytesPerSec: 2 * 1024 * 1024, maxConnections: null },
-    basic: { maxMessageBytes: 1024 * 1024, fanout: 1000, msgPerSec: 200, bytesPerSec: 4 * 1024 * 1024, maxConnections: 20 },
-    pro: { maxMessageBytes: 4 * 1024 * 1024, fanout: 10000, msgPerSec: 1000, bytesPerSec: 16 * 1024 * 1024, maxConnections: 200 },
-    unlimited: { maxMessageBytes: null, fanout: null, msgPerSec: null, bytesPerSec: null, maxConnections: null }
+    anonymous: { maxMessageBytes: 256 * 1024, fanout: 1000, msgPerSec: 100, bytesPerSec: 2 * 1024 * 1024, maxConnections: null, maxSubscriptions: 1000 },
+    basic: { maxMessageBytes: 1024 * 1024, fanout: 1000, msgPerSec: 200, bytesPerSec: 4 * 1024 * 1024, maxConnections: 20, maxSubscriptions: 2000 },
+    pro: { maxMessageBytes: 4 * 1024 * 1024, fanout: 10000, msgPerSec: 1000, bytesPerSec: 16 * 1024 * 1024, maxConnections: 200, maxSubscriptions: 10000 },
+    unlimited: { maxMessageBytes: null, fanout: null, msgPerSec: null, bytesPerSec: null, maxConnections: null, maxSubscriptions: null }
   },
   anonymousQuota: 'anonymous', // profile of a connection that has not authenticated
 
@@ -7466,6 +7549,13 @@ const serverOption = {
 
   auth: {
     failDelay: 600, // ms before AUTH_FAIL is sent
+    // Wrong logins: a connection is closed after maxFailuresPerConnection; a public address with
+    // maxFailuresPerAddress in failureWindowMs gets its next logins closed unchecked until the window
+    // has passed (closed, not AUTH_FAIL, so a device with the right key there connects again).
+    // Loopback and private addresses are not counted (a proxy, a LAN, tests).
+    maxFailuresPerConnection: 5,
+    maxFailuresPerAddress: 30,
+    failureWindowMs: 60000,
     // Default for BohoAuth, when the same authenticated CID is already online:
     // 'keepNew' replaces the old connection, 'keepOld' rejects the new login.
     // Override per BohoAuth with its duplicateLogin option, and per Server with options.duplicateLogin
@@ -7482,6 +7572,11 @@ const serverOption = {
 };
 
 const decoder$3 = new TextDecoder();
+
+// With security.requireEncryption, what a logged-in connection without TLS may not send in plain.
+// PING, PONG, CID_REQ, ECHO and CLOSE carry nothing and stay plain, as clients send them.
+const PLAINTEXT_REFUSED = new Set([IOMsg.SIGNAL, IOMsg.SIGNAL_E2E, IOMsg.SUBSCRIBE, IOMsg.SUBSCRIBE_REQ,
+  IOMsg.UNSUBSCRIBE, IOMsg.CALL, IOMsg.IAM]);
 
 $$1.NB;
 const MB = $$1.MB;
@@ -7521,6 +7616,7 @@ class RemoteCore {
     this.security = manager.server.security;
     this._challengeIssuedAt = null;
     this._challengeUsed = false;
+    this.authFailures = 0; // failed logins on this connection (BohoAuth)
     this._replayBuckets = new Map();
     this._replayEntries = 0;
     this._replayExpiredBefore = 0;
@@ -7792,6 +7888,11 @@ class RemoteCore {
         }
 
       } else ;
+      if (!encrypted && this.security.requireEncryption && this.boho.isAuthorized && !this.TLS &&
+          PLAINTEXT_REFUSED.has(msgType)) {
+        this.securityMismatch('PLAINTEXT_AFTER_LOGIN');
+        return;
+      }
       if (logMessages) this.logMessage(msgType, message, encrypted);
 
       switch (msgType) {
@@ -7905,8 +8006,10 @@ class RemoteCore {
               tag = decoder$3.decode(tag);
               let tagList = tag.split(',');
               // console.log('>> SUBSCRIBE_REQ from:', this.cid, tagList)
-              this.manager.subscribe(tagList, this);
-              this.response(msgID, 0);
+              const rejected = this.subscriptionsRejected ?? 0;
+              if (this.manager.subscribe(tagList, this) === false) return
+              // 255: some tags were over the quota's maxSubscriptions and were not subscribed.
+              this.response(msgID, (this.subscriptionsRejected ?? 0) > rejected ? 255 : 0);
             } else {
               this.response(msgID, 255);
             }
@@ -7941,7 +8044,11 @@ class RemoteCore {
 
         // client's auth requst
         case it.BohoMsg.AUTH_REQ:
-          if (!this.manager.authManager) return
+          // No login on this server: say so, or the client would wait in auth_req forever.
+          if (!this.manager.authManager) {
+            this.send(Buffer.from([it.BohoMsg.AUTH_FAIL]));
+            return
+          }
           // A second request while verification is pending must not restart auth.
           if (this.state === STATE.AUTH_REQ) {
             this.securityMismatch('AUTH_IN_PROGRESS');
@@ -8152,6 +8259,15 @@ function getLocalAddress() {
   return localAddress
 }
 
+
+// A login ID travels as 8 bytes (Boho id8): a longer one would be cut and could never match, or
+// match another entry. Key providers refuse it when it is added.
+function checkLoginId(id) {
+  if (typeof id !== 'string' || !id || new TextEncoder().encode(id).byteLength > 8) {
+    throw new RangeError(`login ID must be 1-8 bytes: ${typeof id === 'string' ? id : typeof id}`)
+  }
+  return id
+}
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -9156,6 +9272,7 @@ class Manager {
     this.counters = { rxMessages: 0, rxBytes: 0, txMessages: 0, txBytes: 0,
       publishes: 0, deliveryAttempts: 0, quotaExcluded: 0, oversizeRejected: 0, rateLimited: 0,
       peerRxLimitSkipped: 0, // messages not sent: larger than the peer's advertised RX buffer
+      subscriptionsRejected: 0, // subscriptions over a connection's quota maxSubscriptions, left out
       policyDenied: 0,       // unicasts and CID publications a device's delivery policy kept back
       hostInbound: 0,        // client signals handed to a host (server.host)
       hostRejected: 0,       // signals to a host tag that were not handed over (E2E, malformed payload)
@@ -9702,7 +9819,16 @@ class Manager {
     if (owner.tags.size === 0) this.retainOwners.delete(owner.key);
   }
 
+  // Returns false when nothing was subscribed (membersOnly), else the connection's subscription count.
+  // Tags over the quota's maxSubscriptions are left out and counted in subscriptionsRejected.
   subscribe(chArr, remote) {
+    // Reading is closed to anonymous connections like sending (sender): same answer.
+    if ((this.server?.membersOnly ?? serverOption.membersOnly) && !remote.boho.isAuthorized) {
+      remote.send(Buffer.from([IOMsg.AUTH_CLEAR]));
+      remote.close();
+      return false
+    }
+    const maxSubscriptions = remote.quota?.maxSubscriptions ?? null;
     chArr.forEach(tag => {
       if (tag.indexOf('#') === 0) {
         tag = remote.HOME_CHANNEL + tag;
@@ -9710,6 +9836,12 @@ class Manager {
         tag = this.CID_PREFIX + tag;
       } else {
         tag = this.CHANNEL_PREFIX + tag;
+      }
+
+      if (maxSubscriptions !== null && remote.channels.size >= maxSubscriptions && !remote.channels.has(tag)) {
+        this.counters.subscriptionsRejected++;
+        remote.subscriptionsRejected = (remote.subscriptionsRejected ?? 0) + 1;
+        return
       }
 
       // 1. set channel map
@@ -9984,6 +10116,7 @@ class BohoAuth {
     if (options.duplicateLogin !== undefined) this.duplicateLogin = options.duplicateLogin;
     this.onAuthEvent = options.onAuthEvent ?? null;
     this.resolveQuota = options.resolveQuota ?? defaultQuota;
+    this.addressFailures = new Map(); // public address -> { count, since } of wrong logins
     this.authLogger;
     if (serverOption.fileLogger.auth.use) {
       this.authLogger = new FileLogger(serverOption.fileLogger.auth.path);
@@ -10024,9 +10157,46 @@ class BohoAuth {
     }
   }
 
-  send_auth_fail(peer, reason) {
+  // Wrong logins of a public address in the current window (see serverOption.auth).
+  #addressEntry(ip, now = Date.now()) {
+    if (typeof ip !== 'string' || !ip || isPrivateIP(ip)) return null
+    let entry = this.addressFailures.get(ip);
+    if (entry && now - entry.since >= serverOption.auth.failureWindowMs) {
+      this.addressFailures.delete(ip);
+      entry = undefined;
+    }
+    return entry ?? { count: 0, since: now, fresh: true }
+  }
+
+  /** True while this address has too many wrong logins: its logins are closed without a check. */
+  addressBlocked(ip) {
+    const entry = this.#addressEntry(ip);
+    return !!entry && entry.count >= serverOption.auth.maxFailuresPerAddress
+  }
+
+  #countFailure(peer) {
+    peer.authFailures = (peer.authFailures ?? 0) + 1;
+    const entry = this.#addressEntry(peer.ip);
+    if (!entry) return
+    if (entry.fresh) {
+      delete entry.fresh;
+      // Bounded: forget windows that have passed before adding another address.
+      if (this.addressFailures.size >= 10000) {
+        const now = Date.now();
+        for (const [ip, e] of this.addressFailures) if (now - e.since >= serverOption.auth.failureWindowMs) this.addressFailures.delete(ip);
+        if (this.addressFailures.size >= 10000) this.addressFailures.clear();
+      }
+      this.addressFailures.set(peer.ip, entry);
+    }
+    entry.count++;
+  }
+
+  // countFailure: a wrong ID or key (not a refusal of a valid key, such as a duplicate login).
+  send_auth_fail(peer, reason, countFailure = false) {
     if (peer._closing || peer.state === STATE.CLOSED) return;
     peer.boho.isAuthorized = false;
+    if (countFailure) this.#countFailure(peer);
+    const lastTry = countFailure && peer.authFailures >= serverOption.auth.maxFailuresPerConnection;
     if (this.authLogger) {
       let peerInfo = `FAIL #${peer.ssid} reason:${reason} `;
       this.authLogger.log(peerInfo);
@@ -10037,10 +10207,23 @@ class BohoAuth {
     setTimeout(e => {
       if (!peer._closing && peer.state === STATE.AUTH_FAIL) {
         peer.send(Buffer.from([it.BohoMsg.AUTH_FAIL]));
+        // Too many wrong logins on this connection: it has to connect again to go on.
+        if (lastTry) peer.close();
       }
     }, serverOption.auth.failDelay);
   }
 
+
+  // The login could not be checked (key store unreachable): not an answer about the key. The
+  // connection is closed, so the client connects and logs in again, instead of AUTH_FAIL, which
+  // clients take as "wrong key" and do not retry.
+  close_unavailable(peer, reason) {
+    if (peer._closing || peer.state === STATE.CLOSED) return;
+    console.error('BohoAuth: login not checked, closing the connection:', reason);
+    if (this.authLogger) this.authLogger.log(`UNAVAILABLE #${peer.ssid} reason:${reason} `);
+    peer.boho.isAuthorized = false;
+    peer.close();
+  }
 
   /**
    * Hook for a subclass: decide where a verified login belongs before it is accepted.
@@ -10090,11 +10273,23 @@ class BohoAuth {
         id = decoder.decode(infoPack.id8);
       }
 
+      // Too many wrong logins from this address: not checked until its window has passed.
+      if (this.addressBlocked(peer.ip)) {
+        this.close_unavailable(peer, 'too many wrong logins from ' + peer.ip);
+        return
+      }
+
       //2. get key of id from DB
-      let authInfo = await this.keyProvider.getAuth(id);
+      let authInfo;
+      try {
+        authInfo = await this.keyProvider.getAuth(id);
+      } catch (error) {
+        this.close_unavailable(peer, 'key provider: ' + (error?.message ?? error));
+        return
+      }
       if (!peer.checkAuthChallenge()) return;
       if (!authInfo) {
-        this.send_auth_fail(peer, 'NO ID:' + id);
+        this.send_auth_fail(peer, 'NO ID:' + id, true);
         return
       }
 
@@ -10119,7 +10314,7 @@ class BohoAuth {
       //3. check hmac
       let auth_res = peer.boho.verify_auth_req(infoPack);
       if (!auth_res) {
-        this.send_auth_fail(peer, 'hmac dismatched');
+        this.send_auth_fail(peer, 'hmac dismatched', true);
         return
       }
 
@@ -10143,7 +10338,13 @@ class BohoAuth {
         peer.close();
         return
       }
-      const quotaName = await this.resolveQuota(authInfo, role);
+      let quotaName;
+      try {
+        quotaName = await this.resolveQuota(authInfo, role);
+      } catch (error) {
+        this.close_unavailable(peer, 'quota: ' + (error?.message ?? error));
+        return
+      }
       const quota = Object.hasOwn(peer.manager.quotas, quotaName) ? peer.manager.quotas[quotaName] : undefined;
       if (!quota) {
         this.send_auth_fail(peer, 'unknown quota: ' + quotaName);
@@ -10198,9 +10399,19 @@ class BohoAuth {
       }
 
       //6. delete current (or anonymouse)cid if exist.
-      if (peer.cid) {
-        // console.log('if peer has cid', peer.cid)
-        peer.manager.cid2remote.delete(peer.cid);
+      if (peer.cid && peer.cid !== authInfo.cid) {
+        // Subscribers of the CID it had (an anonymous one, before login()) are told it is gone, as when
+        // a connection closes. Sent to them only: nothing is retained under the new CID.
+        const manager = peer.manager;
+        for (const topic of ['@state', '@$state']) {
+          const tag = peer.cid + topic;
+          manager.deliver(manager.CID_PREFIX + tag, getSignalPack(tag, 'close'), null);
+        }
+        // What it retained carries the old CID in its tag: dropped, the device publishes again when ready.
+        for (const message of peer.retain_signal.values()) manager.retainBytes -= message.byteLength;
+        peer.retain_signal.clear();
+        peer.retainBytes = 0;
+        manager.cid2remote.delete(peer.cid);
       }
 
       //7. setting info.
@@ -11073,7 +11284,7 @@ function integer(name, value, min, max = Number.MAX_SAFE_INTEGER) {
 }
 const positive = (name, value) => integer(name, value, 1);
 const nonNegative = (name, value) => integer(name, value, 0);
-const QUOTA_LIMITS = ['maxMessageBytes', 'fanout', 'msgPerSec', 'bytesPerSec', 'maxConnections'];
+const QUOTA_LIMITS = ['maxMessageBytes', 'fanout', 'msgPerSec', 'bytesPerSec', 'maxConnections', 'maxSubscriptions'];
 
 // This Server's quota profiles: the defaults with each given profile merged over its default
 // (a new name starts from no limits). Every limit is a positive integer or null (unlimited).
@@ -11138,13 +11349,13 @@ class Server extends require$$0$3 {
    *   loopback/private peer, true always, false never, or N trusted proxy hops.
    *   options.maxPayload: largest WebSocket message and CongSocket frame in bytes (default 32 MiB).
    *   options.maxBufferedBytes: close a peer whose unsent data exceeds this (default 64 MiB).
-   *   options.membersOnly: drop signals from connections that are not authenticated.
+   *   options.membersOnly: only authenticated connections may send signals or subscribe.
    *   options.logMessages: log each received message after decryption: type and tag, never the payload.
    *   options.logStats: print a one-line summary every N ms (>= 1000; 0 = off); see stats().
-   *   options.security: { maxClockSkewMs, authChallengeMaxAgeMs, maxReplayEntries }.
+   *   options.security: { maxClockSkewMs, authChallengeMaxAgeMs, maxReplayEntries, requireEncryption }.
    *   options.retain: retained message limits, see serverOption.retain; adjustable later on server.retain.
    *   options.quotas: named quota profiles { name: { maxMessageBytes, fanout, msgPerSec, bytesPerSec,
-   *   maxConnections } }, merged over serverOption.quotas; always enforced, null is unlimited.
+   *   maxConnections, maxSubscriptions } }, merged over serverOption.quotas; always enforced, null is unlimited.
    *   Adjustable later on server.quotas. The client is told its maxMessageBytes.
    *   options.anonymousQuota: profile of a connection that has not authenticated (default 'anonymous').
    *   options.duplicateLogin: 'keepOld' | 'keepNew' for this Server's connections; overrides the auth
@@ -11165,7 +11376,7 @@ class Server extends require$$0$3 {
     // never written, so servers in one process do not affect each other.
     checkRemoved(options);
     this.security = Object.freeze(group('security', options.security,
-      { maxClockSkewMs: positive, authChallengeMaxAgeMs: positive, maxReplayEntries: positive }));
+      { maxClockSkewMs: positive, authChallengeMaxAgeMs: positive, maxReplayEntries: positive, requireEncryption: boolean }));
     // retain and quotas may be adjusted on a running server, e.g. server.quotas.basic.fanout = 50.
     this.retain = group('retain', options.retain, {
       enabled: boolean, limitSize: positive, limitCounter: positive, tagsPerOwner: positive,
@@ -11483,7 +11694,6 @@ class FileKeyProvider {
   //loaded when server start.
   loadAuthInfoFile_JS(path) {
     import(path).then((file) => {
-      console.log(file.authInfo);
       file.authInfo.forEach(item => {
         this.addAuth(...item);
       });
@@ -11513,6 +11723,7 @@ class FileKeyProvider {
 
   // Each item: [id, key, cid, role?, quota?]; see StringKeyProvider.
   addAuth(id, keyStr, cid, role, quota) {
+    checkLoginId(id);
     let Base64hashKey = Buffer.from(it.sha256.hash(keyStr)).toString('base64');
     this.AUTH.set(id, { key: Base64hashKey, cid, ...(role && { role }), ...(quota && { quota }) });
   }
@@ -11532,14 +11743,12 @@ class RedisKeyProvider {
   }
 
   // get device key from DB. (for Boho auth.)
+  // null: no such device. A Redis failure throws, so BohoAuth closes the connection (the client
+  // connects again) instead of answering AUTH_FAIL as if the ID were unknown.
   async getAuth(id) {
-    try {
-      let result = await this.redis.hGetAll(DEVICE_PREFIX + id);
-      if (result && result.key) return result
-      else return null;
-    } catch (error) {
-      console.log('getAuth', error);
-    }
+    let result = await this.redis.hGetAll(DEVICE_PREFIX + id);
+    if (result && result.key) return result
+    else return null;
   }
 
   //sudoService call
@@ -11550,13 +11759,18 @@ class RedisKeyProvider {
 
   // Keys matching pattern, by SCAN: KEYS blocks Redis until it has walked every key.
   // Falls back to KEYS for a client without scan, or a redis-service from before 2026-11-17 that refuses it
-  // (RemoteRedisClient answers a refused command with undefined).
+  // (RemoteRedisClient throws on a refused command; an undefined reply is treated the same).
   async scanKeys(pattern) {
     if (typeof this.redis.scan === 'function') {
       const keys = new Set(); // SCAN may return a key more than once
       let cursor = '0';
       do {
-        const reply = await this.redis.scan(cursor, { MATCH: pattern, COUNT: 1000 });
+        let reply;
+        try {
+          reply = await this.redis.scan(cursor, { MATCH: pattern, COUNT: 1000 });
+        } catch {
+          break
+        }
         if (!reply || !Array.isArray(reply.keys)) break
         for (const key of reply.keys) keys.add(key);
         cursor = String(reply.cursor);
@@ -11569,6 +11783,7 @@ class RedisKeyProvider {
   // add device auth info
   // role and quota are optional (see StringKeyProvider); an omitted one is not stored.
   async addAuth(id, keyStr, cid = '', role, quota) {
+    checkLoginId(id);
     let Base64hashKey = Buffer.from(it.sha256.hash(keyStr)).toString('base64');
     const fields = { 'key': Base64hashKey, 'cid': cid };
     if (role) fields.role = role;
@@ -11637,6 +11852,7 @@ class StringKeyProvider {
   }
 
   addAuth(id, keyStr, cid, role, quota) {
+    checkLoginId(id);
     let Base64hashKey = Buffer.from(it.sha256.hash(keyStr)).toString('base64');
     this.AUTH.set(id, { key: Base64hashKey, cid, ...(role && { role }), ...(quota && { quota }) });
   }
@@ -11850,6 +12066,7 @@ exports.STATE = STATE;
 exports.STATUS = STATUS$1;
 exports.Server = Server;
 exports.StringKeyProvider = StringKeyProvider;
+exports.checkLoginId = checkLoginId;
 exports.defaultQuota = defaultQuota;
 exports.delay = delay;
 exports.getIPv4HexString = getIPv4HexString;

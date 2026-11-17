@@ -57,6 +57,10 @@ type SIZE_LIMIT = {
     TAG_LEN2: number;
     CONNECTION_CHECKER_PERIOD: number;
     CLIENT_PING_PERIOD: number;
+    PONG_TIMEOUT: number;
+    RECONNECT_JITTER: number;
+    RECONNECT_BASE: number;
+    RECONNECT_MAX: number;
     SERVER_HELLO_TIMEOUT: number;
     PROMISE_TIMEOUT: number;
     DID: number;
@@ -67,6 +71,10 @@ declare namespace SIZE_LIMIT {
     let TAG_LEN2: number;
     let CONNECTION_CHECKER_PERIOD: number;
     let CLIENT_PING_PERIOD: number;
+    let PONG_TIMEOUT: number;
+    let RECONNECT_JITTER: number;
+    let RECONNECT_BASE: number;
+    let RECONNECT_MAX: number;
     let SERVER_HELLO_TIMEOUT: number;
     let PROMISE_TIMEOUT: number;
     let DID: number;
@@ -231,6 +239,16 @@ declare class IOCore extends EventEmitter<string | symbol, any> {
      */
     lastTxRxTime: number;
     /**
+     * Last time anything was received from the server (see keepAlive()).
+     * @type {number}
+     */
+    lastRxTime: number;
+    /** @private Time of a PING that has had no answer yet; 0 when none is pending. */
+    private _pingSentAt;
+    /** @private Connections closed since the last ready, and the earliest time of the next automatic attempt. */
+    private _reconnectAttempts;
+    _nextConnectAt: number;
+    /**
      * Period for connection checker.
      * @type {number}
      */
@@ -349,6 +367,10 @@ declare class IOCore extends EventEmitter<string | symbol, any> {
      * is implemented keepConnection() in the child classes (IOWS, IOCongSocket, etc.).
      */
     keepAlive(): void;
+    /** @private When keepAlive() may connect again after this close: see SIZE_LIMIT.RECONNECT_*. */
+    private scheduleReconnect;
+    /** @private True from the socket opening until it closes (any state a server message can arrive in). */
+    private isLinkUp;
     /**
      * Redirects the connection to a new URL.
      * @param {string} url2 - The new URL to redirect to.
@@ -918,6 +940,7 @@ declare class Manager {
         oversizeRejected: number;
         rateLimited: number;
         peerRxLimitSkipped: number;
+        subscriptionsRejected: number;
         policyDenied: number;
         hostInbound: number;
         hostRejected: number;
@@ -1141,13 +1164,13 @@ declare class Server extends EventEmitter$1<[never]> {
      *   loopback/private peer, true always, false never, or N trusted proxy hops.
      *   options.maxPayload: largest WebSocket message and CongSocket frame in bytes (default 32 MiB).
      *   options.maxBufferedBytes: close a peer whose unsent data exceeds this (default 64 MiB).
-     *   options.membersOnly: drop signals from connections that are not authenticated.
+     *   options.membersOnly: only authenticated connections may send signals or subscribe.
      *   options.logMessages: log each received message after decryption: type and tag, never the payload.
      *   options.logStats: print a one-line summary every N ms (>= 1000; 0 = off); see stats().
-     *   options.security: { maxClockSkewMs, authChallengeMaxAgeMs, maxReplayEntries }.
+     *   options.security: { maxClockSkewMs, authChallengeMaxAgeMs, maxReplayEntries, requireEncryption }.
      *   options.retain: retained message limits, see serverOption.retain; adjustable later on server.retain.
      *   options.quotas: named quota profiles { name: { maxMessageBytes, fanout, msgPerSec, bytesPerSec,
-     *   maxConnections } }, merged over serverOption.quotas; always enforced, null is unlimited.
+     *   maxConnections, maxSubscriptions } }, merged over serverOption.quotas; always enforced, null is unlimited.
      *   Adjustable later on server.quotas. The client is told its maxMessageBytes.
      *   options.anonymousQuota: profile of a connection that has not authenticated (default 'anonymous').
      *   options.duplicateLogin: 'keepOld' | 'keepNew' for this Server's connections; overrides the auth
@@ -1274,6 +1297,7 @@ declare namespace serverOption {
         let maxClockSkewMs: number;
         let authChallengeMaxAgeMs: number;
         let maxReplayEntries: number;
+        let requireEncryption: boolean;
     }
     export namespace quotas {
         namespace anonymous {
@@ -1282,6 +1306,7 @@ declare namespace serverOption {
             let msgPerSec: number;
             let bytesPerSec: number;
             let maxConnections: null;
+            let maxSubscriptions: number;
         }
         namespace basic {
             let maxMessageBytes_1: number;
@@ -1294,6 +1319,8 @@ declare namespace serverOption {
             export { bytesPerSec_1 as bytesPerSec };
             let maxConnections_1: number;
             export { maxConnections_1 as maxConnections };
+            let maxSubscriptions_1: number;
+            export { maxSubscriptions_1 as maxSubscriptions };
         }
         namespace pro {
             let maxMessageBytes_2: number;
@@ -1306,6 +1333,8 @@ declare namespace serverOption {
             export { bytesPerSec_2 as bytesPerSec };
             let maxConnections_2: number;
             export { maxConnections_2 as maxConnections };
+            let maxSubscriptions_2: number;
+            export { maxSubscriptions_2 as maxSubscriptions };
         }
         namespace unlimited {
             let maxMessageBytes_3: null;
@@ -1318,6 +1347,8 @@ declare namespace serverOption {
             export { bytesPerSec_3 as bytesPerSec };
             let maxConnections_3: null;
             export { maxConnections_3 as maxConnections };
+            let maxSubscriptions_3: null;
+            export { maxSubscriptions_3 as maxSubscriptions };
         }
     }
     export let anonymousQuota: string;
@@ -1351,6 +1382,9 @@ declare namespace serverOption {
     }
     export namespace auth_1 {
         let failDelay: number;
+        let maxFailuresPerConnection: number;
+        let maxFailuresPerAddress: number;
+        let failureWindowMs: number;
         let duplicateLogin: string;
     }
     export { auth_1 as auth };
@@ -1366,6 +1400,7 @@ declare function getIPv6PrefixHexString(ip: any): string | null;
 declare function numberWithCommas(x: any): any;
 declare function getIPv4HexString(ipStr: any): string;
 declare function getLocalAddress(): string;
+declare function checkLoginId(id: any): string;
 declare function delay(ms: any): Promise<any>;
 
 declare class FileKeyProvider {
@@ -1518,13 +1553,17 @@ declare class BohoAuth {
     get duplicateLogin(): "keepOld" | "keepNew" | null;
     onAuthEvent: ((event: object) => any) | null;
     resolveQuota: typeof defaultQuota | ((authInfo: object, role: string) => string | Promise<string>);
+    addressFailures: Map<any, any>;
     authLogger: FileLogger | undefined;
     /** Policy for a connection: its Server's duplicateLogin option, else this instance's policy. */
     duplicateLoginFor(peer: any): any;
     set keepOldConnection(keepOld: boolean);
     get keepOldConnection(): boolean;
     emitAuthEvent(event: any): void;
-    send_auth_fail(peer: any, reason: any): void;
+    /** True while this address has too many wrong logins: its logins are closed without a check. */
+    addressBlocked(ip: any): boolean;
+    send_auth_fail(peer: any, reason: any, countFailure?: boolean): void;
+    close_unavailable(peer: any, reason: any): void;
     /**
      * Hook for a subclass: decide where a verified login belongs before it is accepted.
      * Called after the key and role checks, before quotas and the duplicate login check.
@@ -1548,4 +1587,4 @@ declare class BohoAuth {
 
 declare const version: string;
 
-export { BohoAuth, CongRx, ENC_MODE, FileKeyProvider, FileLogger, IOWS as IO, IOCongSocket, IOMsg, LocalKeyProvider, PAYLOAD_TYPE, ROLES, RedisKeyProvider, RedisService, SIZE_LIMIT, STATE, STATUS, Server, StringKeyProvider, defaultQuota, delay, getIPv4HexString, getIPv6PrefixHexString, getLocalAddress, getPayloadFromSignalPack, getSignalPack, hasRole, isPrivateIP, numberWithCommas, pack, parsePayload, replyService, serverOption, sudoService, version };
+export { BohoAuth, CongRx, ENC_MODE, FileKeyProvider, FileLogger, IOWS as IO, IOCongSocket, IOMsg, LocalKeyProvider, PAYLOAD_TYPE, ROLES, RedisKeyProvider, RedisService, SIZE_LIMIT, STATE, STATUS, Server, StringKeyProvider, checkLoginId, defaultQuota, delay, getIPv4HexString, getIPv6PrefixHexString, getLocalAddress, getPayloadFromSignalPack, getSignalPack, hasRole, isPrivateIP, numberWithCommas, pack, parsePayload, replyService, serverOption, sudoService, version };

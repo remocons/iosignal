@@ -64,6 +64,16 @@ export class IOCore extends EventEmitter<string | symbol, any> {
      */
     lastTxRxTime: number;
     /**
+     * Last time anything was received from the server (see keepAlive()).
+     * @type {number}
+     */
+    lastRxTime: number;
+    /** @private Time of a PING that has had no answer yet; 0 when none is pending. */
+    private _pingSentAt;
+    /** @private Connections closed since the last ready, and the earliest time of the next automatic attempt. */
+    private _reconnectAttempts;
+    _nextConnectAt: number;
+    /**
      * Period for connection checker.
      * @type {number}
      */
@@ -182,6 +192,10 @@ export class IOCore extends EventEmitter<string | symbol, any> {
      * is implemented keepConnection() in the child classes (IOWS, IOCongSocket, etc.).
      */
     keepAlive(): void;
+    /** @private When keepAlive() may connect again after this close: see SIZE_LIMIT.RECONNECT_*. */
+    private scheduleReconnect;
+    /** @private True from the socket opening until it closes (any state a server message can arrive in). */
+    private isLinkUp;
     /**
      * Redirects the connection to a new URL.
      * @param {string} url2 - The new URL to redirect to.

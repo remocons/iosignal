@@ -30,6 +30,7 @@ export class Manager {
     this.counters = { rxMessages: 0, rxBytes: 0, txMessages: 0, txBytes: 0,
       publishes: 0, deliveryAttempts: 0, quotaExcluded: 0, oversizeRejected: 0, rateLimited: 0,
       peerRxLimitSkipped: 0, // messages not sent: larger than the peer's advertised RX buffer
+      subscriptionsRejected: 0, // subscriptions over a connection's quota maxSubscriptions, left out
       policyDenied: 0,       // unicasts and CID publications a device's delivery policy kept back
       hostInbound: 0,        // client signals handed to a host (server.host)
       hostRejected: 0,       // signals to a host tag that were not handed over (E2E, malformed payload)
@@ -585,7 +586,16 @@ export class Manager {
     if (owner.tags.size === 0) this.retainOwners.delete(owner.key)
   }
 
+  // Returns false when nothing was subscribed (membersOnly), else the connection's subscription count.
+  // Tags over the quota's maxSubscriptions are left out and counted in subscriptionsRejected.
   subscribe(chArr, remote) {
+    // Reading is closed to anonymous connections like sending (sender): same answer.
+    if ((this.server?.membersOnly ?? serverOption.membersOnly) && !remote.boho.isAuthorized) {
+      remote.send(Buffer.from([IOMsg.AUTH_CLEAR]))
+      remote.close()
+      return false
+    }
+    const maxSubscriptions = remote.quota?.maxSubscriptions ?? null
     chArr.forEach(tag => {
       if (tag.indexOf('#') === 0) {
         tag = remote.HOME_CHANNEL + tag
@@ -593,6 +603,12 @@ export class Manager {
         tag = this.CID_PREFIX + tag;
       } else {
         tag = this.CHANNEL_PREFIX + tag
+      }
+
+      if (maxSubscriptions !== null && remote.channels.size >= maxSubscriptions && !remote.channels.has(tag)) {
+        this.counters.subscriptionsRejected++
+        remote.subscriptionsRejected = (remote.subscriptionsRejected ?? 0) + 1
+        return
       }
 
       // 1. set channel map
