@@ -1373,6 +1373,7 @@ declare class RedisKeyProvider {
     redis: any;
     getAuth(id: any): Promise<any>;
     getAuthIdList(): Promise<any>;
+    scanKeys(pattern: any): Promise<any>;
     addAuth(id: any, keyStr: any, cid: string | undefined, role: any, quota: any): Promise<any>;
     delAuth(id: any): Promise<any>;
     save(id: any): Promise<any>;
@@ -1513,12 +1514,25 @@ declare class BohoAuth {
     get keepOldConnection(): boolean;
     emitAuthEvent(event: any): void;
     send_auth_fail(peer: any, reason: any): void;
+    /**
+     * Hook for a subclass: decide where a verified login belongs before it is accepted.
+     * Called after the key and role checks, before quotas and the duplicate login check.
+     * Return null to accept the login here, or a message (e.g. SERVER_REDIRECT) that is sent to the
+     * client instead of AUTH_RES before the connection is closed. The default accepts every login.
+     * @param {object} peer the connection
+     * @param {object} authInfo the key provider's entry for the login ID (cid, uid, role, quota, ...)
+     * @param {string} role resolved role
+     * @param {string} id login ID
+     * @returns {Promise<Uint8Array | null> | Uint8Array | null}
+     */
+    beforeAccept(peer: object, authInfo: object, role: string, id: string): Promise<Uint8Array | null> | Uint8Array | null;
     verify_auth_req(auth_req: any, peer: any): Promise<any>;
     getAuth(id: any): Promise<any>;
     getAuthIdList(): Promise<any>;
     addAuth(id: any, keyStr: any, cid: any, role: any, quota: any): Promise<any>;
     delAuth(id: any): Promise<any>;
     save(): Promise<any>;
+    #private;
 }
 
 declare const version: string;

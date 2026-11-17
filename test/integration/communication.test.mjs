@@ -89,7 +89,7 @@ async function fixture(t, api, authenticated = false, tcp = false, security = {}
 
 for (const [format, api] of variants) {
   for (const tcp of [false, true]) {
-    test(`${format}: ${tcp ? 'TCP' : 'WS'} server PONG event is separate from peer @pong`, async t => {
+    test(`${format}: ${tcp ? 'TCP' : 'WS'} server PONG event is separate from an application @pong signal`, async t => {
       const { connect } = await fixture(t, api, false, tcp);
       const a = await connect(), b = await connect();
       const serverPong = event(a, 'pong', t.signal);
@@ -97,12 +97,10 @@ for (const [format, api] of variants) {
       assert.deepEqual(await serverPong, []);
       let protocolPongs = 0;
       a.on('pong', () => protocolPongs++);
-      b.on('@', (tag, sender) => {
-        if (tag === '@ping') b.signal(`${sender}@pong`, b.cid);
-      });
-      const peerPong = event(a, '@', t.signal);
-      a.signal(`${b.cid}@ping`, a.cid);
-      assert.deepEqual(await peerPong, ['@pong', b.cid]);
+      // A direct message tagged @pong is an ordinary signal, never the protocol pong.
+      const direct = event(a, '@', t.signal);
+      b.signal(`${a.cid}@pong`, b.cid);
+      assert.deepEqual(await direct, ['@pong', b.cid]);
       assert.equal(protocolPongs, 0);
     });
   }

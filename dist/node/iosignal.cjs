@@ -10004,6 +10004,32 @@ class BohoAuth {
   }
 
 
+  /**
+   * Hook for a subclass: decide where a verified login belongs before it is accepted.
+   * Called after the key and role checks, before quotas and the duplicate login check.
+   * Return null to accept the login here, or a message (e.g. SERVER_REDIRECT) that is sent to the
+   * client instead of AUTH_RES before the connection is closed. The default accepts every login.
+   * @param {object} peer the connection
+   * @param {object} authInfo the key provider's entry for the login ID (cid, uid, role, quota, ...)
+   * @param {string} role resolved role
+   * @param {string} id login ID
+   * @returns {Promise<Uint8Array | null> | Uint8Array | null}
+   */
+  beforeAccept(peer, authInfo, role, id) {
+    return null
+  }
+
+  // An error in the hook accepts the login: placement must never lock clients out.
+  async #beforeAcceptSafe(peer, authInfo, role, id) {
+    try {
+      const result = await this.beforeAccept(peer, authInfo, role, id);
+      return result instanceof Uint8Array && result.byteLength > 0 ? result : null
+    } catch (error) {
+      console.error('BohoAuth.beforeAccept error:', error);
+      return null
+    }
+  }
+
   async verify_auth_req(auth_req, peer) {
     try {
       if (!peer.checkAuthChallenge()) return;
@@ -10067,6 +10093,16 @@ class BohoAuth {
       const role = resolveRole(authInfo.role);
       if (role === undefined) {
         this.send_auth_fail(peer, 'unknown auth.role: ' + authInfo.role);
+        return
+      }
+      // A login another server should take (beforeAccept) goes there before it is counted here or
+      // replaces a connection here.
+      const redirect = await this.#beforeAcceptSafe(peer, authInfo, role, id);
+      if (peer._closing) return; // closed while deciding
+      if (redirect) {
+        peer.boho.isAuthorized = false;
+        peer.send(redirect);
+        peer.close();
         return
       }
       const quotaName = await this.resolveQuota(authInfo, role);
@@ -11470,11 +11506,26 @@ class RedisKeyProvider {
 
   //sudoService call
   async getAuthIdList() {
-    let result = await this.redis.keys(DEVICE_PREFIX + '*');
-    result = result.map(v => {
-      return v.split(':')[1]
-    });
-    if (result) return result
+    const keys = await this.scanKeys(DEVICE_PREFIX + '*');
+    return keys.map(key => key.slice(DEVICE_PREFIX.length))
+  }
+
+  // Keys matching pattern, by SCAN: KEYS blocks Redis until it has walked every key.
+  // Falls back to KEYS for a client without scan, or a redis-service from before 2026-11-17 that refuses it
+  // (RemoteRedisClient answers a refused command with undefined).
+  async scanKeys(pattern) {
+    if (typeof this.redis.scan === 'function') {
+      const keys = new Set(); // SCAN may return a key more than once
+      let cursor = '0';
+      do {
+        const reply = await this.redis.scan(cursor, { MATCH: pattern, COUNT: 1000 });
+        if (!reply || !Array.isArray(reply.keys)) break
+        for (const key of reply.keys) keys.add(key);
+        cursor = String(reply.cursor);
+        if (cursor === '0') return [...keys]
+      } while (true)
+    }
+    return (await this.redis.keys(pattern)) ?? []
   }
 
   // add device auth info
@@ -11692,12 +11743,13 @@ var sudoService = /*#__PURE__*/Object.freeze({
  * 
  */
 
+// KEYS stays for older clients; new ones list keys with SCAN (RedisKeyProvider.scanKeys).
 const COMMANDS = [
   'GET', 'SET', 'HGETALL', 'HGET', 'HSET', 'SADD', 'SISMEMBER',
-  'SMEMBERS', 'EXISTS', 'SREM', 'DEL', 'KEYS', 'SAVE',
+  'SMEMBERS', 'EXISTS', 'SREM', 'DEL', 'KEYS', 'SCAN', 'SAVE',
   'LPUSH', 'LTRIM', 'LRANGE', 'LINDEX', 'LSET', 'EXPIRE',
   'get', 'set', 'hGetAll', 'hGet', 'hSet', 'sAdd', 'sIsMember',
-  'sMembers', 'exists', 'sRem', 'del', 'keys', 'save',
+  'sMembers', 'exists', 'sRem', 'del', 'keys', 'scan', 'save',
   'lPush', 'lTrim', 'lRange', 'lIndex', 'lSet', 'expire'
 ];
 

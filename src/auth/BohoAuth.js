@@ -121,6 +121,32 @@ export class BohoAuth {
   }
 
 
+  /**
+   * Hook for a subclass: decide where a verified login belongs before it is accepted.
+   * Called after the key and role checks, before quotas and the duplicate login check.
+   * Return null to accept the login here, or a message (e.g. SERVER_REDIRECT) that is sent to the
+   * client instead of AUTH_RES before the connection is closed. The default accepts every login.
+   * @param {object} peer the connection
+   * @param {object} authInfo the key provider's entry for the login ID (cid, uid, role, quota, ...)
+   * @param {string} role resolved role
+   * @param {string} id login ID
+   * @returns {Promise<Uint8Array | null> | Uint8Array | null}
+   */
+  beforeAccept(peer, authInfo, role, id) {
+    return null
+  }
+
+  // An error in the hook accepts the login: placement must never lock clients out.
+  async #beforeAcceptSafe(peer, authInfo, role, id) {
+    try {
+      const result = await this.beforeAccept(peer, authInfo, role, id)
+      return result instanceof Uint8Array && result.byteLength > 0 ? result : null
+    } catch (error) {
+      console.error('BohoAuth.beforeAccept error:', error)
+      return null
+    }
+  }
+
   async verify_auth_req(auth_req, peer) {
     try {
       if (!peer.checkAuthChallenge()) return;
@@ -184,6 +210,16 @@ export class BohoAuth {
       const role = resolveRole(authInfo.role);
       if (role === undefined) {
         this.send_auth_fail(peer, 'unknown auth.role: ' + authInfo.role);
+        return
+      }
+      // A login another server should take (beforeAccept) goes there before it is counted here or
+      // replaces a connection here.
+      const redirect = await this.#beforeAcceptSafe(peer, authInfo, role, id);
+      if (peer._closing) return; // closed while deciding
+      if (redirect) {
+        peer.boho.isAuthorized = false;
+        peer.send(redirect);
+        peer.close();
         return
       }
       const quotaName = await this.resolveQuota(authInfo, role);

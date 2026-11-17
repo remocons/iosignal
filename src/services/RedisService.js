@@ -11,12 +11,13 @@
 import { STATUS } from './constant.js'
 import { ROLES, hasRole } from '../auth/BohoAuth.js'
 
+// KEYS stays for older clients; new ones list keys with SCAN (RedisKeyProvider.scanKeys).
 const COMMANDS = [
   'GET', 'SET', 'HGETALL', 'HGET', 'HSET', 'SADD', 'SISMEMBER',
-  'SMEMBERS', 'EXISTS', 'SREM', 'DEL', 'KEYS', 'SAVE',
+  'SMEMBERS', 'EXISTS', 'SREM', 'DEL', 'KEYS', 'SCAN', 'SAVE',
   'LPUSH', 'LTRIM', 'LRANGE', 'LINDEX', 'LSET', 'EXPIRE',
   'get', 'set', 'hGetAll', 'hGet', 'hSet', 'sAdd', 'sIsMember',
-  'sMembers', 'exists', 'sRem', 'del', 'keys', 'save',
+  'sMembers', 'exists', 'sRem', 'del', 'keys', 'scan', 'save',
   'lPush', 'lTrim', 'lRange', 'lIndex', 'lSet', 'expire'
 ]
 

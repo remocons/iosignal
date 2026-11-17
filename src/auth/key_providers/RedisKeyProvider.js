@@ -25,11 +25,26 @@ export class RedisKeyProvider {
 
   //sudoService call
   async getAuthIdList() {
-    let result = await this.redis.keys(DEVICE_PREFIX + '*')
-    result = result.map(v => {
-      return v.split(':')[1]
-    })
-    if (result) return result
+    const keys = await this.scanKeys(DEVICE_PREFIX + '*')
+    return keys.map(key => key.slice(DEVICE_PREFIX.length))
+  }
+
+  // Keys matching pattern, by SCAN: KEYS blocks Redis until it has walked every key.
+  // Falls back to KEYS for a client without scan, or a redis-service from before 2026-11-17 that refuses it
+  // (RemoteRedisClient answers a refused command with undefined).
+  async scanKeys(pattern) {
+    if (typeof this.redis.scan === 'function') {
+      const keys = new Set() // SCAN may return a key more than once
+      let cursor = '0'
+      do {
+        const reply = await this.redis.scan(cursor, { MATCH: pattern, COUNT: 1000 })
+        if (!reply || !Array.isArray(reply.keys)) break
+        for (const key of reply.keys) keys.add(key)
+        cursor = String(reply.cursor)
+        if (cursor === '0') return [...keys]
+      } while (true)
+    }
+    return (await this.redis.keys(pattern)) ?? []
   }
 
   // add device auth info
