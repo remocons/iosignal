@@ -57,6 +57,7 @@ type SIZE_LIMIT = {
     TAG_LEN2: number;
     CONNECTION_CHECKER_PERIOD: number;
     CLIENT_PING_PERIOD: number;
+    SERVER_HELLO_TIMEOUT: number;
     PROMISE_TIMEOUT: number;
     DID: number;
     CID: number;
@@ -66,6 +67,7 @@ declare namespace SIZE_LIMIT {
     let TAG_LEN2: number;
     let CONNECTION_CHECKER_PERIOD: number;
     let CLIENT_PING_PERIOD: number;
+    let SERVER_HELLO_TIMEOUT: number;
     let PROMISE_TIMEOUT: number;
     let DID: number;
     let CID: number;
@@ -352,6 +354,15 @@ declare class IOCore extends EventEmitter<string | symbol, any> {
      * @param {string} url2 - The new URL to redirect to.
      */
     redirect(url2: string): void;
+    /**
+     * Closes a connection that has not got the server's hello in SIZE_LIMIT.SERVER_HELLO_TIMEOUT
+     * (a server that cannot be reached, or a connection that opens but never answers). With
+     * autoReconnect the client then reconnects to this.url, so a failed redirect falls back to the
+     * original server, as the Arduino library does.
+     */
+    armHelloTimer(): void;
+    helloTimerID: any;
+    clearHelloTimer(): void;
     /**
      * Opens the WebSocket connection.
      * @param {string} [url] - Optional URL to connect to. If not provided, uses the instance's URL.

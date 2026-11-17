@@ -194,6 +194,15 @@ declare class IOCore extends EventEmitter<string | symbol, any> {
      */
     redirect(url2: string): void;
     /**
+     * Closes a connection that has not got the server's hello in SIZE_LIMIT.SERVER_HELLO_TIMEOUT
+     * (a server that cannot be reached, or a connection that opens but never answers). With
+     * autoReconnect the client then reconnects to this.url, so a failed redirect falls back to the
+     * original server, as the Arduino library does.
+     */
+    armHelloTimer(): void;
+    helloTimerID: any;
+    clearHelloTimer(): void;
+    /**
      * Opens the WebSocket connection.
      * @param {string} [url] - Optional URL to connect to. If not provided, uses the instance's URL.
      */

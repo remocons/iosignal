@@ -42,8 +42,15 @@ export class IOCongSocket extends IOCore {
 
   createConnection(url) {
     // TCP Socket
-    let urlObj = new URL(url)
-    if (urlObj.protocol != "cong:") {
+    // 'host:port', 'ip:port' or 'cong://host:port'. 'ip:port' alone is not a URL (a scheme cannot
+    // start with a digit), and 'host:port' parses with 'host:' as its scheme.
+    let urlObj
+    try {
+      urlObj = new URL(url)
+    } catch {
+      urlObj = null
+    }
+    if (urlObj?.protocol != "cong:") {
       urlObj = new URL('cong://' + url)
     }
     // URL keeps the brackets of an IPv6 literal ('[::1]'); net expects the bare address.

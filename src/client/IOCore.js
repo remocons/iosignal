@@ -235,6 +235,7 @@ export class IOCore extends EventEmitter {
    */
   close() {
     // console.log('####### IOCOre.js close() called')
+    this.clearHelloTimer();
     // If auto-reconnect is disabled, we must stop the keep-alive timer.
     if (this.autoReconnect === false) {
       clearInterval(this.connectionCheckerIntervalID);
@@ -329,6 +330,30 @@ export class IOCore extends EventEmitter {
     this.stateChange('redirecting','redirecting')
     this.close()
     this.createConnection(url2)
+    this.armHelloTimer()
+  }
+
+  /**
+   * Closes a connection that has not got the server's hello in SIZE_LIMIT.SERVER_HELLO_TIMEOUT
+   * (a server that cannot be reached, or a connection that opens but never answers). With
+   * autoReconnect the client then reconnects to this.url, so a failed redirect falls back to the
+   * original server, as the Arduino library does.
+   */
+  armHelloTimer() {
+    this.clearHelloTimer();
+    if (this._closed || !this.socket) return;
+    const socket = this.socket;
+    this.helloTimerID = setTimeout(() => {
+      this.helloTimerID = null;
+      if (this.socket !== socket) return;
+      this.emit('error', new Error('no reply from the server in ' + SIZE_LIMIT.SERVER_HELLO_TIMEOUT / 1000 + ' s'));
+      this.close();
+    }, SIZE_LIMIT.SERVER_HELLO_TIMEOUT);
+  }
+
+  clearHelloTimer() {
+    if (this.helloTimerID) clearTimeout(this.helloTimerID);
+    this.helloTimerID = null;
   }
 
   /**
@@ -354,6 +379,7 @@ export class IOCore extends EventEmitter {
     // The actual connection is created here.
     this.createConnection(this.url);
     if (this._closed) return; // A connecting listener may have stopped the client.
+    this.armHelloTimer();
 
     // Ensure the keep-alive timer is running.
     if (!this.connectionCheckerIntervalID) {
@@ -553,6 +579,7 @@ export class IOCore extends EventEmitter {
         break;
 
       case Boho.BohoMsg.SERVER_TIME_NONCE: // SERVER_READY
+        this.clearHelloTimer();
         buffer.copy(this.serverTimeNonce);
         if (!this.stateChange('server_ready', 'server_ready')) break;
         if (this.useAuth) {

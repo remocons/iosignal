@@ -446,6 +446,7 @@ for (let c in ENC_MODE) { ENC_MODE[ENC_MODE[c]] = c; }
  * @property {number} TAG_LEN2
  * @property {number} CONNECTION_CHECKER_PERIOD
  * @property {number} CLIENT_PING_PERIOD
+ * @property {number} SERVER_HELLO_TIMEOUT
  * @property {number} PROMISE_TIMEOUT
  * @property {number} DID
  * @property {number} CID
@@ -455,6 +456,9 @@ const SIZE_LIMIT = {
   TAG_LEN2: 65535,
   CONNECTION_CHECKER_PERIOD: 3000,
   CLIENT_PING_PERIOD: 40000,
+  // From starting a connection to the server's hello (SERVER_TIME_NONCE). A connection that hangs
+  // longer is closed, so the client reconnects to its own URL (after a redirect: the original one).
+  SERVER_HELLO_TIMEOUT: 15000,
   PROMISE_TIMEOUT: 5000,
   DID: 8,
   CID: 12
@@ -963,6 +967,7 @@ class IOCore extends EventEmitter {
    */
   close() {
     // console.log('####### IOCOre.js close() called')
+    this.clearHelloTimer();
     // If auto-reconnect is disabled, we must stop the keep-alive timer.
     if (this.autoReconnect === false) {
       clearInterval(this.connectionCheckerIntervalID);
@@ -1057,6 +1062,30 @@ class IOCore extends EventEmitter {
     this.stateChange('redirecting','redirecting');
     this.close();
     this.createConnection(url2);
+    this.armHelloTimer();
+  }
+
+  /**
+   * Closes a connection that has not got the server's hello in SIZE_LIMIT.SERVER_HELLO_TIMEOUT
+   * (a server that cannot be reached, or a connection that opens but never answers). With
+   * autoReconnect the client then reconnects to this.url, so a failed redirect falls back to the
+   * original server, as the Arduino library does.
+   */
+  armHelloTimer() {
+    this.clearHelloTimer();
+    if (this._closed || !this.socket) return;
+    const socket = this.socket;
+    this.helloTimerID = setTimeout(() => {
+      this.helloTimerID = null;
+      if (this.socket !== socket) return;
+      this.emit('error', new Error('no reply from the server in ' + SIZE_LIMIT.SERVER_HELLO_TIMEOUT / 1000 + ' s'));
+      this.close();
+    }, SIZE_LIMIT.SERVER_HELLO_TIMEOUT);
+  }
+
+  clearHelloTimer() {
+    if (this.helloTimerID) clearTimeout(this.helloTimerID);
+    this.helloTimerID = null;
   }
 
   /**
@@ -1082,6 +1111,7 @@ class IOCore extends EventEmitter {
     // The actual connection is created here.
     this.createConnection(this.url);
     if (this._closed) return; // A connecting listener may have stopped the client.
+    this.armHelloTimer();
 
     // Ensure the keep-alive timer is running.
     if (!this.connectionCheckerIntervalID) {
@@ -1276,6 +1306,7 @@ class IOCore extends EventEmitter {
         break;
 
       case it.BohoMsg.SERVER_TIME_NONCE: // SERVER_READY
+        this.clearHelloTimer();
         buffer.copy(this.serverTimeNonce);
         if (!this.stateChange('server_ready', 'server_ready')) break;
         if (this.useAuth) {
@@ -2159,8 +2190,15 @@ class IOCongSocket extends IOCore {
 
   createConnection(url) {
     // TCP Socket
-    let urlObj = new URL(url);
-    if (urlObj.protocol != "cong:") {
+    // 'host:port', 'ip:port' or 'cong://host:port'. 'ip:port' alone is not a URL (a scheme cannot
+    // start with a digit), and 'host:port' parses with 'host:' as its scheme.
+    let urlObj;
+    try {
+      urlObj = new URL(url);
+    } catch {
+      urlObj = null;
+    }
+    if (urlObj?.protocol != "cong:") {
       urlObj = new URL('cong://' + url);
     }
     // URL keeps the brackets of an IPv6 literal ('[::1]'); net expects the bare address.
