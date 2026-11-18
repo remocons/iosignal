@@ -5,6 +5,7 @@
     "src/auth/key_providers/LocalKeyProvider.js",
     "src/auth/key_providers/RedisKeyProvider.js",
     "src/auth/key_providers/StringKeyProvider.js",
+    "src/client/CongFrame.js",
     "src/client/CongPacket.js",
     "src/client/IOCongSocket.js",
     "src/client/IOCore.js",
