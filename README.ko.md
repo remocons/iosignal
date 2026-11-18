@@ -246,6 +246,12 @@ const server = new Server({
 - 쿼터는 새 `QUOTA` 메시지로 전달됩니다. 이전 클라이언트는 이를 무시하고 기존
   로컬 크기 제한을 유지합니다.
 
+## 9.22 변경 사항
+
+- 브라우저 클라이언트: `IO.WebSocket`으로 연결에 쓸 클래스를 정합니다(브라우저 WebSocket API를 가진 것.
+  기본값 `null`은 전역 `WebSocket`). 하위 클래스는 `createWebSocket(url)`을 재정의해 URL에 따라 고를 수 있습니다.
+- 서버는 CongSocket(TCP) 프레임을 Node.js 스트림 없이 해석합니다(`CongParser`). `CongRx`는 스트림 API를 그대로 유지합니다.
+
 ## 9.21 변경 사항
 
 - `membersOnly`는 익명 연결이 구독할 때도 연결을 닫습니다(이전에는 시그널을 보낼 때만).

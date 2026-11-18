@@ -260,6 +260,14 @@ replacement.
 - The quota is sent in a new `QUOTA` message; older clients ignore it and
   keep their previous local size limit.
 
+## Changes in 9.22
+
+- Browser client: `IO.WebSocket` sets the class to connect with (anything with
+  the browser WebSocket API; `null`, the default, uses the global `WebSocket`),
+  and a subclass can override `createWebSocket(url)` to choose it by URL.
+- The server parses CongSocket (TCP) frames without Node.js streams
+  (`CongParser`); `CongRx` keeps its stream API.
+
 ## Changes in 9.21
 
 - `membersOnly` also closes an anonymous connection that subscribes (before,
