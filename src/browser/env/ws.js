@@ -10,7 +10,8 @@
 import EventEmitter from 'events'
 import { listen } from '../transport.js'
 
-// Connections from this browser look like a private network peer: HOME_CHANNEL 'PRIVATE:'.
+// Connections from this browser look like a private network peer (HOME_CHANNEL 'PRIVATE:'),
+// unless the client's URL names an address (local://7700?ip=...).
 const LOCAL_ADDRESS = '127.0.0.1'
 
 export class ServerSocket extends EventEmitter {
@@ -137,7 +138,7 @@ export class WebSocketServer extends EventEmitter {
     this.clients.add(socket)
     const req = {
       headers: { origin: globalThis.location?.origin ?? '' },
-      socket: { remoteAddress: LOCAL_ADDRESS },
+      socket: { remoteAddress: info.ip ?? LOCAL_ADDRESS },
       url: '/' + (this.options.path ?? '')
     }
     this.around('connection', socket, req, info, () => this.emit('connection', socket, req))

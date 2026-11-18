@@ -1,7 +1,7 @@
 // A browser WebSocket look-alike for local:// URLs: what the iosignal/io client uses from
 // WebSocket (readyState, binaryType, onopen/onmessage/onerror/onclose, send, close and the
 // state constants), carried by the in-browser transport (./transport.js).
-import { addressOf, connect } from './transport.js'
+import { addressOf, connect, optionsOf } from './transport.js'
 
 export class LocalWebSocket extends EventTarget {
   static CONNECTING = 0
@@ -19,7 +19,7 @@ export class LocalWebSocket extends EventTarget {
     this.extensions = ''
     this.onopen = this.onmessage = this.onerror = this.onclose = null
     this.link = null
-    connect(addressOf(this.url)).then(
+    connect(addressOf(this.url), optionsOf(this.url)).then(
       link => {
         if (this.readyState !== 0) { link.close(1000, 'closed while connecting'); return }
         this.link = link

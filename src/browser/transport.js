@@ -21,11 +21,21 @@ export function registry() {
   return globalThis[REGISTRY] ??= new Map()
 }
 
-/** 'local://7700' or 'local://7700/path' -> '7700' or '7700/path'. */
+/** 'local://7700' or 'local://7700/path' -> '7700' or '7700/path' (a '?query' is not part of it). */
 export function addressOf(url) {
   const text = String(url)
   if (!text.startsWith(SCHEME + '//')) throw new TypeError(`not a ${SCHEME}// URL: ${text}`)
-  return text.slice(SCHEME.length + 2).replace(/\/+$/, '')
+  return text.slice(SCHEME.length + 2).split('?')[0].replace(/\/+$/, '')
+}
+
+/**
+ * Connection options in the URL query: 'local://7700?ip=203.0.113.20' connects as if from that
+ * address, which decides the connection's home channel ('#' tags). Without it, 127.0.0.1.
+ */
+export function optionsOf(url) {
+  const query = String(url).split('?')[1] ?? ''
+  const ip = new URLSearchParams(query).get('ip')
+  return ip && ip.length <= 64 ? { ip } : {}
 }
 
 export function lobbyName(address) {
@@ -118,13 +128,13 @@ export class ChannelLink extends Link {
  * Client side: connects to the server at `address`. Resolves with a link once the server has
  * accepted it, rejects when no server answers.
  */
-export function connect(address) {
+export function connect(address, { ip } = {}) {
   const server = registry().get(address)
   if (server) {
     const { port1, port2 } = new MessageChannel()
     const link = new PortLink(port1)
     // Accept on a later task, as a network connection would open.
-    setTimeout(() => server.accept(new PortLink(port2), { transport: 'MessageChannel' }), 0)
+    setTimeout(() => server.accept(new PortLink(port2), { transport: 'MessageChannel', ip }), 0)
     return awaitOpen(link)
   }
   if (typeof BroadcastChannel !== 'function') {
@@ -133,7 +143,7 @@ export function connect(address) {
   const id = globalThis.crypto.randomUUID()
   const link = new ChannelLink(`${lobbyName(address)}:${id}`, 'c')
   const lobby = new BroadcastChannel(lobbyName(address))
-  lobby.postMessage({ t: 'connect', id })
+  lobby.postMessage({ t: 'connect', id, ip })
   lobby.close()
   return awaitOpen(link)
 }
@@ -186,9 +196,10 @@ export async function listen(address, onLink) {
   if (typeof BroadcastChannel === 'function') {
     lobby = new BroadcastChannel(lobbyName(address))
     lobby.onmessage = e => {
-      const { t, id } = e.data ?? {}
+      const { t, id, ip } = e.data ?? {}
       if (t !== 'connect' || typeof id !== 'string' || id.length > 64) return
-      accept(new ChannelLink(`${lobbyName(address)}:${id}`, 's'), { transport: 'BroadcastChannel' })
+      const from = typeof ip === 'string' && ip.length <= 64 ? ip : undefined
+      accept(new ChannelLink(`${lobbyName(address)}:${id}`, 's'), { transport: 'BroadcastChannel', ip: from })
     }
   }
 
