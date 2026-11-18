@@ -22,6 +22,7 @@
       "types": "./dist/browser/esm/io.d.ts",
       "default": "./dist/browser/esm/io.js"
     },
+    "./broker": "./dist/browser/esm/broker.js",
     "./browser/*": "./dist/browser/*"
   },
   "types": "./dist/node/iosignal.d.ts",
@@ -80,6 +81,8 @@
     "auth"
   ],
   "files": [
+    "dist/browser/esm/broker.js",
+    "dist/browser/esm/broker.js.map",
     "dist/browser/esm/io.d.ts",
     "dist/browser/esm/io.js",
     "dist/browser/esm/io.js.map",

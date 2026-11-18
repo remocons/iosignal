@@ -33,3 +33,33 @@ for (const [format, api] of [['esm', esm], ['cjs', cjs]]) {
     assert.deepEqual(result, values);
   });
 }
+
+test('dist/browser/esm/broker.js: clients in one page relay through the in-page server', async () => {
+  // The browser client listens for page visibility; Node.js has no document.
+  globalThis.document ??= Object.assign(new EventTarget(), { visibilityState: 'visible' });
+  const { createBrowserBroker, LocalIO, attachMonitor } = await import('../dist/browser/esm/broker.js');
+  const server = await createBrowserBroker({ port: 7901 });
+  const log = [];
+  attachMonitor(server, entry => log.push(entry));
+  const ready = io => new Promise(resolve => io.once('ready', resolve));
+  const a = new LocalIO(server.url), b = new LocalIO(server.url);
+  try {
+    await Promise.all([ready(a), ready(b)]);
+    assert.match(a.cid, /^\?[0-9a-z]{4}$/);
+    b.subscribe('room');
+    await new Promise(resolve => setTimeout(resolve, 20));
+    const got = new Promise(resolve => b.once('room', (tag, ...args) => resolve(args)));
+    a.signal('room', 'hello', 7);
+    assert.deepEqual(await got, ['hello', 7]);
+    const direct = new Promise(resolve => b.once('@hi', (tag, value) => resolve(value)));
+    a.signal(`${b.cid}@hi`, { ok: true });
+    assert.deepEqual(await direct, { ok: true });
+    assert.ok(log.some(e => e.type === 'signal' && e.tag === 'room' && e.to[0].cid === b.cid));
+    await assert.rejects(createBrowserBroker({ port: 7901 }), { code: 'EADDRINUSE' });
+  } finally {
+    a.destroy();
+    b.destroy();
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
