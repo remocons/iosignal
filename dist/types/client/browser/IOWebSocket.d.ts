@@ -34,6 +34,13 @@ export default class IO extends IOCore {
      */
     static constants: object;
     /**
+     * The WebSocket class to connect with; null uses the global WebSocket. Set it on IO or on a
+     * subclass to connect through something with the browser WebSocket API (readyState,
+     * binaryType, onopen/onmessage/onerror/onclose, send, close), e.g. a test double.
+     * @type {(new (url: string) => WebSocket) | null}
+     */
+    static WebSocket: (new (url: string) => WebSocket) | null;
+    /**
      * Tracks the number of IO instances created.
      * @type {number}
      */
@@ -52,6 +59,13 @@ export default class IO extends IOCore {
      * Keeps the connection alive by re-connecting if closed.
      */
     keepConnection(): void;
+    /**
+     * Makes the socket for a connection: new IO.WebSocket(url) (the class set on this client's
+     * class), else the global WebSocket. Override it to choose the socket by URL.
+     * @param {string} url - The URL to connect to.
+     * @returns {WebSocket}
+     */
+    createWebSocket(url: string): WebSocket;
     /**
      * Creates a new WebSocket connection.
      * @param {string} url - The WebSocket URL to connect to.

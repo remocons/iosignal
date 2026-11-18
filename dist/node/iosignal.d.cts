@@ -635,6 +635,7 @@ declare class IOCore extends EventEmitter<string | symbol, any> {
 type Buffer$1 = Boho.Buffer;
 
 declare function pack(payload: any): Buffer<ArrayBufferLike>;
+
 declare class CongRx extends Transform {
     /**
      * @param {import('stream').TransformOptions & { maxFrameSize?: number }} [options] Stream options.
@@ -652,7 +653,6 @@ declare class CongRx extends Transform {
     skipBytes: number;
     _transform(chunk: any, encoding: any, callback: any): void;
     addData(chunk: any): void;
-    parse(): void;
 }
 
 declare class IOCongSocket extends IOCore {

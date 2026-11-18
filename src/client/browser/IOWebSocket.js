@@ -47,6 +47,14 @@ export default class IO extends IOCore {
   static constants = constants
 
   /**
+   * The WebSocket class to connect with; null uses the global WebSocket. Set it on IO or on a
+   * subclass to connect through something with the browser WebSocket API (readyState,
+   * binaryType, onopen/onmessage/onerror/onclose, send, close), e.g. a test double.
+   * @type {(new (url: string) => WebSocket) | null}
+   */
+  static WebSocket = null;
+
+  /**
    * Tracks the number of IO instances created.
    * @type {number}
    */
@@ -108,12 +116,23 @@ export default class IO extends IOCore {
   keepConnection() {
     if (!this.autoReconnect) return;
     // Reconnect only if the socket is closed and the state reflects that.
-    if ((!this.socket || this.socket.readyState === WebSocket.CLOSED) ) {
+    if ((!this.socket || this.socket.readyState === 3) ) { // 3: WebSocket CLOSED
       this.open();
     }
   }
 
 
+
+  /**
+   * Makes the socket for a connection: new IO.WebSocket(url) (the class set on this client's
+   * class), else the global WebSocket. Override it to choose the socket by URL.
+   * @param {string} url - The URL to connect to.
+   * @returns {WebSocket}
+   */
+  createWebSocket(url) {
+    const SocketClass = /** @type {typeof IO} */ (this.constructor).WebSocket ?? WebSocket;
+    return new SocketClass(url);
+  }
 
   /**
    * Creates a new WebSocket connection.
@@ -122,7 +141,7 @@ export default class IO extends IOCore {
   createConnection(url) {
     // Web Browser WebSocket
     IO.webSocketCount++;
-    const socket = this.socket = new WebSocket(url);
+    const socket = this.socket = this.createWebSocket(url);
     this._closed = false;
     this.socket.binaryType = IO.binaryType
 

@@ -1,6 +1,6 @@
 import { performance } from 'node:perf_hooks';
 import { isIP, isIPv4, isIPv6 } from 'node:net';
-import { pack, CongRx } from '../client/CongPacket.js'
+import { pack, CongParser } from '../client/CongFrame.js'
 import { RemoteCore } from './RemoteCore.js';
 import { serverOption } from './serverOption.js';
 import { IOMsg } from '../common/constants.js';
@@ -110,26 +110,20 @@ export class Remote extends RemoteCore {
         this.txDrainMaxMs = Math.max(this.txDrainMaxMs, performance.now() - this.txBlockedSince);
         this.txBlockedSince = null;
       });
-      this.congRx = new CongRx({ maxFrameSize: this.rxFrameLimit() });
+      // tcpSocket -> congRx (frame parser, no stream) -> onSocketMessage
+      this.congRx = new CongParser({
+        maxFrameSize: this.rxFrameLimit(),
+        onFrame: (serverOption.debug.slow ? this.onTimeDelayMessage : this.onSocketMessage).bind(this),
+        onWrong: this.onWrongCongPacketMessage.bind(this),
+        onOversize: this.onOversizeCongPacket.bind(this)
+      });
       socket.on('data', data => { this.congRx.write(data) })
-
-      this.congRx.on('wrong', this.onWrongCongPacketMessage.bind(this))
-      this.congRx.on('oversize', this.onOversizeCongPacket.bind(this))
-      // readable.pipe( destination )
-      // tcpSocket -> congRx(parser) -> onMessage
-      // socket.pipe( this.congRx )
-
-      if (serverOption.debug.slow) {
-        this.congRx.on('data', this.onTimeDelayMessage.bind(this))
-      } else {
-        this.congRx.on('data', this.onSocketMessage.bind(this))
-      }
 
       socket.on('error', e => { console.log('TCP Socket error', e) })
       socket.on('close', e => {
         // Clean up listeners on both the socket and the parser
         socket.removeAllListeners();
-        this.congRx.removeAllListeners();
+        this.congRx.clear();
         this.manager.removeRemote(this);
       })
 
