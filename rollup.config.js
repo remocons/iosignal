@@ -11,7 +11,11 @@ import dts from 'rollup-plugin-dts'
 const STAND_INS = { ws: 'ws', events: 'events', net: 'net', http: 'http', fs: 'fs', 'fs/promises': 'fs',
   os: 'os', perf_hooks: 'perf_hooks', process: 'process', crypto: 'crypto' }
 function browserStandIns() {
-  return { name: 'browser-stand-ins', resolveId(source) {
+  return { name: 'browser-stand-ins', resolveId(source, importer) {
+    // Server.js imports the dashboard (an HTTP status page that reads files); not in a page.
+    if (source === './Dashboard.js' && importer?.endsWith(path.join('src', 'server', 'Server.js'))) {
+      return path.join(root, 'src/browser/env/dashboard.js')
+    }
     const name = source.replace(/^node:/, '')
     return Object.hasOwn(STAND_INS, name) ? path.join(root, 'src/browser/env', STAND_INS[name] + '.js') : null
   }}

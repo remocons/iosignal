@@ -9,6 +9,7 @@
     "src/browser/LocalWebSocket.js",
     "src/browser/broker.js",
     "src/browser/env/crypto.js",
+    "src/browser/env/dashboard.js",
     "src/browser/env/events.js",
     "src/browser/env/fs.js",
     "src/browser/env/globals.js",
