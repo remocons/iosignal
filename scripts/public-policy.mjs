@@ -18,7 +18,7 @@ export const controls = [
   'docs/ping.ko.md',
   'docs/ping.md',
   '.github/workflows/verify.yml', 'scripts/public-files.json',
-  'scripts/public-policy.mjs', 'scripts/verify.mjs', 'scripts/type-consumer.mjs',
+  'scripts/public-policy.mjs', 'scripts/verify.mjs', 'scripts/type-consumer.mjs', 'scripts/devices.mjs',
   'checks/release.test.mjs', 'checks/policy.test.mjs',
 ];
 export const allowed = new Set([...controls, ...policy.sync, ...policy.dist]);
@@ -70,7 +70,7 @@ export function audit(base = root, artifacts = false, added = []) {
   for (const name of walk(base)) {
     if (!allowed.has(name)) throw Error(`Unapproved public file: ${name}`);
     safeFile(base, name);
-    if (['index.js', 'package-lock.json', 'README.md', 'README.ko.md'].includes(name) || (/^(src|test|dist)\//.test(name) || /^docs\/.*\.md$/.test(name))) inspect(name, fs.readFileSync(path.join(base, name), 'utf8'));
+    if (['index.js', 'package-lock.json', 'README.md', 'README.ko.md'].includes(name) || (/^(src|test|dist|devices)\//.test(name) || /^docs\/.*\.md$/.test(name))) inspect(name, fs.readFileSync(path.join(base, name), 'utf8'));
   }
   for (const name of [...controls, ...policy.sync, ...(artifacts ? policy.dist : [])]) {
     if (added.includes(name)) safeTarget(base, name); else safeFile(base, name);
