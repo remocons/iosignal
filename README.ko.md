@@ -19,7 +19,7 @@ Node.js에서는 TCP 기반 `IOCongSocket`도 사용할 수 있습니다.
 | 환경 / 도구 | 지원 내용 | 패키지 / 예제 |
 | --- | --- | --- |
 | Node.js | WebSocket·TCP 서버와 클라이언트, 발행/구독, RPC | 이 저장소 · [npm](https://www.npmjs.com/package/iosignal) |
-| 브라우저 | WebSocket 클라이언트, 웹앱 연동 | `iosignal/io` · [예제](https://github.com/remocons/iosignal-examples) |
+| 브라우저 | WebSocket 클라이언트, 웹앱 연동 | `iosignal/browser/esm/io.js` · [예제](https://github.com/remocons/iosignal-examples) |
 | Arduino | 장치와 서버·웹앱 간 통신, 인증과 암호화 | [iosignal-arduino](https://github.com/remocons/iosignal-arduino) |
 | CLI | 터미널에서 서버·클라이언트 실행과 통신 시험 | [iosignal-cli](https://github.com/remocons/iosignal-cli) |
 
@@ -111,10 +111,10 @@ process.once('SIGINT', () => io.stop());
 
 ## 브라우저
 
-번들러를 사용하는 브라우저 프로젝트에서는 브라우저 전용 진입점을 가져옵니다.
+번들러를 사용하는 브라우저 프로젝트에서는 브라우저 진입점 `iosignal/browser/esm/io.js`를 가져옵니다(`iosignal/io`는 같은 파일의 짧은 별칭입니다).
 
 ```js
-import IO from 'iosignal/io';
+import IO from 'iosignal/browser/esm/io.js';
 
 const io = new IO('ws://localhost:8080');
 io.on('error', console.error);
@@ -163,7 +163,7 @@ io-client -c ws://localhost:8080
 | API | 용도 |
 | --- | --- |
 | `Server` | WebSocket/TCP 서버 생성 |
-| `IO` | Node.js WebSocket 클라이언트; `iosignal/io`에서는 브라우저 클라이언트 |
+| `IO` | Node.js WebSocket 클라이언트; `iosignal/browser/esm/io.js`(별칭 `iosignal/io`)에서는 브라우저 클라이언트 |
 | `IOCongSocket` | Node.js TCP 클라이언트 |
 | `server.attach(name, service)` | RPC 서비스 등록 |
 | `io.call(service, command, ...args)` | RPC 요청 |

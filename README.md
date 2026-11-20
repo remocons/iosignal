@@ -20,7 +20,7 @@ and use the quick start below for examples targeting the current version.
 | Environment / tool | Support | Package / examples |
 | --- | --- | --- |
 | Node.js | WebSocket/TCP servers and clients, publish/subscribe, RPC | This repository · [npm](https://www.npmjs.com/package/iosignal) |
-| Browsers | WebSocket clients and web app integration | `iosignal/io` · [examples](https://github.com/remocons/iosignal-examples) |
+| Browsers | WebSocket clients and web app integration | `iosignal/browser/esm/io.js` · [examples](https://github.com/remocons/iosignal-examples) |
 | Arduino | Device communication with servers and web apps, authentication and encryption | [iosignal-arduino](https://github.com/remocons/iosignal-arduino) |
 | CLI | Run servers and clients and test messaging in a terminal | [iosignal-cli](https://github.com/remocons/iosignal-cli) |
 
@@ -113,10 +113,10 @@ See the [messaging guide](https://github.com/remocons/iosignal/blob/main/docs/me
 
 ## Browsers
 
-For browser projects using a bundler, import the browser-specific entry point.
+For browser projects using a bundler, import the browser entry point `iosignal/browser/esm/io.js` (`iosignal/io` is a short alias for the same file).
 
 ```js
-import IO from 'iosignal/io';
+import IO from 'iosignal/browser/esm/io.js';
 
 const io = new IO('ws://localhost:8080');
 io.on('error', console.error);
@@ -168,7 +168,7 @@ for more options.
 | API | Purpose |
 | --- | --- |
 | `Server` | Create a WebSocket/TCP server |
-| `IO` | Node.js WebSocket client; the browser client when imported from `iosignal/io` |
+| `IO` | Node.js WebSocket client; the browser client when imported from `iosignal/browser/esm/io.js` (alias `iosignal/io`) |
 | `IOCongSocket` | Node.js TCP client |
 | `server.attach(name, service)` | Register an RPC service |
 | `io.call(service, command, ...args)` | Make an RPC request |
