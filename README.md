@@ -14,7 +14,7 @@ Node.js also supports TCP through `IOCongSocket`.
 
 The [official documentation](https://iosignal.net/) covers installation, messaging
 concepts and platform guides in Korean. Follow the
-[five-minute quick start](https://iosignal.net/docs/start/quickstart/) for an overview,
+[five-minute quick start](https://docs.iosignal.net/docs/start/quickstart/) for an overview,
 and use the quick start below for examples targeting the current version.
 
 | Environment / tool | Support | Package / examples |
@@ -136,7 +136,7 @@ to close the connection and stop automatic reconnection.
 [iosignal-arduino](https://github.com/remocons/iosignal-arduino) provides an Arduino
 client and examples for boards including ESP32 and ESP8266. Install the library
 and its Boho and Crypto dependencies, then configure the network and server in
-an example for your board. See the [official Arduino guide](https://iosignal.net/docs/arduino)
+an example for your board. See the [official Arduino guide](https://docs.iosignal.net/docs/arduino)
 and [library README](https://github.com/remocons/iosignal-arduino/blob/main/README.en.md)
 for setup and connection instructions.
 

@@ -13,8 +13,8 @@
 
 리테인 발행은 `room#$state`나 `@$state`처럼 `$`를 포함한 태그를 사용합니다.
 보관 정책과 제한은 서버·서비스 설정 및 인증 유형에 따라 달라집니다.
-자세한 내용은 [시그널 태그](https://iosignal.net/docs/core/signal_tags)와
-[시그널 유형](https://iosignal.net/docs/core/signal_types)을 참고하세요.
+자세한 내용은 [시그널 태그](https://docs.iosignal.net/docs/core/signal_tags)와
+[시그널 유형](https://docs.iosignal.net/docs/core/signal_types)을 참고하세요.
 
 **특수문자 사용 권고:** 특수문자로 시작하는 태그는 특수기능 용도로 사용될 수 있습니다.
 일반 용도의 태그는 문자나 숫자로 시작하고, `#`, `@` 등 문서에 정의된 특수문자는 명시된 위치와 용법에 따라 사용하세요.

@@ -13,7 +13,7 @@ Node.js에서는 TCP 기반 `IOCongSocket`도 사용할 수 있습니다.
 ## 문서와 지원 환경
 
 [공식 문서](https://iosignal.net/)에서 설치, 메시징 개념과 환경별 가이드를 확인할 수 있습니다.
-[5분 빠른 시작](https://iosignal.net/docs/start/quickstart/)으로 전체 흐름을 익히고,
+[5분 빠른 시작](https://docs.iosignal.net/docs/start/quickstart/)으로 전체 흐름을 익히고,
 현재 버전의 실행 예제는 아래 빠른 시작을 참고하세요.
 
 | 환경 / 도구 | 지원 내용 | 패키지 / 예제 |
@@ -133,7 +133,7 @@ io.on('ready', () => {
 [iosignal-arduino](https://github.com/remocons/iosignal-arduino)는 Arduino 클라이언트와
 ESP32·ESP8266 등의 예제를 제공합니다. 라이브러리와 Boho·Crypto 의존성을 설치하고,
 보드에 맞는 예제에서 네트워크·서버 설정을 변경해 사용하세요.
-설치와 연결 방법은 [Arduino 공식 가이드](https://iosignal.net/docs/arduino)와
+설치와 연결 방법은 [Arduino 공식 가이드](https://docs.iosignal.net/docs/arduino)와
 [라이브러리 README](https://github.com/remocons/iosignal-arduino#readme)를 참고하세요.
 
 ## CLI 지원

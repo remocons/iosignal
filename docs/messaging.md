@@ -13,8 +13,8 @@
 
 For retained publications, use a tag containing `$`, such as `room#$state` or
 `@$state`. Retention policies and limits depend on server/service configuration
-and authentication type. See [signal tags](https://iosignal.net/docs/core/signal_tags)
-and [signal types](https://iosignal.net/docs/core/signal_types) for details.
+and authentication type. See [signal tags](https://docs.iosignal.net/docs/core/signal_tags)
+and [signal types](https://docs.iosignal.net/docs/core/signal_types) for details.
 
 **Special-character usage guidance:** Tags beginning with a special character may be used for special features.
 Start general-purpose tags with a letter or number, and use documented special characters such as `#` and `@` only in their documented positions and forms.
