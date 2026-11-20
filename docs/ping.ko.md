@@ -11,6 +11,13 @@ io.on('pong', () => console.log('서버 PONG'));
 io.ping();
 ```
 
+왕복 시간을 재려면 `pingServer()`(9.23)를 씁니다. PONG까지 걸린 밀리초를 돌려주고, 실패하면 오류 코드
+`NOT_READY`, `BUSY`(한 번에 하나만 잼), `TIMEOUT`, `CONNECTION_CLOSED`로 거부합니다.
+
+```js
+const ms = await io.pingServer({ timeoutMs: 3000 });
+```
+
 WebSocket 자체 heartbeat 프레임은 별개입니다.
 
 앱 태그 `@pong`을 직접 메시지로 받아도 프로토콜 `pong` 이벤트는 발생하지 않습니다.

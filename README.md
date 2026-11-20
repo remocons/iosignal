@@ -260,6 +260,29 @@ replacement.
 - The quota is sent in a new `QUOTA` message; older clients ignore it and
   keep their previous local size limit.
 
+## Changes in 9.23
+
+- Device rules: `iosignal/devices` holds the rules devices and apps share
+  (`$name`, `$ui`, `$state`, screens, pictures), web components for a device
+  panel (`<iosignal-devices>`) and a single card
+  (`<iosignal-device-card cid>`), a virtual device runner, the official device
+  types and example devices, as plain ES modules and JSON. `registerWidget`,
+  `registerView` and `registerType` add an application's own; other apps fall
+  back to the device's buttons.
+- Health check: a server with `port` answers `GET /healthz` with
+  `{"status":"ok"}` (503 while closing). `healthPath` changes the path, `false`
+  turns it off. With your own `httpServer`, call `server.handle(req, res)`,
+  which also serves the dashboard.
+- Dashboard: `links` and `cidHref` options, `dashboard.panel(id, { title,
+  columns, rows })` for an application's own table, device names in the
+  participant table, and a warning when an `open` dashboard is viewed from a
+  public address.
+- Client: `io.pingServer({ timeoutMs })` resolves with the round trip to the
+  server in milliseconds.
+- `bufferutil` and `utf-8-validate` are no longer optional dependencies. `ws`
+  still uses them when your project installs them.
+- A failed listen on the server's own HTTP port is reported once (was twice).
+
 ## Changes in 9.22
 
 - Browser client: `IO.WebSocket` sets the class to connect with (anything with

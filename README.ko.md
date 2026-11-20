@@ -246,6 +246,20 @@ const server = new Server({
 - 쿼터는 새 `QUOTA` 메시지로 전달됩니다. 이전 클라이언트는 이를 무시하고 기존
   로컬 크기 제한을 유지합니다.
 
+## 9.23 변경 사항
+
+- 장치 규칙: `iosignal/devices`에 장치와 앱이 함께 쓰는 규칙(`$name`, `$ui`, `$state`, 화면, 그림), 장치 패널
+  (`<iosignal-devices>`)과 카드 한 장(`<iosignal-device-card cid>`) 웹 컴포넌트, 가상 장치 실행기, 공식 장치 타입과
+  예제 장치가 빌드 없는 ES 모듈과 JSON으로 들어 있습니다. `registerWidget`, `registerView`, `registerType`으로 앱의
+  위젯·그림·타입을 더하며, 이를 모르는 앱은 장치의 버튼으로 내려갑니다.
+- 상태 확인: `port`로 연 서버는 `GET /healthz`에 `{"status":"ok"}`로 답합니다(닫는 중에는 503). `healthPath`로 경로를
+  바꾸고 `false`로 끕니다. 직접 만든 `httpServer`에서는 `server.handle(req, res)`를 부르면 대시보드도 함께 처리합니다.
+- 대시보드: `links`, `cidHref` 옵션, 앱의 표를 더하는 `dashboard.panel(id, { title, columns, rows })`, 참가자 표의 장치
+  이름, 누구나 볼 수 있는(`open`) 대시보드를 공인 주소에서 열면 경고.
+- 클라이언트: `io.pingServer({ timeoutMs })`는 서버까지 왕복 시간(밀리초)을 돌려줍니다.
+- `bufferutil`, `utf-8-validate`는 더 이상 선택 의존성이 아닙니다. 프로젝트에 설치하면 `ws`가 계속 사용합니다.
+- 서버 자체 HTTP 포트의 listen 실패를 한 번만 알립니다(전에는 두 번).
+
 ## 9.22 변경 사항
 
 - 브라우저 클라이언트: `IO.WebSocket`으로 연결에 쓸 클래스를 정합니다(브라우저 WebSocket API를 가진 것.

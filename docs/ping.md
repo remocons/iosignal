@@ -11,6 +11,14 @@ io.on('pong', () => console.log('Server PONG'));
 io.ping();
 ```
 
+To measure the round trip, use `pingServer()` (9.23). It resolves with the
+milliseconds until a PONG and rejects with an error code: `NOT_READY`, `BUSY`
+(one measurement at a time), `TIMEOUT` or `CONNECTION_CLOSED`:
+
+```js
+const ms = await io.pingServer({ timeoutMs: 3000 });
+```
+
 Native WebSocket heartbeat frames remain separate.
 
 An application `@pong` tag received as a direct message never emits the
