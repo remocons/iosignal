@@ -55,6 +55,7 @@ export class Dashboard {
     this.server = server
     this.startedAt = Date.now()
     this.viewers = new Map()       // cid -> { lastAt }
+    this.publicSeen = false        // an open dashboard has been viewed from a public address
     this.series = []               // [{ at, ... }] one point a second, at most `history`
     this.lastHostCounters = new Map()
     this.lastJournal = new Map()   // host name -> last journal seq sent
@@ -99,6 +100,11 @@ export class Dashboard {
     if (!this.allowed(from, msg)) { this.host.to(from.cid, DASHBOARD.TOPIC, { type: 'denied', mode: this.access.mode }); return }
     if (!known && this.viewers.size >= this.maxViewers) { this.host.to(from.cid, DASHBOARD.TOPIC, { type: 'full' }); return }
     this.viewers.set(from.cid, { lastAt: Date.now() })
+    if (!known && this.access.mode === 'open' && !this.publicSeen && this.#fromPublic(from.cid)) {
+      // Open access is meant for a LAN: say so once when someone views it from a public address.
+      this.publicSeen = true
+      console.warn(`dashboard: open access is being viewed from a public address; use a token or login access (dashboard.access) on an Internet-facing server`)
+    }
     if (!known) this.host.to(from.cid, DASHBOARD.TOPIC, this.#init())
   }
 
@@ -106,7 +112,14 @@ export class Dashboard {
     return {
       type: 'init', at: Date.now(), startedAt: this.startedAt, panels: this.panels, history: this.history,
       showIdentities: this.showIdentities, server: this.#serverInfo(), series: this.series, events: this.events.slice(-60),
+      publicOpen: this.access.mode === 'open' && this.publicSeen,
     }
+  }
+
+  // Whether the connection of this CID came from a public (not loopback or private) address.
+  #fromPublic(cid) {
+    for (const remote of this.server.manager.remotes) if (remote.cid === cid) return !remote.privateNode
+    return false
   }
 
   #serverInfo() {

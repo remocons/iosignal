@@ -2,7 +2,7 @@ import require$$0$2, { Transform } from 'stream';
 import net, { isIPv4, isIPv6 } from 'net';
 import require$$0$3 from 'events';
 import require$$1$1 from 'https';
-import require$$2$1 from 'http';
+import http from 'http';
 import require$$4 from 'tls';
 import require$$1 from 'crypto';
 import require$$7 from 'url';
@@ -5193,7 +5193,7 @@ function requireWebsocket () {
 
 	const EventEmitter = require$$0$3;
 	const https = require$$1$1;
-	const http = require$$2$1;
+	const http$1 = http;
 	const net$1 = net;
 	const tls = require$$4;
 	const { randomBytes, createHash } = require$$1;
@@ -5934,7 +5934,7 @@ function requireWebsocket () {
 
 	  const defaultPort = isSecure ? 443 : 80;
 	  const key = randomBytes(16).toString('base64');
-	  const request = isSecure ? https.request : http.request;
+	  const request = isSecure ? https.request : http$1.request;
 	  const protocolSet = new Set();
 	  let perMessageDeflate;
 
@@ -6862,7 +6862,7 @@ function requireWebsocketServer () {
 	hasRequiredWebsocketServer = 1;
 
 	const EventEmitter = require$$0$3;
-	const http = require$$2$1;
+	const http$1 = http;
 	const { Duplex } = require$$0$2;
 	const { createHash } = require$$1;
 
@@ -6959,8 +6959,8 @@ function requireWebsocketServer () {
 	    }
 
 	    if (options.port != null) {
-	      this._server = http.createServer((req, res) => {
-	        const body = http.STATUS_CODES[426];
+	      this._server = http$1.createServer((req, res) => {
+	        const body = http$1.STATUS_CODES[426];
 
 	        res.writeHead(426, {
 	          'Content-Length': body.length,
@@ -7370,7 +7370,7 @@ function requireWebsocketServer () {
 	  // call to `socket.end()` below, which triggers an `'error'` event that in
 	  // turn causes the socket to be destroyed.
 	  //
-	  message = message || http.STATUS_CODES[code];
+	  message = message || http$1.STATUS_CODES[code];
 	  headers = {
 	    Connection: 'close',
 	    'Content-Type': 'text/html',
@@ -7381,7 +7381,7 @@ function requireWebsocketServer () {
 	  socket.once('finish', socket.destroy);
 
 	  socket.end(
-	    `HTTP/1.1 ${code} ${http.STATUS_CODES[code]}\r\n` +
+	    `HTTP/1.1 ${code} ${http$1.STATUS_CODES[code]}\r\n` +
 	      Object.keys(headers)
 	        .map((h) => `${h}: ${headers[h]}`)
 	        .join('\r\n') +
@@ -10615,6 +10615,8 @@ th { color: var(--muted); font-weight: 600; font-family: var(--sans); }
 .overlay button { padding: 10px; border: 0; border-radius: 10px; background: var(--a); color: #fff; font-weight: 700; cursor: pointer; }
 .overlay p { margin: 0; color: var(--muted); font-size: 13px; }
 .overlay .err { color: var(--d); }
+.exposed { flex-basis: 100%; margin: 0; padding: 6px 10px; border-radius: 8px; font-size: 13px;
+  background: color-mix(in srgb, var(--c) 18%, transparent); color: var(--ink); }
 [hidden] { display: none !important; }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
 </style>
@@ -10625,6 +10627,7 @@ th { color: var(--muted); font-weight: 600; font-family: var(--sans); }
   <span id="status" class="pill">연결 중</span>
   <span id="meta" class="meta"></span>
   <nav class="chips" id="chips" aria-label="패널"></nav>
+  <p id="exposed" class="exposed" role="alert" hidden>누구나 볼 수 있는 대시보드가 공인 주소에서 열렸습니다. 인터넷에 연 서버에서는 토큰이나 로그인 접근을 쓰세요.</p>
 </header>
 <main id="main">
   <section class="panel w12" data-panel="server">
@@ -10943,6 +10946,7 @@ th { color: var(--muted); font-weight: 600; font-family: var(--sans); }
     if (m.type === "full") { status("시청자가 가득 찼습니다", "bad"); return; }
     if (m.type === "init") {
       $("gate").hidden = true;
+      $("exposed").hidden = !m.publicOpen;
       status("실시간", "live");
       info = m.server; startedAt = m.startedAt; series = m.series.slice();
       hostHist = {};
@@ -11046,6 +11050,7 @@ class Dashboard {
     this.server = server;
     this.startedAt = Date.now();
     this.viewers = new Map();       // cid -> { lastAt }
+    this.publicSeen = false;        // an open dashboard has been viewed from a public address
     this.series = [];               // [{ at, ... }] one point a second, at most `history`
     this.lastHostCounters = new Map();
     this.lastJournal = new Map();   // host name -> last journal seq sent
@@ -11090,6 +11095,11 @@ class Dashboard {
     if (!this.allowed(from, msg)) { this.host.to(from.cid, DASHBOARD.TOPIC, { type: 'denied', mode: this.access.mode }); return }
     if (!known && this.viewers.size >= this.maxViewers) { this.host.to(from.cid, DASHBOARD.TOPIC, { type: 'full' }); return }
     this.viewers.set(from.cid, { lastAt: Date.now() });
+    if (!known && this.access.mode === 'open' && !this.publicSeen && this.#fromPublic(from.cid)) {
+      // Open access is meant for a LAN: say so once when someone views it from a public address.
+      this.publicSeen = true;
+      console.warn(`dashboard: open access is being viewed from a public address; use a token or login access (dashboard.access) on an Internet-facing server`);
+    }
     if (!known) this.host.to(from.cid, DASHBOARD.TOPIC, this.#init());
   }
 
@@ -11097,7 +11107,14 @@ class Dashboard {
     return {
       type: 'init', at: Date.now(), startedAt: this.startedAt, panels: this.panels, history: this.history,
       showIdentities: this.showIdentities, server: this.#serverInfo(), series: this.series, events: this.events.slice(-60),
+      publicOpen: this.access.mode === 'open' && this.publicSeen,
     }
+  }
+
+  // Whether the connection of this CID came from a public (not loopback or private) address.
+  #fromPublic(cid) {
+    for (const remote of this.server.manager.remotes) if (remote.cid === cid) return !remote.privateNode
+    return false
   }
 
   #serverInfo() {
@@ -11401,7 +11418,10 @@ class Server extends require$$0$3 {
    *   manager's own policy without changing it, so an auth manager can be shared between servers.
    *   options.dashboard: true or { path, access, panels, history, maxViewers, showIdentities } shows a live
    *   status page of the server and its hosts (see Dashboard.js); off by default. With `port` the Server
-   *   serves it itself; with your own httpServer call server.dashboard.handle(req, res) in its handler.
+   *   serves it itself; with your own httpServer call server.handle(req, res) in its handler.
+   *   options.healthPath: path of the health check, answered with 200 {"status":"ok"} while the server
+   *   runs and 503 while it closes (default '/healthz'; false turns it off). With `port` the Server
+   *   answers it itself; with your own httpServer call server.handle(req, res).
    *   A failed listen (e.g. EADDRINUSE) is emitted as 'error'.
    * @param {any} [authManager] Optional authentication manager.
    */
@@ -11473,6 +11493,13 @@ class Server extends require$$0$3 {
       this.congPort = parseInt(options.congPort);
     }
 
+    const healthPath = options.healthPath ?? '/healthz';
+    if (healthPath !== false && (typeof healthPath !== 'string' || !/^\/[A-Za-z0-9._~\-/]*$/.test(healthPath) || healthPath.length > 64)) {
+      throw new TypeError("healthPath must be false or a path that starts with '/' and uses URL-safe characters")
+    }
+    this.healthPath = healthPath;
+    this.closing = false;
+
     this.manager = new Manager(this, authManager);
     // The status page; null when off.
     this.dashboard = null;
@@ -11502,15 +11529,21 @@ class Server extends require$$0$3 {
 
   startWSServer() {
     // console.log('optoins', options )
-    if ((this.port || this.port == 0) && this.dashboard) {
-      // The WebSocket server alone answers plain HTTP with 426; the dashboard needs pages too.
-      this.ownHttp = require$$2$1.createServer((req, res) => {
-        if (!this.dashboard.handle(req, res)) { res.writeHead(404, { 'Content-Type': 'text/plain' }); res.end('Not found'); }
+    if ((this.port || this.port == 0) && (this.dashboard || this.healthPath)) {
+      // The Server's own HTTP server carries the WebSocket upgrades, the health check and the dashboard.
+      // Any other plain HTTP request gets what the WebSocket server alone answered: 426 (404 with a dashboard).
+      this.ownHttp = http.createServer((req, res) => {
+        if (this.handle(req, res)) return
+        const [code, body] = this.dashboard ? [404, 'Not found'] : [426, http.STATUS_CODES[426]];
+        res.writeHead(code, { 'Content-Type': 'text/plain', 'Content-Length': Buffer.byteLength(body) });
+        res.end(body);
       });
-      this.ownHttp.on('error', (err) => this.onListenerError('ws', err));
+      // No 'error' listener of our own: the WebSocket server forwards the HTTP server's errors (listen
+      // failures such as EADDRINUSE) to its own 'error', handled below; listening here too reported them twice.
       this.wss = new WebSocketServer({ server: this.ownHttp, path: this.wsPath, maxPayload: this.maxPayload });
       this.ownHttp.listen(this.port);
     } else if (this.port || this.port == 0) {
+      // Nothing to answer over plain HTTP (healthPath: false, no dashboard), as in the browser broker.
       this.wss = new WebSocketServer({ port: this.port , path: this.wsPath, maxPayload: this.maxPayload });
     } else if (this.httpServer ) {
       this.wss = new WebSocketServer({ server: this.httpServer, path: this.wsPath, maxPayload: this.maxPayload });
@@ -11658,10 +11691,37 @@ class Server extends require$$0$3 {
   }
 
   /**
+   * Answers the Server's own HTTP requests: the health check (healthPath) and the dashboard pages.
+   * Returns true when it answered. A Server with `port` calls it itself; with your own httpServer call
+   * it first in your request handler: if (server.handle(req, res)) return
+   * @param {import('node:http').IncomingMessage} req
+   * @param {import('node:http').ServerResponse} res
+   * @returns {boolean}
+   */
+  handle(req, res) {
+    if (this.healthPath) {
+      let pathname;
+      try { pathname = new URL(req.url || '/', 'http://localhost').pathname; } catch { pathname = null; }
+      if (pathname === this.healthPath) {
+        if (req.method !== 'GET' && req.method !== 'HEAD') { res.writeHead(405, { Allow: 'GET, HEAD' }); res.end(); return true }
+        const body = JSON.stringify({ status: this.closing ? 'closing' : 'ok' });
+        res.writeHead(this.closing ? 503 : 200, {
+          'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body),
+          'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff',
+        });
+        res.end(req.method === 'HEAD' ? undefined : body);
+        return true
+      }
+    }
+    return this.dashboard ? this.dashboard.handle(req, res) : false
+  }
+
+  /**
    * @param {() => void} [callback] Called when the server has closed.
    */
   close(callback) {
     console.log('closing iosignal server...');
+    this.closing = true;
     if (this.dashboard) this.dashboard.close();
     for (const host of [...this.hosts]) host.close();
     if (this.manager) {
@@ -11694,7 +11754,7 @@ class Server extends require$$0$3 {
       this.wss.close(() => {
         // console.log('wss server closed.')
         if (!this.ownHttp) return onClosed()
-        // The HTTP server this Server made for the dashboard closes with it.
+        // The HTTP server this Server made closes with it.
         this.ownHttp.close(() => onClosed());
         this.ownHttp.closeAllConnections?.();
       });

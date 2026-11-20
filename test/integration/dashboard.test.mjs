@@ -134,6 +134,28 @@ for (const [format, api] of variants) {
     assert.ok(server.dashboard.series.length >= 1);
   });
 
+  test(`${format}: an open dashboard viewed from a public address warns once`, { timeout: 10000 }, async (t) => {
+    const { server, connect } = await start(t, api, { dashboard: true });
+    const warnings = [];
+    const warn = console.warn;
+    console.warn = (...args) => warnings.push(args.join(' '));
+    t.after(() => { console.warn = warn; });
+    const look = async (io) => {
+      const got = [];
+      io.on(DASH_TOPIC, (_tag, m) => got.push(m));
+      io.signal(DASH_IN, { op: 'hello' });
+      return until(() => got.find((m) => m.type === 'init'));
+    };
+    assert.equal((await look(await connect())).publicOpen, false, 'a LAN viewer sees no warning');
+    assert.equal(warnings.length, 0);
+    const outside = await connect();
+    // Pretend this connection came from the Internet (tests connect over loopback).
+    [...server.manager.remotes].find((r) => r.cid === outside.cid).privateNode = false;
+    assert.equal((await look(outside)).publicOpen, true);
+    assert.equal((await look(await connect())).publicOpen, true, 'later viewers see it too');
+    assert.equal(warnings.filter((w) => /public address/.test(w)).length, 1);
+  });
+
   test(`${format}: token access`, { timeout: 10000 }, async (t) => {
     const { viewer } = await start(t, api, { dashboard: { access: { token: 'let-me-see-1' } } });
     const none = await viewer();
@@ -215,5 +237,57 @@ for (const [format, api] of variants) {
     const again = new api.Server({ port, dashboard: true });
     await new Promise((r) => again.on('ready', r));
     await new Promise((r) => again.close(r));
+  });
+  test(`${format}: health check on the Server's own port`, { timeout: 10000 }, async (t) => {
+    const { base } = await start(t, api, {});
+    const ok = await fetch(`${base}/healthz`);
+    assert.equal(ok.status, 200);
+    assert.equal(ok.headers.get('content-type'), 'application/json');
+    assert.deepEqual(await ok.json(), { status: 'ok' });
+    const head = await fetch(`${base}/healthz`, { method: 'HEAD' });
+    assert.equal(head.status, 200);
+    assert.equal(await head.text(), '');
+    assert.equal((await fetch(`${base}/healthz`, { method: 'POST' })).status, 405);
+    // Other plain HTTP requests get what the WebSocket server alone answers.
+    assert.equal((await fetch(`${base}/`)).status, 426);
+    assert.equal((await fetch(`${base}/dashboard`)).status, 426);
+
+    const custom = await start(t, api, { healthPath: '/up', dashboard: true });
+    assert.equal((await fetch(`${custom.base}/up`)).status, 200);
+    assert.equal((await fetch(`${custom.base}/healthz`)).status, 404);
+    assert.equal((await fetch(`${custom.base}/dashboard`)).status, 200);
+  });
+
+  test(`${format}: health check off, on your own HTTP server, closing and bad paths`, { timeout: 10000 }, async (t) => {
+    const off = await start(t, api, { healthPath: false });
+    assert.equal(off.server.ownHttp, undefined);
+    assert.equal((await fetch(`${off.base}/healthz`)).status, 426);
+    const io = await off.connect();
+    assert.equal(io.stateName, 'ready');
+
+    const http = createServer((req, res) => {
+      if (server.handle(req, res)) return;
+      res.writeHead(200); res.end('app');
+    });
+    const server = new api.Server({ httpServer: http });
+    t.after(async () => { await new Promise((r) => server.close(r)); await new Promise((r) => http.close(r)); });
+    const ready = new Promise((r) => server.on('ready', r));
+    http.listen(0, '127.0.0.1');
+    await ready;
+    const base = `http://127.0.0.1:${http.address().port}`;
+    assert.deepEqual(await (await fetch(`${base}/healthz`)).json(), { status: 'ok' });
+    assert.equal(await (await fetch(`${base}/other`)).text(), 'app');
+
+    // While the server closes it answers 503, so a load balancer stops sending new clients.
+    const res = { status: 0, body: '', writeHead(code) { this.status = code; }, end(body) { this.body = body; } };
+    server.closing = true;
+    assert.equal(server.handle({ url: '/healthz', method: 'GET' }, res), true);
+    assert.equal(res.status, 503);
+    assert.deepEqual(JSON.parse(res.body), { status: 'closing' });
+    server.closing = false;
+
+    for (const healthPath of ['healthz', '/a b', 7, '/' + 'x'.repeat(64)]) {
+      assert.throws(() => new api.Server({ port: 0, healthPath }), /healthPath/);
+    }
   });
 }

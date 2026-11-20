@@ -98,6 +98,8 @@ th { color: var(--muted); font-weight: 600; font-family: var(--sans); }
 .overlay button { padding: 10px; border: 0; border-radius: 10px; background: var(--a); color: #fff; font-weight: 700; cursor: pointer; }
 .overlay p { margin: 0; color: var(--muted); font-size: 13px; }
 .overlay .err { color: var(--d); }
+.exposed { flex-basis: 100%; margin: 0; padding: 6px 10px; border-radius: 8px; font-size: 13px;
+  background: color-mix(in srgb, var(--c) 18%, transparent); color: var(--ink); }
 [hidden] { display: none !important; }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
 </style>
@@ -108,6 +110,7 @@ th { color: var(--muted); font-weight: 600; font-family: var(--sans); }
   <span id="status" class="pill">연결 중</span>
   <span id="meta" class="meta"></span>
   <nav class="chips" id="chips" aria-label="패널"></nav>
+  <p id="exposed" class="exposed" role="alert" hidden>누구나 볼 수 있는 대시보드가 공인 주소에서 열렸습니다. 인터넷에 연 서버에서는 토큰이나 로그인 접근을 쓰세요.</p>
 </header>
 <main id="main">
   <section class="panel w12" data-panel="server">
@@ -426,6 +429,7 @@ th { color: var(--muted); font-weight: 600; font-family: var(--sans); }
     if (m.type === "full") { status("시청자가 가득 찼습니다", "bad"); return; }
     if (m.type === "init") {
       $("gate").hidden = true;
+      $("exposed").hidden = !m.publicOpen;
       status("실시간", "live");
       info = m.server; startedAt = m.startedAt; series = m.series.slice();
       hostHist = {};

@@ -127,7 +127,10 @@ export class Server extends EventEmitter {
    *   manager's own policy without changing it, so an auth manager can be shared between servers.
    *   options.dashboard: true or { path, access, panels, history, maxViewers, showIdentities } shows a live
    *   status page of the server and its hosts (see Dashboard.js); off by default. With `port` the Server
-   *   serves it itself; with your own httpServer call server.dashboard.handle(req, res) in its handler.
+   *   serves it itself; with your own httpServer call server.handle(req, res) in its handler.
+   *   options.healthPath: path of the health check, answered with 200 {"status":"ok"} while the server
+   *   runs and 503 while it closes (default '/healthz'; false turns it off). With `port` the Server
+   *   answers it itself; with your own httpServer call server.handle(req, res).
    *   A failed listen (e.g. EADDRINUSE) is emitted as 'error'.
    * @param {any} [authManager] Optional authentication manager.
    */
@@ -199,6 +202,13 @@ export class Server extends EventEmitter {
       this.congPort = parseInt(options.congPort)
     }
 
+    const healthPath = options.healthPath ?? '/healthz'
+    if (healthPath !== false && (typeof healthPath !== 'string' || !/^\/[A-Za-z0-9._~\-/]*$/.test(healthPath) || healthPath.length > 64)) {
+      throw new TypeError("healthPath must be false or a path that starts with '/' and uses URL-safe characters")
+    }
+    this.healthPath = healthPath
+    this.closing = false
+
     this.manager = new Manager(this, authManager)
     // The status page; null when off.
     this.dashboard = null
@@ -228,15 +238,21 @@ export class Server extends EventEmitter {
 
   startWSServer() {
     // console.log('optoins', options )
-    if ((this.port || this.port == 0) && this.dashboard) {
-      // The WebSocket server alone answers plain HTTP with 426; the dashboard needs pages too.
+    if ((this.port || this.port == 0) && (this.dashboard || this.healthPath)) {
+      // The Server's own HTTP server carries the WebSocket upgrades, the health check and the dashboard.
+      // Any other plain HTTP request gets what the WebSocket server alone answered: 426 (404 with a dashboard).
       this.ownHttp = http.createServer((req, res) => {
-        if (!this.dashboard.handle(req, res)) { res.writeHead(404, { 'Content-Type': 'text/plain' }); res.end('Not found') }
+        if (this.handle(req, res)) return
+        const [code, body] = this.dashboard ? [404, 'Not found'] : [426, http.STATUS_CODES[426]]
+        res.writeHead(code, { 'Content-Type': 'text/plain', 'Content-Length': Buffer.byteLength(body) })
+        res.end(body)
       })
-      this.ownHttp.on('error', (err) => this.onListenerError('ws', err))
+      // No 'error' listener of our own: the WebSocket server forwards the HTTP server's errors (listen
+      // failures such as EADDRINUSE) to its own 'error', handled below; listening here too reported them twice.
       this.wss = new WebSocketServer({ server: this.ownHttp, path: this.wsPath, maxPayload: this.maxPayload })
       this.ownHttp.listen(this.port)
     } else if (this.port || this.port == 0) {
+      // Nothing to answer over plain HTTP (healthPath: false, no dashboard), as in the browser broker.
       this.wss = new WebSocketServer({ port: this.port , path: this.wsPath, maxPayload: this.maxPayload })
     } else if (this.httpServer ) {
       this.wss = new WebSocketServer({ server: this.httpServer, path: this.wsPath, maxPayload: this.maxPayload })
@@ -384,10 +400,37 @@ export class Server extends EventEmitter {
   }
 
   /**
+   * Answers the Server's own HTTP requests: the health check (healthPath) and the dashboard pages.
+   * Returns true when it answered. A Server with `port` calls it itself; with your own httpServer call
+   * it first in your request handler: if (server.handle(req, res)) return
+   * @param {import('node:http').IncomingMessage} req
+   * @param {import('node:http').ServerResponse} res
+   * @returns {boolean}
+   */
+  handle(req, res) {
+    if (this.healthPath) {
+      let pathname
+      try { pathname = new URL(req.url || '/', 'http://localhost').pathname } catch { pathname = null }
+      if (pathname === this.healthPath) {
+        if (req.method !== 'GET' && req.method !== 'HEAD') { res.writeHead(405, { Allow: 'GET, HEAD' }); res.end(); return true }
+        const body = JSON.stringify({ status: this.closing ? 'closing' : 'ok' })
+        res.writeHead(this.closing ? 503 : 200, {
+          'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body),
+          'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff',
+        })
+        res.end(req.method === 'HEAD' ? undefined : body)
+        return true
+      }
+    }
+    return this.dashboard ? this.dashboard.handle(req, res) : false
+  }
+
+  /**
    * @param {() => void} [callback] Called when the server has closed.
    */
   close(callback) {
     console.log('closing iosignal server...')
+    this.closing = true
     if (this.dashboard) this.dashboard.close()
     for (const host of [...this.hosts]) host.close()
     if (this.manager) {
@@ -420,7 +463,7 @@ export class Server extends EventEmitter {
       this.wss.close(() => {
         // console.log('wss server closed.')
         if (!this.ownHttp) return onClosed()
-        // The HTTP server this Server made for the dashboard closes with it.
+        // The HTTP server this Server made closes with it.
         this.ownHttp.close(() => onClosed())
         this.ownHttp.closeAllConnections?.()
       })

@@ -5,6 +5,7 @@ import * as buffer from 'buffer';
 import { EventEmitter } from 'eventemitter3';
 import * as stream from 'stream';
 import { Transform } from 'stream';
+import * as node_http from 'node:http';
 import EventEmitter$1 from 'events';
 import * as perf_hooks from 'perf_hooks';
 import http from 'http';
@@ -1131,6 +1132,7 @@ declare class Dashboard {
     server: any;
     startedAt: number;
     viewers: Map<any, any>;
+    publicSeen: boolean;
     series: any[];
     lastHostCounters: Map<any, any>;
     lastJournal: Map<any, any>;
@@ -1177,7 +1179,10 @@ declare class Server extends EventEmitter$1<[never]> {
      *   manager's own policy without changing it, so an auth manager can be shared between servers.
      *   options.dashboard: true or { path, access, panels, history, maxViewers, showIdentities } shows a live
      *   status page of the server and its hosts (see Dashboard.js); off by default. With `port` the Server
-     *   serves it itself; with your own httpServer call server.dashboard.handle(req, res) in its handler.
+     *   serves it itself; with your own httpServer call server.handle(req, res) in its handler.
+     *   options.healthPath: path of the health check, answered with 200 {"status":"ok"} while the server
+     *   runs and 503 while it closes (default '/healthz'; false turns it off). With `port` the Server
+     *   answers it itself; with your own httpServer call server.handle(req, res).
      *   A failed listen (e.g. EADDRINUSE) is emitted as 'error'.
      * @param {any} [authManager] Optional authentication manager.
      */
@@ -1203,6 +1208,8 @@ declare class Server extends EventEmitter$1<[never]> {
     duplicateLogin: any;
     httpServer: any;
     wsPath: any;
+    healthPath: any;
+    closing: boolean;
     manager: Manager;
     dashboard: Dashboard | null;
     serverCountToListen: number;
@@ -1278,6 +1285,15 @@ declare class Server extends EventEmitter$1<[never]> {
      * return this
      */
     attach(service: any, service_module: any): this;
+    /**
+     * Answers the Server's own HTTP requests: the health check (healthPath) and the dashboard pages.
+     * Returns true when it answered. A Server with `port` calls it itself; with your own httpServer call
+     * it first in your request handler: if (server.handle(req, res)) return
+     * @param {import('node:http').IncomingMessage} req
+     * @param {import('node:http').ServerResponse} res
+     * @returns {boolean}
+     */
+    handle(req: node_http.IncomingMessage, res: node_http.ServerResponse): boolean;
     /**
      * @param {() => void} [callback] Called when the server has closed.
      */
