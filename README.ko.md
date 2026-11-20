@@ -23,7 +23,7 @@ Node.js에서는 TCP 기반 `IOCongSocket`도 사용할 수 있습니다.
 | Arduino | 장치와 서버·웹앱 간 통신, 인증과 암호화 | [iosignal-arduino](https://github.com/remocons/iosignal-arduino) |
 | CLI | 터미널에서 서버·클라이언트 실행과 통신 시험 | [iosignal-cli](https://github.com/remocons/iosignal-cli) |
 
-[브라우저 통신 워크벤치](https://test.iosignal.net/)에서도 통신을 시험할 수 있습니다.
+[브라우저 통신 워크벤치](https://lab.iosignal.net/channel/)에서도 통신을 시험할 수 있습니다.
 
 ## 설치
 

@@ -24,7 +24,7 @@ and use the quick start below for examples targeting the current version.
 | Arduino | Device communication with servers and web apps, authentication and encryption | [iosignal-arduino](https://github.com/remocons/iosignal-arduino) |
 | CLI | Run servers and clients and test messaging in a terminal | [iosignal-cli](https://github.com/remocons/iosignal-cli) |
 
-Try messaging in the [browser communication workbench](https://test.iosignal.net/).
+Try messaging in the [browser communication workbench](https://lab.iosignal.net/channel/).
 
 ## Installation
 
