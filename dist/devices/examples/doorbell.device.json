@@ -1,0 +1,6 @@
+{
+  "name": "버튼 장치:가상 장치",
+  "ui": "on,off,toggle",
+  "state": { "on": "0" },
+  "view": { "kind": "relays", "keys": ["on"] }
+}

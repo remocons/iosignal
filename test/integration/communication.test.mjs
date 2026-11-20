@@ -2056,4 +2056,24 @@ for (const [format, api] of variants) {
     for (const minRole of [200, -1, 'root']) assert.throws(() => new api.RedisService({}, minRole), RangeError);
     assert.equal(new api.RedisService({}).minRole, 'service');
   });
+
+  test(`${format}: pingServer() measures the round trip and reports why it could not`, { timeout: 10000 }, async t => {
+    for (const tcp of [false, true]) {
+      const { connect, client } = await fixture(t, api, false, tcp);
+      const io = await connect();
+      const ms = await io.pingServer();
+      assert.ok(Number.isFinite(ms) && ms >= 0 && ms < 3000, `${ms}`);
+      const first = io.pingServer();
+      await assert.rejects(io.pingServer(), { code: 'BUSY' });
+      assert.ok((await first) >= 0);
+      await assert.rejects(io.pingServer({ timeoutMs: 0 }), { code: 'INVALID_ARGUMENT' });
+      await assert.rejects(client().pingServer(), { code: 'NOT_READY' });
+      // The server never answers: the measurement times out.
+      io.ping = () => {};
+      await assert.rejects(io.pingServer({ timeoutMs: 50 }), { code: 'TIMEOUT' });
+      const waiting = io.pingServer({ timeoutMs: 5000 });
+      io.stop();
+      await assert.rejects(waiting, { code: 'CONNECTION_CLOSED' });
+    }
+  });
 }

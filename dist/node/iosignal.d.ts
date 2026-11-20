@@ -426,6 +426,19 @@ declare class IOCore extends EventEmitter<string | symbol, any> {
      */
     iam(title?: string): void;
     /**
+     * Measures the round trip to the server: sends a PING and resolves with the milliseconds until a PONG
+     * arrives. One measurement at a time. A PONG that answers the client's own keep-alive PING counts too,
+     * so a measurement may come out a little short right after a quiet spell.
+     * Rejects with an Error whose code is 'NOT_READY' (not connected), 'BUSY' (a measurement is waiting),
+     * 'TIMEOUT' (no PONG within timeoutMs) or 'CONNECTION_CLOSED' (the connection closed first).
+     * @param {{ timeoutMs?: number }} [options] timeoutMs: 1 to 60000 (default 3000)
+     * @returns {Promise<number>}
+     */
+    pingServer({ timeoutMs }?: {
+        timeoutMs?: number;
+    }): Promise<number>;
+    _pingServerWaiting: boolean | undefined;
+    /**
      * Sends a PING message to the server.
      */
     ping(): void;
@@ -1105,6 +1118,12 @@ declare class ServerStats {
  *   history:        seconds kept for the charts (default 300, 10-3600)
  *   maxViewers:     default 20
  *   showIdentities: show participant CIDs and names (default: true unless access is 'open')
+ *   links:          [{ label, href }] links in the page header to other pages of the server, e.g.
+ *                   [{ label: 'Devices', href: '/' }]; href is a path on this server
+ *   cidHref:        a path with {cid} that a shown CID links to, e.g. '/#{cid}' (needs showIdentities)
+ *
+ * dashboard.panel(id, { title, columns, rows }) adds a table of the application's own data, such as
+ * the processes it runs; rows() is called once a second while someone watches.
  */
 declare class Dashboard {
     constructor(server: any, options?: {});
@@ -1129,6 +1148,12 @@ declare class Dashboard {
     history: any;
     maxViewers: any;
     showIdentities: any;
+    links: {
+        label: any;
+        href: any;
+    }[];
+    cidHref: any;
+    custom: Map<any, any>;
     server: any;
     startedAt: number;
     viewers: Map<any, any>;
@@ -1141,6 +1166,19 @@ declare class Dashboard {
     stats: ServerStats;
     /** Whether this viewer (the server's view of it) may watch. */
     allowed(from: any, msg: any): boolean;
+    /**
+     * Adds a table panel of the application's own data; viewers who are watching get it at once.
+     * Cells are shown as text.
+     * @param {string} id panel id: a-z, 0-9, '-' (not one of DASHBOARD_PANELS)
+     * @param {{ title: string, columns: string[], rows: () => any[][] }} panel
+     */
+    panel(id: string, { title, columns, rows }: {
+        title: string;
+        columns: string[];
+        rows: () => any[][];
+    }): this;
+    /** Removes a panel added with panel(). */
+    removePanel(id: any): boolean;
     /**
      * Serves the page (GET path) and the browser client (path + '/io.js'). Returns true when it
      * answered. A Server with `port` calls it itself; with your own httpServer call it first in

@@ -1,0 +1,13 @@
+{
+	"schema": 1,
+	"type": "thermo-hygrometer.1",
+	"rev": 2,
+	"title": "온습도계",
+	"icon": "thermostat",
+	"traits": ["temperature", "humidity"],
+	"view": {"kind": "thermo", "temp": "temp", "hum": "hum"},
+	"controls": [
+		{ "widget": "gauge", "label": "온도", "key": "temp", "min": -20, "max": 50, "unit": "°C" },
+		{ "widget": "gauge", "label": "습도", "key": "hum", "min": 0, "max": 100, "unit": "%" }
+	]
+}

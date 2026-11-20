@@ -9,7 +9,7 @@ import require$$7 from 'url';
 import require$$0 from 'zlib';
 import require$$0$1 from 'buffer';
 import require$$2 from 'util';
-import { performance, monitorEventLoopDelay } from 'node:perf_hooks';
+import { performance as performance$1, monitorEventLoopDelay } from 'node:perf_hooks';
 import { isIPv6 as isIPv6$1, isIPv4 as isIPv4$1, isIP } from 'node:net';
 import { networkInterfaces } from 'os';
 import fs, { readFileSync as readFileSync$1 } from 'fs';
@@ -1503,6 +1503,41 @@ class IOCore extends EventEmitter {
     }
   }
 
+
+  /**
+   * Measures the round trip to the server: sends a PING and resolves with the milliseconds until a PONG
+   * arrives. One measurement at a time. A PONG that answers the client's own keep-alive PING counts too,
+   * so a measurement may come out a little short right after a quiet spell.
+   * Rejects with an Error whose code is 'NOT_READY' (not connected), 'BUSY' (a measurement is waiting),
+   * 'TIMEOUT' (no PONG within timeoutMs) or 'CONNECTION_CLOSED' (the connection closed first).
+   * @param {{ timeoutMs?: number }} [options] timeoutMs: 1 to 60000 (default 3000)
+   * @returns {Promise<number>}
+   */
+  pingServer({ timeoutMs = 3000 } = {}) {
+    const fail = (code, message) => Promise.reject(Object.assign(new Error(message), { code }));
+    if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60000) return fail('INVALID_ARGUMENT', 'timeoutMs must be an integer from 1 to 60000');
+    if (this.stateName !== 'ready') return fail('NOT_READY', 'the server connection is not ready');
+    if (this._pingServerWaiting) return fail('BUSY', 'already waiting for a pong');
+    this._pingServerWaiting = true;
+    return new Promise((resolve, reject) => {
+      const startedAt = performance.now();
+      const done = (error, ms) => {
+        clearTimeout(timer);
+        this.removeListener('pong', onPong);
+        this.removeListener('closed', onClosed);
+        this.removeListener('stop', onClosed);
+        this._pingServerWaiting = false;
+        if (error) reject(error); else resolve(ms);
+      };
+      const onPong = () => done(null, performance.now() - startedAt);
+      const onClosed = () => done(Object.assign(new Error('the connection closed before the pong'), { code: 'CONNECTION_CLOSED' }));
+      const timer = setTimeout(() => done(Object.assign(new Error(`no pong in ${timeoutMs} ms`), { code: 'TIMEOUT' })), timeoutMs);
+      this.on('pong', onPong);
+      this.on('closed', onClosed);
+      this.on('stop', onClosed);
+      try { this.ping(); } catch (error) { done(error); }
+    });
+  }
 
   /**
    * Sends a PING message to the server.
@@ -7775,7 +7810,7 @@ class RemoteCore {
   takeRateTokens(bytes) {
     const { msgPerSec, bytesPerSec } = this.quota;
     if (msgPerSec === null && bytesPerSec === null) return true;
-    const now = performance.now();
+    const now = performance$1.now();
     if (this._rateAt === null) {
       this._msgTokens = msgPerSec ?? 0;
       this._byteTokens = bytesPerSec ?? 0;
@@ -7812,7 +7847,7 @@ class RemoteCore {
 
   issueAuthChallenge() {
     const packet = this.boho.server_time_nonce();
-    this._challengeIssuedAt = performance.now();
+    this._challengeIssuedAt = performance$1.now();
     return packet;
   }
 
@@ -7833,7 +7868,7 @@ class RemoteCore {
     if (this._closing || this.state === STATE.CLOSED) return false;
     if (this._challengeUsed) return this.securityMismatch('AUTH_CHALLENGE_REUSED');
     if (this._challengeIssuedAt === null ||
-        performance.now() - this._challengeIssuedAt > this.security.authChallengeMaxAgeMs) {
+        performance$1.now() - this._challengeIssuedAt > this.security.authChallengeMaxAgeMs) {
       return this.securityMismatch('AUTH_CHALLENGE_EXPIRED');
     }
     return true;
@@ -8417,7 +8452,7 @@ class Remote extends RemoteCore {
     } else { // TCP else
       socket.on('drain', () => {
         if (this.txBlockedSince === null) return;
-        this.txDrainMaxMs = Math.max(this.txDrainMaxMs, performance.now() - this.txBlockedSince);
+        this.txDrainMaxMs = Math.max(this.txDrainMaxMs, performance$1.now() - this.txBlockedSince);
         this.txBlockedSince = null;
       });
       // tcpSocket -> congRx (frame parser, no stream) -> onSocketMessage
@@ -8592,7 +8627,7 @@ class Remote extends RemoteCore {
         this.recordTxQueue();
         if (!writable) {
           this.txWriteFalseCount++;
-          if (this.txBlockedSince === null) this.txBlockedSince = performance.now();
+          if (this.txBlockedSince === null) this.txBlockedSince = performance$1.now();
         }
       } else {
         console.log('server(cong)Remote.send() called. not open state. current readyState:', this.socket.readyState );
@@ -8674,7 +8709,7 @@ class Metrics {
   }
 
   // One logStats line; rates are per second since the previous line.
-  summaryLine(now = performance.now()) {
+  summaryLine(now = performance$1.now()) {
     const s = this.snapshot(), previous = this.previous;
     const rate = key => previous ? (s.counters[key] - previous.counters[key]) * 1000 / Math.max(1, now - previous.time) : 0;
     this.previous = { time: now, counters: s.counters };
@@ -9157,11 +9192,11 @@ class Host extends require$$0$3 {
     if (typeof fn !== 'function') throw new TypeError('loop needs a function')
     const stats = { intervalMs, ticks: 0, gaps: [], steps: [], last: 0 };
     const timer = setInterval(() => {
-      const t0 = performance.now();
+      const t0 = performance$1.now();
       if (stats.last) { stats.gaps.push(t0 - stats.last); if (stats.gaps.length > 200) stats.gaps.shift(); }
       stats.last = t0;
       try { fn(Date.now()); } catch (error) { this._failed(error); }
-      stats.steps.push(performance.now() - t0); if (stats.steps.length > 200) stats.steps.shift();
+      stats.steps.push(performance$1.now() - t0); if (stats.steps.length > 200) stats.steps.shift();
       stats.ticks++;
     }, intervalMs);
     const entry = { timer, stats };
@@ -9278,13 +9313,13 @@ class Host extends require$$0$3 {
   }
 
   _emitSafely(name, ...args) {
-    const t0 = performance.now();
+    const t0 = performance$1.now();
     try {
       this.emit(name, ...args);
     } catch (error) {
       this._failed(error);
     }
-    const ms = performance.now() - t0;
+    const ms = performance$1.now() - t0;
     this.counters.handlerMs += ms;
     if (ms > this.handlerMaxMs) this.handlerMaxMs = ms;
   }
@@ -9433,7 +9468,7 @@ class Manager {
   }
 
   heartbeatTick() {
-    const now = performance.now();
+    const now = performance$1.now();
     if (this.retainExpiry.size) this.expireChannelRetains(now);
     // Process only expired requests, not every connected peer.
     for (const [remote, deadline] of this.heartbeatPending) {
@@ -9447,7 +9482,7 @@ class Manager {
     for (const remote of group) {
       if (remote._closing || this.heartbeatPending.has(remote)) continue;
       remote.socket.isAlive = false;
-      this.heartbeatPending.set(remote, performance.now() + this.pingPeriod + this.pingGrace);
+      this.heartbeatPending.set(remote, performance$1.now() + this.pingPeriod + this.pingGrace);
       try {
         remote.ping();
       } catch {
@@ -9818,7 +9853,7 @@ class Manager {
     }
     this.retainOwners.delete(conn.key);
     const pool = this.retainOwner('net:' + remote.HOME_CHANNEL);
-    const expires = performance.now() + grace;
+    const expires = performance$1.now() + grace;
     for (const tag of conn.tags) {
       pool.tags.add(tag);
       pool.bytes += this.retain_messages.get(tag).byteLength;
@@ -9834,7 +9869,7 @@ class Manager {
     }
   }
 
-  expireChannelRetains(now = performance.now()) {
+  expireChannelRetains(now = performance$1.now()) {
     for (const [tag, expires] of this.retainExpiry) {
       if (expires <= now) this.dropChannelRetain(tag);
     }
@@ -10041,13 +10076,13 @@ class ServerStats {
     };
     server.on('remote:state', this.onState);
     this.delay = monitorEventLoopDelay({ resolution: 20 }); this.delay.enable();
-    this.cpu = process.cpuUsage(); this.elu = performance.eventLoopUtilization();
-    this.previousAt = performance.now(); this.previous = { ...this.counters };
+    this.cpu = process.cpuUsage(); this.elu = performance$1.eventLoopUtilization();
+    this.previousAt = performance$1.now(); this.previous = { ...this.counters };
     this.sample();
     this.timer = setInterval(() => this.sample(), 1000); this.timer.unref();
   }
   sample() {
-    const now = performance.now(), elapsed = Math.max(1, now - this.previousAt);
+    const now = performance$1.now(), elapsed = Math.max(1, now - this.previousAt);
     for (const key in this.base) this.counters[key] = this.server.manager.counters[key] - this.base[key];
     let authenticated = 0, websocket = 0, queuedBytes = 0, maxQueuedBytes = 0;
     let txQueuePeakBytes = 0, txWriteFalseCount = 0, txDrainMaxMs = 0;
@@ -10070,8 +10105,8 @@ class ServerStats {
       const name = peer.getStateName(); states[name] = (states[name] || 0) + 1;
     }
     const rates = Object.fromEntries(Object.entries(this.counters).map(([key, value]) => [key, (value - this.previous[key]) * 1000 / elapsed]));
-    const cpu = process.cpuUsage(), elu = performance.eventLoopUtilization();
-    const delta = performance.eventLoopUtilization(elu, this.elu);
+    const cpu = process.cpuUsage(), elu = performance$1.eventLoopUtilization();
+    const delta = performance$1.eventLoopUtilization(elu, this.elu);
     const mem = process.memoryUsage(), total = this.server.manager.remotes.size;
     let hostAvailableBytes = null;
     if (process.platform === 'linux') {
@@ -10615,6 +10650,10 @@ th { color: var(--muted); font-weight: 600; font-family: var(--sans); }
 .overlay button { padding: 10px; border: 0; border-radius: 10px; background: var(--a); color: #fff; font-weight: 700; cursor: pointer; }
 .overlay p { margin: 0; color: var(--muted); font-size: 13px; }
 .overlay .err { color: var(--d); }
+.links { display: flex; gap: 6px; }
+.links a { font-size: 13px; color: var(--b); text-decoration: none; padding: 3px 8px; border-radius: 6px; }
+.links a:hover { background: var(--grid); }
+td a { color: var(--b); }
 .exposed { flex-basis: 100%; margin: 0; padding: 6px 10px; border-radius: 8px; font-size: 13px;
   background: color-mix(in srgb, var(--c) 18%, transparent); color: var(--ink); }
 [hidden] { display: none !important; }
@@ -10624,6 +10663,7 @@ th { color: var(--muted); font-weight: 600; font-family: var(--sans); }
 <body>
 <header>
   <h1><b>IOSignal</b> Dashboard</h1>
+  <nav class="links" id="links" aria-label="페이지"></nav>
   <span id="status" class="pill">연결 중</span>
   <span id="meta" class="meta"></span>
   <nav class="chips" id="chips" aria-label="패널"></nav>
@@ -10669,6 +10709,7 @@ th { color: var(--muted); font-weight: 600; font-family: var(--sans); }
     <h2>참가자</h2>
     <div class="table" id="players"></div>
   </section>
+  <div id="customPanels" style="display:contents"></div>
 </main>
 
 <div class="overlay" id="gate" hidden>
@@ -10802,6 +10843,32 @@ th { color: var(--muted); font-weight: 600; font-family: var(--sans); }
   // ------------------------------------------------ render
   function stat(label, value, flash) { return '<div class="stat' + (flash ? " flash" : "") + '"><b>' + value + "</b><span>" + label + "</span></div>"; }
   var prevDropped = 0, prevDenied = {};
+  // ------------------------------------------------ panels the server application added (dashboard.panel)
+  var cidHref = null, customDefs = [];
+  function setCustom(defs) {
+    customDefs = defs;
+    var box = $("customPanels"), chips = $("chips");
+    box.innerHTML = defs.map(function (d) {
+      return '<section class="panel w12" data-panel="' + esc(d.id) + '"><h2>' + esc(d.title) + '</h2><div class="table" id="custom-' + esc(d.id) + '"></div></section>';
+    }).join("");
+    Array.prototype.slice.call(chips.querySelectorAll("[data-custom]")).forEach(function (b) { chips.removeChild(b); });
+    defs.forEach(function (d) {
+      var b = document.createElement("button");
+      b.className = "chip"; b.type = "button"; b.textContent = d.title; b.setAttribute("data-p", d.id); b.setAttribute("data-custom", "");
+      b.onclick = function () { var i = shown.indexOf(d.id); if (i >= 0) shown.splice(i, 1); else shown.push(d.id); applyPanels(); };
+      chips.appendChild(b);
+    });
+    applyPanels();
+  }
+  function renderCustom(rows) {
+    customDefs.forEach(function (d) {
+      var el = $("custom-" + d.id); if (!el) return;
+      var list = rows[d.id] || [];
+      el.innerHTML = list.length ? "<table><thead><tr>" + d.columns.map(function (c) { return "<th>" + esc(c) + "</th>"; }).join("") +
+        "</tr></thead><tbody>" + list.map(function (r) { return "<tr>" + r.map(function (c) { return "<td>" + esc(c) + "</td>"; }).join("") + "</tr>"; }).join("") +
+        "</tbody></table>" : '<p class="empty">없음</p>';
+    });
+  }
   function render() {
     if (!latest) return;
     var p = latest.point, s = latest.server;
@@ -10872,7 +10939,8 @@ th { color: var(--muted); font-weight: 600; font-family: var(--sans); }
     $("players").innerHTML = "<table><thead><tr><th>호스트</th><th>CID</th><th>이름</th><th>로그인</th><th>입력</th><th>참가</th><th>마지막 입력</th></tr></thead><tbody>" +
       rows.map(function (r) {
         var p = r[1];
-        return "<tr><td>" + esc(r[0]) + "</td><td>" + esc(p.cid) + "</td><td>" + esc(p.nick || "-") + "</td><td>" +
+        var cid = cidHref ? '<a href="' + esc(cidHref.split("{cid}").join(encodeURIComponent(p.cid))) + '">' + esc(p.cid) + "</a>" : esc(p.cid);
+        return "<tr><td>" + esc(r[0]) + "</td><td>" + cid + "</td><td>" + esc(p.name || p.nick || "-") + "</td><td>" +
           (p.authorized ? '<span class="badge auth">로그인</span>' : '<span class="badge">익명</span>') + '</td><td><span class="act" style="width:' + Math.round(80 * p.inputs / max) + 'px"></span> ' + p.inputs +
           "</td><td>" + fmtT(p.since) + "</td><td>" + (p.idle < 1000 ? "방금" : Math.round(p.idle / 1000) + "초 전") + "</td></tr>";
       }).join("") + "</tbody></table>";
@@ -10947,17 +11015,21 @@ th { color: var(--muted); font-weight: 600; font-family: var(--sans); }
     if (m.type === "init") {
       $("gate").hidden = true;
       $("exposed").hidden = !m.publicOpen;
+      cidHref = m.cidHref || null;
+      $("links").innerHTML = (m.links || []).map(function (l) { return '<a href="' + esc(l.href) + '">' + esc(l.label) + "</a>"; }).join("");
+      setCustom(m.custom || []);
       status("실시간", "live");
       info = m.server; startedAt = m.startedAt; series = m.series.slice();
       hostHist = {};
       series.forEach(function (p) { Object.keys(p.hosts || {}).forEach(function (n) { (hostHist[n] = hostHist[n] || []).push(p.hosts[n]); }); });
       $("events").innerHTML = "";
       addEvents(m.events, true);
-      if (!saved) { shown = m.panels.slice(); applyPanels(); }
+      if (!saved) { shown = m.panels.concat(customDefs.map(function (d) { return d.id; })); applyPanels(); }
       return;
     }
     if (m.type === "tick") {
       latest = m; hosts = m.hosts;
+      renderCustom(m.custom || {});
       series.push(m.point); if (series.length > CONFIG.history) series.shift();
       Object.keys(m.point.hosts || {}).forEach(function (n) { var a = (hostHist[n] = hostHist[n] || []); a.push(m.point.hosts[n]); if (a.length > 60) a.shift(); });
       addEvents(m.events, false);
@@ -11006,6 +11078,9 @@ const DASHBOARD_PANELS = ['server', 'traffic', 'hosts', 'game', 'participants', 
 const IO_BUNDLE = new URL('../../dist/browser/iife/io.js', import.meta.url);
 const VIEWER_TTL_MS = 15000;
 const PARTICIPANT_LIMIT = 60;
+const PANEL_ROWS = 100;      // rows of an added panel sent each second
+const PANEL_CELL = 200;      // characters of one cell
+const SAFE_PATH = /^\/[A-Za-z0-9._~\-/#?=&%]*$/;
 const sha = (s) => createHash('sha256').update(String(s)).digest();
 
 /**
@@ -11020,13 +11095,19 @@ const sha = (s) => createHash('sha256').update(String(s)).digest();
  *   history:        seconds kept for the charts (default 300, 10-3600)
  *   maxViewers:     default 20
  *   showIdentities: show participant CIDs and names (default: true unless access is 'open')
+ *   links:          [{ label, href }] links in the page header to other pages of the server, e.g.
+ *                   [{ label: 'Devices', href: '/' }]; href is a path on this server
+ *   cidHref:        a path with {cid} that a shown CID links to, e.g. '/#{cid}' (needs showIdentities)
+ *
+ * dashboard.panel(id, { title, columns, rows }) adds a table of the application's own data, such as
+ * the processes it runs; rows() is called once a second while someone watches.
  */
 class Dashboard {
   constructor(server, options = {}) {
     if (options === true) options = {};
     if (options === null || typeof options !== 'object') throw new TypeError('dashboard options must be an object or true')
     for (const key of Object.keys(options)) {
-      if (!['path', 'access', 'panels', 'history', 'maxViewers', 'showIdentities'].includes(key)) {
+      if (!['path', 'access', 'panels', 'history', 'maxViewers', 'showIdentities', 'links', 'cidHref'].includes(key)) {
         throw new TypeError(`unknown dashboard option: ${key}`)
       }
     }
@@ -11046,6 +11127,18 @@ class Dashboard {
     this.maxViewers = options.maxViewers ?? 20;
     if (!Number.isInteger(this.maxViewers) || this.maxViewers < 1 || this.maxViewers > 200) throw new RangeError('dashboard maxViewers: 1-200')
     this.showIdentities = options.showIdentities ?? this.access.mode !== 'open';
+    const links = options.links ?? [];
+    if (!Array.isArray(links) || links.length > 8 || links.some((l) => !l || typeof l.label !== 'string' || !l.label ||
+        l.label.length > 32 || typeof l.href !== 'string' || l.href.length > 128 || !SAFE_PATH.test(l.href))) {
+      throw new TypeError("dashboard links: at most 8 of { label (1-32 characters), href (a path on this server, starting with '/') }")
+    }
+    this.links = links.map(({ label, href }) => ({ label, href }));
+    this.cidHref = options.cidHref ?? null;
+    if (this.cidHref !== null && (typeof this.cidHref !== 'string' || !this.cidHref.includes('{cid}') ||
+        this.cidHref.length > 128 || !SAFE_PATH.test(this.cidHref.replace('{cid}', 'x')))) {
+      throw new TypeError("dashboard cidHref: a path on this server with {cid}, such as '/#{cid}'")
+    }
+    this.custom = new Map();        // id -> { title, columns, rows }
 
     this.server = server;
     this.startedAt = Date.now();
@@ -11107,8 +11200,57 @@ class Dashboard {
     return {
       type: 'init', at: Date.now(), startedAt: this.startedAt, panels: this.panels, history: this.history,
       showIdentities: this.showIdentities, server: this.#serverInfo(), series: this.series, events: this.events.slice(-60),
-      publicOpen: this.access.mode === 'open' && this.publicSeen,
+      publicOpen: this.access.mode === 'open' && this.publicSeen, links: this.links,
+      cidHref: this.showIdentities ? this.cidHref : null,
+      custom: [...this.custom].map(([id, p]) => ({ id, title: p.title, columns: p.columns })),
     }
+  }
+
+  /**
+   * Adds a table panel of the application's own data; viewers who are watching get it at once.
+   * Cells are shown as text.
+   * @param {string} id panel id: a-z, 0-9, '-' (not one of DASHBOARD_PANELS)
+   * @param {{ title: string, columns: string[], rows: () => any[][] }} panel
+   */
+  panel(id, { title, columns, rows }) {
+    if (typeof id !== 'string' || !/^[a-z][a-z0-9-]{0,31}$/.test(id) || DASHBOARD_PANELS.includes(id)) {
+      throw new TypeError(`dashboard panel id: a-z, 0-9 and '-', not one of ${DASHBOARD_PANELS.join(', ')}`)
+    }
+    if (typeof title !== 'string' || !title || title.length > 64) throw new TypeError('dashboard panel title: 1-64 characters')
+    if (!Array.isArray(columns) || !columns.length || columns.length > 12 || columns.some((c) => typeof c !== 'string' || c.length > 32)) {
+      throw new TypeError('dashboard panel columns: 1-12 names of at most 32 characters')
+    }
+    if (typeof rows !== 'function') throw new TypeError('dashboard panel rows must be a function')
+    this.custom.set(id, { title, columns: [...columns], rows });
+    for (const cid of this.viewers.keys()) this.host.to(cid, DASHBOARD.TOPIC, this.#init());
+    return this
+  }
+
+  /** Removes a panel added with panel(). */
+  removePanel(id) {
+    return this.custom.delete(id)
+  }
+
+  #customRows() {
+    const out = {};
+    for (const [id, p] of this.custom) {
+      let rows;
+      try { rows = p.rows(); } catch (error) { console.error(`dashboard panel ${id}:`, error); rows = []; }
+      out[id] = (Array.isArray(rows) ? rows : []).slice(0, PANEL_ROWS).map((row) => (Array.isArray(row) ? row : [])
+        .slice(0, p.columns.length).map((cell) => cell === null || cell === undefined ? '' : String(cell).slice(0, PANEL_CELL)));
+    }
+    return out
+  }
+
+  // The name a connection gives itself on <cid>@$name (rule: the part before the first ':'), or ''.
+  #deviceName(cid) {
+    const message = this.server.manager.cid2remote?.get(cid)?.retain_signal?.get('$name');
+    if (!message) return ''
+    try {
+      const tagLen = message[1];
+      const [text] = decodeSignalArgs(message[2 + tagLen], message.subarray(3 + tagLen)) ?? [];
+      return typeof text === 'string' ? text.split(':')[0].trim().slice(0, 64) : ''
+    } catch { return '' }
   }
 
   // Whether the connection of this CID came from a public (not loopback or private) address.
@@ -11154,6 +11296,7 @@ class Dashboard {
           .sort((a, b) => b.lastAt - a.lastAt).slice(0, PARTICIPANT_LIMIT)
           .map(({ from, inputs, firstAt, lastAt }) => ({
             cid: this.#mask(from.cid), nick: this.showIdentities ? from.nick : '', authorized: from.authorized,
+            name: this.showIdentities ? this.#deviceName(from.cid) : '',
             inputs, since: now - firstAt, idle: now - lastAt,
           }));
       }
@@ -11194,7 +11337,7 @@ class Dashboard {
         counters: { rateLimited: v.counters.rateLimited, oversizeRejected: v.counters.oversizeRejected, peerRxLimitSkipped: v.counters.peerRxLimitSkipped },
         own,
       },
-      hosts, events: this.events.slice(eventsBefore),
+      hosts, events: this.events.slice(eventsBefore), custom: this.#customRows(),
     };
     for (const cid of this.viewers.keys()) this.host.to(cid, DASHBOARD.TOPIC, frame);
   }

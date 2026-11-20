@@ -3,6 +3,7 @@ import { timingSafeEqual, createHash } from 'node:crypto'
 import { ServerStats } from './ServerStats.js'
 import { hasRole, ROLES } from '../auth/BohoAuth.js'
 import { dashboardPage } from './dashboardPage.js'
+import { decodeSignalArgs } from '../common/payload.js'
 
 /** Tags of the dashboard's own host. Viewers send to IN; the host sends to one viewer as '@' + TOPIC. */
 export const DASHBOARD = { HOST: 'iosignal.dashboard', IN: 'iosignal.dashboard#in', TOPIC: 'iosignal.dashboard' }
@@ -11,6 +12,9 @@ export const DASHBOARD_PANELS = ['server', 'traffic', 'hosts', 'game', 'particip
 const IO_BUNDLE = new URL('../../dist/browser/iife/io.js', import.meta.url)
 const VIEWER_TTL_MS = 15000
 const PARTICIPANT_LIMIT = 60
+const PANEL_ROWS = 100      // rows of an added panel sent each second
+const PANEL_CELL = 200      // characters of one cell
+const SAFE_PATH = /^\/[A-Za-z0-9._~\-/#?=&%]*$/
 const sha = (s) => createHash('sha256').update(String(s)).digest()
 
 /**
@@ -25,13 +29,19 @@ const sha = (s) => createHash('sha256').update(String(s)).digest()
  *   history:        seconds kept for the charts (default 300, 10-3600)
  *   maxViewers:     default 20
  *   showIdentities: show participant CIDs and names (default: true unless access is 'open')
+ *   links:          [{ label, href }] links in the page header to other pages of the server, e.g.
+ *                   [{ label: 'Devices', href: '/' }]; href is a path on this server
+ *   cidHref:        a path with {cid} that a shown CID links to, e.g. '/#{cid}' (needs showIdentities)
+ *
+ * dashboard.panel(id, { title, columns, rows }) adds a table of the application's own data, such as
+ * the processes it runs; rows() is called once a second while someone watches.
  */
 export class Dashboard {
   constructor(server, options = {}) {
     if (options === true) options = {}
     if (options === null || typeof options !== 'object') throw new TypeError('dashboard options must be an object or true')
     for (const key of Object.keys(options)) {
-      if (!['path', 'access', 'panels', 'history', 'maxViewers', 'showIdentities'].includes(key)) {
+      if (!['path', 'access', 'panels', 'history', 'maxViewers', 'showIdentities', 'links', 'cidHref'].includes(key)) {
         throw new TypeError(`unknown dashboard option: ${key}`)
       }
     }
@@ -51,6 +61,18 @@ export class Dashboard {
     this.maxViewers = options.maxViewers ?? 20
     if (!Number.isInteger(this.maxViewers) || this.maxViewers < 1 || this.maxViewers > 200) throw new RangeError('dashboard maxViewers: 1-200')
     this.showIdentities = options.showIdentities ?? this.access.mode !== 'open'
+    const links = options.links ?? []
+    if (!Array.isArray(links) || links.length > 8 || links.some((l) => !l || typeof l.label !== 'string' || !l.label ||
+        l.label.length > 32 || typeof l.href !== 'string' || l.href.length > 128 || !SAFE_PATH.test(l.href))) {
+      throw new TypeError("dashboard links: at most 8 of { label (1-32 characters), href (a path on this server, starting with '/') }")
+    }
+    this.links = links.map(({ label, href }) => ({ label, href }))
+    this.cidHref = options.cidHref ?? null
+    if (this.cidHref !== null && (typeof this.cidHref !== 'string' || !this.cidHref.includes('{cid}') ||
+        this.cidHref.length > 128 || !SAFE_PATH.test(this.cidHref.replace('{cid}', 'x')))) {
+      throw new TypeError("dashboard cidHref: a path on this server with {cid}, such as '/#{cid}'")
+    }
+    this.custom = new Map()        // id -> { title, columns, rows }
 
     this.server = server
     this.startedAt = Date.now()
@@ -112,8 +134,57 @@ export class Dashboard {
     return {
       type: 'init', at: Date.now(), startedAt: this.startedAt, panels: this.panels, history: this.history,
       showIdentities: this.showIdentities, server: this.#serverInfo(), series: this.series, events: this.events.slice(-60),
-      publicOpen: this.access.mode === 'open' && this.publicSeen,
+      publicOpen: this.access.mode === 'open' && this.publicSeen, links: this.links,
+      cidHref: this.showIdentities ? this.cidHref : null,
+      custom: [...this.custom].map(([id, p]) => ({ id, title: p.title, columns: p.columns })),
     }
+  }
+
+  /**
+   * Adds a table panel of the application's own data; viewers who are watching get it at once.
+   * Cells are shown as text.
+   * @param {string} id panel id: a-z, 0-9, '-' (not one of DASHBOARD_PANELS)
+   * @param {{ title: string, columns: string[], rows: () => any[][] }} panel
+   */
+  panel(id, { title, columns, rows }) {
+    if (typeof id !== 'string' || !/^[a-z][a-z0-9-]{0,31}$/.test(id) || DASHBOARD_PANELS.includes(id)) {
+      throw new TypeError(`dashboard panel id: a-z, 0-9 and '-', not one of ${DASHBOARD_PANELS.join(', ')}`)
+    }
+    if (typeof title !== 'string' || !title || title.length > 64) throw new TypeError('dashboard panel title: 1-64 characters')
+    if (!Array.isArray(columns) || !columns.length || columns.length > 12 || columns.some((c) => typeof c !== 'string' || c.length > 32)) {
+      throw new TypeError('dashboard panel columns: 1-12 names of at most 32 characters')
+    }
+    if (typeof rows !== 'function') throw new TypeError('dashboard panel rows must be a function')
+    this.custom.set(id, { title, columns: [...columns], rows })
+    for (const cid of this.viewers.keys()) this.host.to(cid, DASHBOARD.TOPIC, this.#init())
+    return this
+  }
+
+  /** Removes a panel added with panel(). */
+  removePanel(id) {
+    return this.custom.delete(id)
+  }
+
+  #customRows() {
+    const out = {}
+    for (const [id, p] of this.custom) {
+      let rows
+      try { rows = p.rows() } catch (error) { console.error(`dashboard panel ${id}:`, error); rows = [] }
+      out[id] = (Array.isArray(rows) ? rows : []).slice(0, PANEL_ROWS).map((row) => (Array.isArray(row) ? row : [])
+        .slice(0, p.columns.length).map((cell) => cell === null || cell === undefined ? '' : String(cell).slice(0, PANEL_CELL)))
+    }
+    return out
+  }
+
+  // The name a connection gives itself on <cid>@$name (rule: the part before the first ':'), or ''.
+  #deviceName(cid) {
+    const message = this.server.manager.cid2remote?.get(cid)?.retain_signal?.get('$name')
+    if (!message) return ''
+    try {
+      const tagLen = message[1]
+      const [text] = decodeSignalArgs(message[2 + tagLen], message.subarray(3 + tagLen)) ?? []
+      return typeof text === 'string' ? text.split(':')[0].trim().slice(0, 64) : ''
+    } catch { return '' }
   }
 
   // Whether the connection of this CID came from a public (not loopback or private) address.
@@ -159,6 +230,7 @@ export class Dashboard {
           .sort((a, b) => b.lastAt - a.lastAt).slice(0, PARTICIPANT_LIMIT)
           .map(({ from, inputs, firstAt, lastAt }) => ({
             cid: this.#mask(from.cid), nick: this.showIdentities ? from.nick : '', authorized: from.authorized,
+            name: this.showIdentities ? this.#deviceName(from.cid) : '',
             inputs, since: now - firstAt, idle: now - lastAt,
           }))
       }
@@ -199,7 +271,7 @@ export class Dashboard {
         counters: { rateLimited: v.counters.rateLimited, oversizeRejected: v.counters.oversizeRejected, peerRxLimitSkipped: v.counters.peerRxLimitSkipped },
         own,
       },
-      hosts, events: this.events.slice(eventsBefore),
+      hosts, events: this.events.slice(eventsBefore), custom: this.#customRows(),
     }
     for (const cid of this.viewers.keys()) this.host.to(cid, DASHBOARD.TOPIC, frame)
   }

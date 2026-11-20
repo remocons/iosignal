@@ -156,6 +156,54 @@ for (const [format, api] of variants) {
     assert.equal(warnings.filter((w) => /public address/.test(w)).length, 1);
   });
 
+  test(`${format}: links, CID links, device names and panels added by the application`, { timeout: 10000 }, async (t) => {
+    const links = [{ label: '장치', href: '/' }, { label: 'Site', href: '/site/' }];
+    const { server, connect, viewer } = await start(t, api, { dashboard: { showIdentities: true, links, cidHref: '/#{cid}' } });
+    const host = server.host('room', { inbound: ['room#in'] });
+    const device = await connect();
+    device.signal('@$name', '현관등:현관');
+    device.signal('room#in', 'hi');
+    let calls = 0;
+    server.dashboard.panel('procs', { title: 'Processes', columns: ['name', 'state'], rows: () => { calls++; return [['lamp', 'running'], ['bad', null, 'extra']]; } });
+    const { got } = await viewer();
+    const init = await until(() => got.find((m) => m.type === 'init'));
+    assert.deepEqual(init.links, links);
+    assert.equal(init.cidHref, '/#{cid}');
+    assert.deepEqual(init.custom, [{ id: 'procs', title: 'Processes', columns: ['name', 'state'] }]);
+    const tick = await until(() => got.find((m) => m.type === 'tick' && m.hosts.some((h) => h.players.length)));
+    assert.deepEqual(tick.custom.procs, [['lamp', 'running'], ['bad', '']]);
+    assert.ok(calls >= 1);
+    assert.equal(tick.hosts.find((h) => h.name === 'room').players[0].name, '현관등');
+    // A panel added while someone watches reaches them at once.
+    server.dashboard.panel('more', { title: 'More', columns: ['x'], rows: () => [] });
+    await until(() => got.filter((m) => m.type === 'init').length === 2);
+    assert.equal(server.dashboard.removePanel('more'), true);
+    host.close();
+
+    for (const [options, pattern] of [
+      [{ links: [{ label: '', href: '/' }] }, /links/], [{ links: [{ label: 'x', href: 'javascript:alert(1)' }] }, /links/],
+      [{ links: [{ label: 'x', href: '/"onmouseover' }] }, /links/], [{ cidHref: '/devices' }, /cidHref/],
+    ]) {
+      assert.throws(() => new api.Server({ port: 0, dashboard: options }), pattern);
+    }
+    for (const [id, panel, pattern] of [
+      ['Bad', { title: 't', columns: ['a'], rows: () => [] }, /panel id/], ['server', { title: 't', columns: ['a'], rows: () => [] }, /panel id/],
+      ['ok', { title: '', columns: ['a'], rows: () => [] }, /title/], ['ok', { title: 't', columns: [], rows: () => [] }, /columns/],
+      ['ok', { title: 't', columns: ['a'], rows: [] }, /rows/],
+    ]) {
+      assert.throws(() => server.dashboard.panel(id, panel), pattern);
+    }
+  });
+
+  test(`${format}: an open dashboard hides device names and CID links`, { timeout: 10000 }, async (t) => {
+    const { connect, viewer } = await start(t, api, { dashboard: { cidHref: '/#{cid}' } });
+    const device = await connect();
+    device.signal('@$name', '현관등:현관');
+    const { got } = await viewer();
+    const init = await until(() => got.find((m) => m.type === 'init'));
+    assert.equal(init.cidHref, null);
+  });
+
   test(`${format}: token access`, { timeout: 10000 }, async (t) => {
     const { viewer } = await start(t, api, { dashboard: { access: { token: 'let-me-see-1' } } });
     const none = await viewer();

@@ -1,0 +1,15 @@
+{
+	"schema": 1,
+	"type": "media-remote.1",
+	"rev": 1,
+	"title": "미디어 리모컨",
+	"icon": "settings_remote",
+	"traits": ["media"],
+	"controls": [
+		{ "widget": "buttons", "label": "재생", "options": [
+			{ "label": "이전", "value": "prev" }, { "label": "재생/정지", "value": "playToggle" }, { "label": "다음", "value": "next" }
+		] },
+		{ "widget": "pad", "label": "방향" },
+		{ "widget": "value", "label": "현재 상태", "key": "_" }
+	]
+}

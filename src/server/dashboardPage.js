@@ -98,6 +98,10 @@ th { color: var(--muted); font-weight: 600; font-family: var(--sans); }
 .overlay button { padding: 10px; border: 0; border-radius: 10px; background: var(--a); color: #fff; font-weight: 700; cursor: pointer; }
 .overlay p { margin: 0; color: var(--muted); font-size: 13px; }
 .overlay .err { color: var(--d); }
+.links { display: flex; gap: 6px; }
+.links a { font-size: 13px; color: var(--b); text-decoration: none; padding: 3px 8px; border-radius: 6px; }
+.links a:hover { background: var(--grid); }
+td a { color: var(--b); }
 .exposed { flex-basis: 100%; margin: 0; padding: 6px 10px; border-radius: 8px; font-size: 13px;
   background: color-mix(in srgb, var(--c) 18%, transparent); color: var(--ink); }
 [hidden] { display: none !important; }
@@ -107,6 +111,7 @@ th { color: var(--muted); font-weight: 600; font-family: var(--sans); }
 <body>
 <header>
   <h1><b>IOSignal</b> Dashboard</h1>
+  <nav class="links" id="links" aria-label="페이지"></nav>
   <span id="status" class="pill">연결 중</span>
   <span id="meta" class="meta"></span>
   <nav class="chips" id="chips" aria-label="패널"></nav>
@@ -152,6 +157,7 @@ th { color: var(--muted); font-weight: 600; font-family: var(--sans); }
     <h2>참가자</h2>
     <div class="table" id="players"></div>
   </section>
+  <div id="customPanels" style="display:contents"></div>
 </main>
 
 <div class="overlay" id="gate" hidden>
@@ -285,6 +291,32 @@ th { color: var(--muted); font-weight: 600; font-family: var(--sans); }
   // ------------------------------------------------ render
   function stat(label, value, flash) { return '<div class="stat' + (flash ? " flash" : "") + '"><b>' + value + "</b><span>" + label + "</span></div>"; }
   var prevDropped = 0, prevDenied = {};
+  // ------------------------------------------------ panels the server application added (dashboard.panel)
+  var cidHref = null, customDefs = [];
+  function setCustom(defs) {
+    customDefs = defs;
+    var box = $("customPanels"), chips = $("chips");
+    box.innerHTML = defs.map(function (d) {
+      return '<section class="panel w12" data-panel="' + esc(d.id) + '"><h2>' + esc(d.title) + '</h2><div class="table" id="custom-' + esc(d.id) + '"></div></section>';
+    }).join("");
+    Array.prototype.slice.call(chips.querySelectorAll("[data-custom]")).forEach(function (b) { chips.removeChild(b); });
+    defs.forEach(function (d) {
+      var b = document.createElement("button");
+      b.className = "chip"; b.type = "button"; b.textContent = d.title; b.setAttribute("data-p", d.id); b.setAttribute("data-custom", "");
+      b.onclick = function () { var i = shown.indexOf(d.id); if (i >= 0) shown.splice(i, 1); else shown.push(d.id); applyPanels(); };
+      chips.appendChild(b);
+    });
+    applyPanels();
+  }
+  function renderCustom(rows) {
+    customDefs.forEach(function (d) {
+      var el = $("custom-" + d.id); if (!el) return;
+      var list = rows[d.id] || [];
+      el.innerHTML = list.length ? "<table><thead><tr>" + d.columns.map(function (c) { return "<th>" + esc(c) + "</th>"; }).join("") +
+        "</tr></thead><tbody>" + list.map(function (r) { return "<tr>" + r.map(function (c) { return "<td>" + esc(c) + "</td>"; }).join("") + "</tr>"; }).join("") +
+        "</tbody></table>" : '<p class="empty">없음</p>';
+    });
+  }
   function render() {
     if (!latest) return;
     var p = latest.point, s = latest.server;
@@ -355,7 +387,8 @@ th { color: var(--muted); font-weight: 600; font-family: var(--sans); }
     $("players").innerHTML = "<table><thead><tr><th>호스트</th><th>CID</th><th>이름</th><th>로그인</th><th>입력</th><th>참가</th><th>마지막 입력</th></tr></thead><tbody>" +
       rows.map(function (r) {
         var p = r[1];
-        return "<tr><td>" + esc(r[0]) + "</td><td>" + esc(p.cid) + "</td><td>" + esc(p.nick || "-") + "</td><td>" +
+        var cid = cidHref ? '<a href="' + esc(cidHref.split("{cid}").join(encodeURIComponent(p.cid))) + '">' + esc(p.cid) + "</a>" : esc(p.cid);
+        return "<tr><td>" + esc(r[0]) + "</td><td>" + cid + "</td><td>" + esc(p.name || p.nick || "-") + "</td><td>" +
           (p.authorized ? '<span class="badge auth">로그인</span>' : '<span class="badge">익명</span>') + '</td><td><span class="act" style="width:' + Math.round(80 * p.inputs / max) + 'px"></span> ' + p.inputs +
           "</td><td>" + fmtT(p.since) + "</td><td>" + (p.idle < 1000 ? "방금" : Math.round(p.idle / 1000) + "초 전") + "</td></tr>";
       }).join("") + "</tbody></table>";
@@ -430,17 +463,21 @@ th { color: var(--muted); font-weight: 600; font-family: var(--sans); }
     if (m.type === "init") {
       $("gate").hidden = true;
       $("exposed").hidden = !m.publicOpen;
+      cidHref = m.cidHref || null;
+      $("links").innerHTML = (m.links || []).map(function (l) { return '<a href="' + esc(l.href) + '">' + esc(l.label) + "</a>"; }).join("");
+      setCustom(m.custom || []);
       status("실시간", "live");
       info = m.server; startedAt = m.startedAt; series = m.series.slice();
       hostHist = {};
       series.forEach(function (p) { Object.keys(p.hosts || {}).forEach(function (n) { (hostHist[n] = hostHist[n] || []).push(p.hosts[n]); }); });
       $("events").innerHTML = "";
       addEvents(m.events, true);
-      if (!saved) { shown = m.panels.slice(); applyPanels(); }
+      if (!saved) { shown = m.panels.concat(customDefs.map(function (d) { return d.id; })); applyPanels(); }
       return;
     }
     if (m.type === "tick") {
       latest = m; hosts = m.hosts;
+      renderCustom(m.custom || {});
       series.push(m.point); if (series.length > CONFIG.history) series.shift();
       Object.keys(m.point.hosts || {}).forEach(function (n) { var a = (hostHist[n] = hostHist[n] || []); a.push(m.point.hosts[n]); if (a.length > 60) a.shift(); });
       addEvents(m.events, false);

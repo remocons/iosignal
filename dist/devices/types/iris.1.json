@@ -1,0 +1,37 @@
+{
+	"schema": 1,
+	"type": "iris.1",
+	"rev": 2,
+	"title": "iris 조명",
+	"icon": "palette",
+	"traits": ["onoff"],
+	"controls": [
+		{ "widget": "switch", "label": "전체", "key": "on", "cmdOn": "on", "cmdOff": "off" },
+		{ "widget": "color", "label": "전체 색상", "key": "color", "cmd": "color={v}" },
+		{ "widget": "buttons", "label": "빠른 색상", "cmd": "color={v}", "options": [
+			{ "label": "빨강", "value": "#ff0000" }, { "label": "주황", "value": "#ff6000" }, { "label": "노랑", "value": "#ffc000" },
+			{ "label": "초록", "value": "#00ff00" }, { "label": "하늘", "value": "#00c0ff" }, { "label": "파랑", "value": "#0000ff" },
+			{ "label": "보라", "value": "#a000ff" }, { "label": "흰색", "value": "#ffffff" }
+		] },
+		{ "widget": "section", "label": "LED 1", "children": [
+			{ "widget": "switch", "label": "켜기", "key": "s1", "cmdOn": "s1=1", "cmdOff": "s1=0" },
+			{ "widget": "slider", "label": "밝기", "key": "b1", "min": 0, "max": 100, "step": 5, "unit": "%", "cmd": "b1={v}" },
+			{ "widget": "color", "label": "색상", "key": "c1", "cmd": "c1={v}" }
+		] },
+		{ "widget": "section", "label": "LED 2", "children": [
+			{ "widget": "switch", "label": "켜기", "key": "s2", "cmdOn": "s2=1", "cmdOff": "s2=0" },
+			{ "widget": "slider", "label": "밝기", "key": "b2", "min": 0, "max": 100, "step": 5, "unit": "%", "cmd": "b2={v}" },
+			{ "widget": "color", "label": "색상", "key": "c2", "cmd": "c2={v}" }
+		] },
+		{ "widget": "section", "label": "LED 3", "children": [
+			{ "widget": "switch", "label": "켜기", "key": "s3", "cmdOn": "s3=1", "cmdOff": "s3=0" },
+			{ "widget": "slider", "label": "밝기", "key": "b3", "min": 0, "max": 100, "step": 5, "unit": "%", "cmd": "b3={v}" },
+			{ "widget": "color", "label": "색상", "key": "c3", "cmd": "c3={v}" }
+		] },
+		{ "widget": "section", "label": "LED 4", "children": [
+			{ "widget": "switch", "label": "켜기", "key": "s4", "cmdOn": "s4=1", "cmdOff": "s4=0" },
+			{ "widget": "slider", "label": "밝기", "key": "b4", "min": 0, "max": 100, "step": 5, "unit": "%", "cmd": "b4={v}" },
+			{ "widget": "color", "label": "색상", "key": "c4", "cmd": "c4={v}" }
+		] }
+	]
+}

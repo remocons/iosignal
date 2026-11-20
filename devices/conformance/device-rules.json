@@ -1,0 +1,370 @@
+{
+  "about": "Cases every implementation of the IOSignal device rules must answer the same way (JavaScript, Kotlin, C++). Inputs are the values a device sends; expected results follow shared/discovery.js and shared/state.js.",
+  "rev": 1,
+  "name": {
+    "about": "parseName($name): split at the first \":\"; trim both parts; line breaks become spaces.",
+    "cases": [
+      {
+        "input": "전등1",
+        "name": "전등1",
+        "group": ""
+      },
+      {
+        "input": "전등1:방1",
+        "name": "전등1",
+        "group": "방1"
+      },
+      {
+        "input": "무지개조명:2층 거실",
+        "name": "무지개조명",
+        "group": "2층 거실"
+      },
+      {
+        "input": " 현관등 : 현관 ",
+        "name": "현관등",
+        "group": "현관"
+      },
+      {
+        "input": "이름:분류:하위",
+        "name": "이름",
+        "group": "분류:하위"
+      },
+      {
+        "input": ":미분류만",
+        "name": "",
+        "group": "미분류만"
+      },
+      {
+        "input": "이름:",
+        "name": "이름",
+        "group": ""
+      },
+      {
+        "input": "",
+        "name": "",
+        "group": ""
+      },
+      {
+        "input": "a\nb:c",
+        "name": "a b",
+        "group": "c"
+      },
+      {
+        "input": "거실 스위치",
+        "name": "거실 스위치",
+        "group": ""
+      },
+      {
+        "input": "무지개:2층:거실",
+        "name": "무지개",
+        "group": "2층:거실"
+      }
+    ]
+  },
+  "formatName": {
+    "about": "formatName({ name, group }): \":\" and line breaks in the name become spaces; parts trimmed; no group, no \":\".",
+    "cases": [
+      {
+        "input": {
+          "name": "전등1",
+          "group": "방1"
+        },
+        "output": "전등1:방1"
+      },
+      {
+        "input": {
+          "name": "a:b",
+          "group": "c"
+        },
+        "output": "a b:c"
+      },
+      {
+        "input": {
+          "name": "x",
+          "group": ""
+        },
+        "output": "x"
+      },
+      {
+        "input": {
+          "name": " y ",
+          "group": " z "
+        },
+        "output": "y:z"
+      }
+    ]
+  },
+  "ui": {
+    "about": "isExtendedUi($ui): the first \";\" piece (trimmed) starts with t=, p= or v=. parseUi: extended -> type, ui (b=), broker, hasPanel (p=1), hasView (v=1); otherwise the button list as it is. buttons: the button list split at \",\", trimmed, empty names dropped.",
+    "cases": [
+      {
+        "input": "ON,OFF,TOGGLE",
+        "extended": false,
+        "parsed": {
+          "ui": "ON,OFF,TOGGLE",
+          "legacyUi": true
+        },
+        "buttons": [
+          "ON",
+          "OFF",
+          "TOGGLE"
+        ]
+      },
+      {
+        "input": "t",
+        "extended": false,
+        "parsed": {
+          "ui": "t",
+          "legacyUi": true
+        },
+        "buttons": [
+          "t"
+        ]
+      },
+      {
+        "input": "all=1,all=0",
+        "extended": false,
+        "parsed": {
+          "ui": "all=1,all=0",
+          "legacyUi": true
+        },
+        "buttons": [
+          "all=1",
+          "all=0"
+        ]
+      },
+      {
+        "input": "t=iris.2;p=1;v=1",
+        "extended": true,
+        "parsed": {
+          "type": "iris.2",
+          "hasPanel": true,
+          "hasView": true
+        },
+        "buttons": []
+      },
+      {
+        "input": "t=switch4.1;b=on,off",
+        "extended": true,
+        "parsed": {
+          "type": "switch4.1",
+          "ui": "on,off"
+        },
+        "buttons": [
+          "on",
+          "off"
+        ]
+      },
+      {
+        "input": "p=1",
+        "extended": true,
+        "parsed": {
+          "hasPanel": true
+        },
+        "buttons": []
+      },
+      {
+        "input": "v=1;b=r1=1,r1=0",
+        "extended": true,
+        "parsed": {
+          "ui": "r1=1,r1=0",
+          "hasView": true
+        },
+        "buttons": [
+          "r1=1",
+          "r1=0"
+        ]
+      },
+      {
+        "input": " t=light.1 ",
+        "extended": true,
+        "parsed": {
+          "type": "light.1"
+        },
+        "buttons": []
+      },
+      {
+        "input": "p=0;v=1",
+        "extended": true,
+        "parsed": {
+          "hasView": true
+        },
+        "buttons": []
+      },
+      {
+        "input": "t=fan.1;broker=ws://127.0.0.1:19080/ws",
+        "extended": true,
+        "parsed": {
+          "type": "fan.1",
+          "broker": "ws://127.0.0.1:19080/ws"
+        },
+        "buttons": []
+      },
+      {
+        "input": "x=1;t=light.1",
+        "extended": false,
+        "parsed": {
+          "ui": "x=1;t=light.1",
+          "legacyUi": true
+        },
+        "buttons": [
+          "x=1;t=light.1"
+        ]
+      },
+      {
+        "input": "tv=1",
+        "extended": false,
+        "parsed": {
+          "ui": "tv=1",
+          "legacyUi": true
+        },
+        "buttons": [
+          "tv=1"
+        ]
+      },
+      {
+        "input": "",
+        "extended": false,
+        "parsed": {},
+        "buttons": []
+      },
+      {
+        "input": "b=on,off",
+        "extended": false,
+        "parsed": {
+          "ui": "b=on,off",
+          "legacyUi": true
+        },
+        "buttons": [
+          "b=on",
+          "off"
+        ]
+      },
+      {
+        "input": "on, off,toggle",
+        "extended": false,
+        "parsed": {
+          "ui": "on, off,toggle",
+          "legacyUi": true
+        },
+        "buttons": [
+          "on",
+          "off",
+          "toggle"
+        ]
+      },
+      {
+        "input": " t=switch4.1 ; b= on , off ",
+        "extended": true,
+        "parsed": {
+          "type": "switch4.1",
+          "ui": "on , off"
+        },
+        "buttons": [
+          "on",
+          "off"
+        ]
+      }
+    ]
+  },
+  "formatUi": {
+    "about": "formatUi({ type, ui, panel, view, broker }): the button list alone, or t=;p=1;v=1;b=;broker= in that order.",
+    "cases": [
+      {
+        "input": {
+          "ui": "on,off"
+        },
+        "output": "on,off"
+      },
+      {
+        "input": {
+          "type": "iris.2",
+          "panel": true,
+          "view": true
+        },
+        "output": "t=iris.2;p=1;v=1"
+      },
+      {
+        "input": {
+          "type": "switch4.1",
+          "ui": "all=1,all=0"
+        },
+        "output": "t=switch4.1;b=all=1,all=0"
+      },
+      {
+        "input": {
+          "view": true,
+          "ui": "r1=1,r1=0"
+        },
+        "output": "v=1;b=r1=1,r1=0"
+      }
+    ]
+  },
+  "state": {
+    "about": "parseState($state): the text trimmed, split at \";\", each piece at its first \"=\"; key and value trimmed; a key must match ^[A-Za-z_][\\w-]{0,31}$, other pieces are skipped. (Implementations also keep the whole text as \"_\", left out here.)",
+    "cases": [
+      {
+        "input": "on=1;level=70",
+        "fields": {
+          "on": "1",
+          "level": "70"
+        }
+      },
+      {
+        "input": "OFF",
+        "fields": {}
+      },
+      {
+        "input": "s1=0;s2=1",
+        "fields": {
+          "s1": "0",
+          "s2": "1"
+        }
+      },
+      {
+        "input": "temp=23.5;hum=48",
+        "fields": {
+          "temp": "23.5",
+          "hum": "48"
+        }
+      },
+      {
+        "input": "a=1;b",
+        "fields": {
+          "a": "1"
+        }
+      },
+      {
+        "input": "k=v=w",
+        "fields": {
+          "k": "v=w"
+        }
+      },
+      {
+        "input": "",
+        "fields": {}
+      },
+      {
+        "input": "on=1; level = 70",
+        "fields": {
+          "on": "1",
+          "level": "70"
+        }
+      },
+      {
+        "input": " playing ",
+        "fields": {}
+      },
+      {
+        "input": "a=b=c;=x;9k=1;ok",
+        "fields": {
+          "a": "b=c"
+        }
+      },
+      {
+        "input": "  ",
+        "fields": {}
+      }
+    ]
+  }
+}

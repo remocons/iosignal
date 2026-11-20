@@ -250,6 +250,19 @@ export class IOCore extends EventEmitter<string | symbol, any> {
      */
     iam(title?: string): void;
     /**
+     * Measures the round trip to the server: sends a PING and resolves with the milliseconds until a PONG
+     * arrives. One measurement at a time. A PONG that answers the client's own keep-alive PING counts too,
+     * so a measurement may come out a little short right after a quiet spell.
+     * Rejects with an Error whose code is 'NOT_READY' (not connected), 'BUSY' (a measurement is waiting),
+     * 'TIMEOUT' (no PONG within timeoutMs) or 'CONNECTION_CLOSED' (the connection closed first).
+     * @param {{ timeoutMs?: number }} [options] timeoutMs: 1 to 60000 (default 3000)
+     * @returns {Promise<number>}
+     */
+    pingServer({ timeoutMs }?: {
+        timeoutMs?: number;
+    }): Promise<number>;
+    _pingServerWaiting: boolean | undefined;
+    /**
      * Sends a PING message to the server.
      */
     ping(): void;
