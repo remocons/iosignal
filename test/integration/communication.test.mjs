@@ -364,7 +364,7 @@ for (const [format, api] of variants) {
     assert.deepEqual(outcomes, ['subscription tag', 'direct tag']);
     assert.equal(io.channels.has('late'), false);
     assert.equal(io.listenerCount('@direct'), 1);
-    io.listen('after', () => {}); // outside the handler, listen() is unchanged
+    io.listen('after', () => {}); // outside the handler, listen() works (and subscribes at once)
     assert.equal(io.channels.has('after'), true);
   });
 
@@ -422,6 +422,83 @@ for (const [format, api] of variants) {
     await again;
     await io.call('reply', 'echo', 'subscriptions processed');
     assert.deepEqual(packets.flatMap(p => p.tags).sort(), ['early', 'later', 'room$x']);
+  });
+
+  test(`${format}: listen() on a ready connection subscribes at once, and again only after a reconnect`, { timeout: 10000 }, async t => {
+    const { server, client, connect, url } = await fixture(t, api);
+    const sender = await connect();
+    sender.signal('room$x', 'kept');
+    await sender.call('reply', 'echo', 'retained stored');
+
+    const io = client();
+    const packets = [];
+    const send = io.send_enc_mode.bind(io);
+    io.send_enc_mode = packet => {
+      if (packet[0] === api.IOMsg.SUBSCRIBE) packets.push(Buffer.from(packet.subarray(2)).toString().split(','));
+      send(packet);
+    };
+    const ready = event(io, 'ready', t.signal);
+    io.open(url);
+    await ready;
+
+    // Later, outside a ready handler (a timer, an event, another tag's handler).
+    const late = [];
+    io.listen('room$x', (tag, text) => late.push(text));
+    assert.deepEqual(packets, [['room$x']], 'sent at once');
+    await io.call('reply', 'echo', 'subscription processed');
+    assert.deepEqual(late, ['kept'], 'the retained value arrives at once');
+    const next = event(io, 'room$x', t.signal);
+    sender.signal('room$x', 'new');
+    await next;
+    assert.deepEqual(late, ['kept', 'new']);
+    io.listen('@direct', () => {});
+    assert.equal(packets.length, 1, 'a direct tag is never subscribed');
+
+    // After a reconnect the tag goes out once, with the stored subscriptions.
+    packets.length = 0;
+    late.length = 0;
+    const closed = event(server.manager.cid2remote.get(io.cid).socket, 'close', t.signal);
+    io.stop();
+    await closed;
+    io.listen('offline', () => {});
+    assert.equal(packets.length, 0, 'nothing is sent while disconnected');
+    const again = event(io, 'ready', t.signal);
+    io.open(url);
+    await again;
+    await io.call('reply', 'echo', 'subscriptions processed');
+    assert.deepEqual(packets.flat().sort(), ['offline', 'room$x']);
+    assert.deepEqual(late, ['new'], 'the retained value (now the last one sent) arrives once');
+  });
+
+  test(`${format}: listen() and link() from a 'change' handler for 'ready' are subscribed once`, { timeout: 10000 }, async t => {
+    const { client, connect, url } = await fixture(t, api);
+    const sender = await connect();
+    sender.signal('room$a', 'kept a');
+    sender.signal('room$b', 'kept b');
+    await sender.call('reply', 'echo', 'retained stored');
+
+    const io = client();
+    const packets = [];
+    const send = io.send_enc_mode.bind(io);
+    io.send_enc_mode = packet => {
+      if (packet[0] === api.IOMsg.SUBSCRIBE) packets.push(...Buffer.from(packet.subarray(2)).toString().split(','));
+      send(packet);
+    };
+    const got = [];
+    let added = false;
+    // 'change' for 'ready' runs after the state is READY and before the stored subscriptions go out.
+    io.on('change', state => {
+      if (state !== 'ready' || added) return;
+      added = true;
+      io.listen('room$a', (tag, text) => got.push(text));
+      io.link('page', 'room$b', (tag, text) => got.push(text));
+    });
+    const ready = event(io, 'ready', t.signal);
+    io.open(url);
+    await ready;
+    await io.call('reply', 'echo', 'subscriptions processed');
+    assert.deepEqual(packets.sort(), ['room$a', 'room$b'], 'each tag is sent once');
+    assert.deepEqual(got.sort(), ['kept a', 'kept b'], 'each retained value arrives once');
   });
 
   test(`${format}: server rejects oversized CID rewrites without sending`, { timeout: 10000 }, async t => {
