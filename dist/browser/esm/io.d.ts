@@ -159,6 +159,7 @@ declare class IOCore extends EventEmitter<string | symbol, any> {
     /** @private @type {Set<string>} */
     private _listenTags;
     _readyDispatch: boolean;
+    _channelsSentRevision: number;
     /** @private @type {Set<string>} */
     private _manualSubscriptions;
     /**
@@ -380,21 +381,28 @@ declare class IOCore extends EventEmitter<string | symbol, any> {
      */
     subscribe_channels(): void;
     /**
+     * True when a tag that listen() or link() adds now must be subscribed now: the connection is
+     * READY and its stored subscriptions have been sent. Before that (not ready yet, or a 'change'
+     * handler for 'ready') the tag only joins channels and goes out with them, so its retained
+     * value comes once.
+     * @private
+     */
+    private _subscribeNow;
+    /**
      * Unsubscribes from a channel or channels.
      * @param {string} [tag=""] - The tag(s) of the channel(s) to unsubscribe from (comma-separated). If empty, unsubscribes from all.
      * @throws {TypeError} If tag is invalid, exceeds the length limit, or contains a direct-receive subscription.
      */
     unsubscribe(tag?: string): void;
     /**
-     * Convenience API for simple clients (for example, CLI tools): register a
-     * tag handler once and remember its subscription in channels. For subscription
-     * tags, register before connection readiness; the CID-ready flow subscribes on initial connection
-     * and again after reconnect, before 'ready' is emitted, so a ready handler may signal at once.
-     * This does not send a subscription immediately, even if already ready.
-     * Do not call listen() inside a ready handler; it throws there, for any tag: a subscription tag
-     * would be subscribed only after the next reconnect, and a handler registered on every
-     * connect runs once more after each reconnect. In a ready handler use on() and subscribe();
-     * for dynamic subscriptions use link().
+     * Register a tag handler and remember its subscription in channels: the CID-ready flow
+     * subscribes it on the initial connection and again after each reconnect, before 'ready' is
+     * emitted, so a ready handler may signal at once. Called on a ready connection (from a timer,
+     * an event or another tag's handler), it also subscribes at once.
+     * Do not call listen() inside a ready handler; it throws there, for any tag: a handler
+     * registered on every connect runs once more after each reconnect. In a ready handler use
+     * on() and subscribe(). Likewise, code that runs again and again (a handler, a timer) adds one
+     * more handler on each listen(); use link() and unlink() for subscriptions that come and go.
      * Direct signals need no subscription: use listen('@') during setup, or on('@'), for all
      * direct signals, or '@topic' for an exact topic.
      * Dispatch is synchronous: '@' first, then '@topic' when tag is not '@'.

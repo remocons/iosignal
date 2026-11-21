@@ -20,7 +20,7 @@ import { readFileSync } from 'node:fs';
 import { totalmem } from 'node:os';
 import path from 'path';
 
-var version$1 = "9.23.0";
+var version$1 = "9.23.1";
 var pkg = {
 	version: version$1};
 
@@ -968,6 +968,8 @@ class IOCore extends EventEmitter {
     /** @private @type {Set<string>} */
     this._listenTags = new Set();
     this._readyDispatch = false; // true while 'ready' handlers run; see listen()
+    // The _stateRevision whose READY has had its stored subscriptions sent (see _subscribeNow()).
+    this._channelsSentRevision = -1;
     /** @private @type {Set<string>} */
     this._manualSubscriptions = new Set();
 
@@ -1341,6 +1343,9 @@ class IOCore extends EventEmitter {
         this._reconnectAttempts = 0;
         if (!this.stateChange('ready')) break;
         this.subscribe_channels();
+        // From here listen() and link() subscribe a new tag at once; before (in a 'change' handler
+        // for 'ready') the tag is in channels and goes out with the list just sent, only once.
+        this._channelsSentRevision = this._stateRevision;
         this._readyDispatch = true;
         try {
           this.emit('ready', 'cid_ready');
@@ -1871,6 +1876,17 @@ class IOCore extends EventEmitter {
   }
 
   /**
+   * True when a tag that listen() or link() adds now must be subscribed now: the connection is
+   * READY and its stored subscriptions have been sent. Before that (not ready yet, or a 'change'
+   * handler for 'ready') the tag only joins channels and goes out with them, so its retained
+   * value comes once.
+   * @private
+   */
+  _subscribeNow() {
+    return this.state === STATE.READY && this._channelsSentRevision === this._stateRevision
+  }
+
+  /**
    * Unsubscribes from a channel or channels.
    * @param {string} [tag=""] - The tag(s) of the channel(s) to unsubscribe from (comma-separated). If empty, unsubscribes from all.
    * @throws {TypeError} If tag is invalid, exceeds the length limit, or contains a direct-receive subscription.
@@ -1900,15 +1916,14 @@ class IOCore extends EventEmitter {
 
 
   /**
-   * Convenience API for simple clients (for example, CLI tools): register a
-   * tag handler once and remember its subscription in channels. For subscription
-   * tags, register before connection readiness; the CID-ready flow subscribes on initial connection
-   * and again after reconnect, before 'ready' is emitted, so a ready handler may signal at once.
-   * This does not send a subscription immediately, even if already ready.
-   * Do not call listen() inside a ready handler; it throws there, for any tag: a subscription tag
-   * would be subscribed only after the next reconnect, and a handler registered on every
-   * connect runs once more after each reconnect. In a ready handler use on() and subscribe();
-   * for dynamic subscriptions use link().
+   * Register a tag handler and remember its subscription in channels: the CID-ready flow
+   * subscribes it on the initial connection and again after each reconnect, before 'ready' is
+   * emitted, so a ready handler may signal at once. Called on a ready connection (from a timer,
+   * an event or another tag's handler), it also subscribes at once.
+   * Do not call listen() inside a ready handler; it throws there, for any tag: a handler
+   * registered on every connect runs once more after each reconnect. In a ready handler use
+   * on() and subscribe(). Likewise, code that runs again and again (a handler, a timer) adds one
+   * more handler on each listen(); use link() and unlink() for subscriptions that come and go.
    * Direct signals need no subscription: use listen('@') during setup, or on('@'), for all
    * direct signals, or '@topic' for an exact topic.
    * Dispatch is synchronous: '@' first, then '@topic' when tag is not '@'.
@@ -1932,9 +1947,9 @@ class IOCore extends EventEmitter {
       this._listenTags.add(tag);
     }
     this.on(tag, handler);
-    // Subscribe from the CID-ready flow, initially and after reconnect.
-    // Keep registration separate from immediate subscription/send ordering.
-
+    // Stored in channels: the CID-ready flow subscribes it, initially and after reconnect.
+    // On a ready connection whose stored subscriptions went out, subscribe it now as well.
+    if (tag.indexOf('@') !== 0 && this._subscribeNow()) sendSubscription(this, tag);
   }
 
 
@@ -1970,7 +1985,7 @@ class IOCore extends EventEmitter {
       this.channels.add(tag);
       // Not before the connection is ready: the request would go out before authentication
       // (unencrypted) and again from subscribe_channels(), repeating retained values.
-      if (this.state === STATE.READY) sendSubscription(this, tag);
+      if (this._subscribeNow()) sendSubscription(this, tag);
     }
   }
 
