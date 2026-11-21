@@ -36,6 +36,13 @@ export function closeReason(message) {
 }
 
 
+// What retain_signal returns for a connection that has no CID retains yet: one shared, read-only
+// empty Map instead of an empty Map per connection (about 185 bytes each, most never used).
+class EmptyMap extends Map {
+  set() { throw new TypeError('read-only empty map: use RemoteCore.writableRetainSignal()') }
+}
+const NO_RETAINS = new EmptyMap()
+
 export class RemoteCore {
   constructor(socket, manager) {
 
@@ -50,14 +57,14 @@ export class RemoteCore {
     this._challengeIssuedAt = null;
     this._challengeUsed = false;
     this.authFailures = 0; // failed logins on this connection (BohoAuth)
-    this._replayBuckets = new Map();
+    this._replayBuckets = null; // Map second → Set of seen (ms, counter); made on the first encrypted packet
     this._replayEntries = 0;
     this._replayExpiredBefore = 0;
     this.securityFailure = null;
     this.closeReason = null; // reason of the client's CLOSE message, see closeReason()
     this.encMode = ENC_MODE.AUTO;
     this.channels = new Set();  //  subscribed tags
-    this.retain_signal = new Map();
+    this._retainSignal = null; // CID retains (tag → message), made on the first one; read with retain_signal
     this.retainBytes = 0; // bytes of its CID retains (retain_signal)
 
     this.ssid = RemoteCore.ssid++;  // ordered index number
@@ -87,12 +94,22 @@ export class RemoteCore {
     this.peerRxLimitSkipped = 0;
 
     this.state;
-    this.stateLog = [];
+    this.stateLog = null; // state history, kept only with serverOption.debug.showAuthInfo
     this.setState(STATE.OPEN)
 
   }
 
   static ssid = 1;
+
+  /** CID retains (tag → message) for reading; an empty read-only Map while there are none. */
+  get retain_signal() {
+    return this._retainSignal ?? NO_RETAINS;
+  }
+
+  /** CID retains for storing one: made on first use. */
+  writableRetainSignal() {
+    return this._retainSignal ??= new Map();
+  }
 
   /** Authenticated with role 'admin'. */
   get isAdmin() {
@@ -104,7 +121,7 @@ export class RemoteCore {
     this.state = state
     if (previous !== state) this.manager.server?.emit('remote:state', this, previous);
     if (serverOption.debug.showAuthInfo) {
-      this.stateLog.push(  state + ":" + STATE[ state]   )
+      (this.stateLog ??= []).push(  state + ":" + STATE[ state]   )
       if( state == STATE.AUTH_RES){
         console.log('[auth success]', this.cid, this.stateLog.join('>'))
       }else if( state == STATE.AUTH_FAIL){
@@ -209,7 +226,7 @@ export class RemoteCore {
     this.securityFailure = reason;
     this.boho.clearAuth();
     this.role = 'anonymous';
-    this._replayBuckets.clear();
+    this._replayBuckets = null;
     this._replayEntries = 0;
     this.close(true);
     this.manager.attackLogger?.log(`SECURITY #${this.ssid} reason:${reason}`);
@@ -240,20 +257,21 @@ export class RemoteCore {
     }
     // Never reopen an expired timestamp range after the server clock moves back.
     this._replayExpiredBefore = Math.max(this._replayExpiredBefore, earliest);
-    for (const [second, values] of this._replayBuckets) {
+    const buckets = this._replayBuckets ??= new Map();
+    for (const [second, values] of buckets) {
       if ((second + 1) * 1000 <= this._replayExpiredBefore) {
         this._replayEntries -= values.size;
-        this._replayBuckets.delete(second);
+        buckets.delete(second);
       }
     }
-    let bucket = this._replayBuckets.get(seconds);
+    let bucket = buckets.get(seconds);
     const value = milliseconds * 65536 + counter;
     if (bucket?.has(value)) return this.securityMismatch('REPLAY_DETECTED');
     // Fail closed instead of evicting still-valid replay evidence under load.
     if (this._replayEntries >= this.security.maxReplayEntries) {
       return this.securityMismatch('REPLAY_CAPACITY_EXCEEDED');
     }
-    if (!bucket) this._replayBuckets.set(seconds, bucket = new Set());
+    if (!bucket) buckets.set(seconds, bucket = new Set());
     bucket.add(value);
     this._replayEntries++;
     return true;

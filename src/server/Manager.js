@@ -484,7 +484,7 @@ export class Manager {
 
   // A connection's CID retains go with it: within bytesPerConnection; limitCounter caps new tags.
   storeCidRetain(key, message, remote) {
-    const map = remote.retain_signal
+    const map = remote.writableRetainSignal()
     const old = map.get(key)
     const freed = old?.byteLength ?? 0
     if ((old || map.size < this.retainOptions.limitCounter) &&
