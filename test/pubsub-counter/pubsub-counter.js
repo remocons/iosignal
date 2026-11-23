@@ -1,7 +1,7 @@
 
 import { IO } from 'iosignal'
 const ch_base = 'ch_'
-const url = 'wss://io.remocon.kr/ws'
+const url = 'wss://io.iosignal.net/ws'
 
 
 /*

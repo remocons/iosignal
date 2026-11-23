@@ -44,7 +44,7 @@ function sendSubscription(io, tag) {
   ]))
 }
 
-// Names the client emits itself. A signal, SERVER_SIGNAL or SET with one of these as its tag is not
+// Names the client emits itself. A signal or SERVER_SIGNAL with one of these as its tag is not
 // emitted under that name, so nothing from the network can pose as a connection event (a signal
 // on a channel called 'close' would otherwise run the client's own close handling).
 const INTERNAL_EVENTS = new Set(['open', 'close', 'closed', 'socket_data', 'change', 'error', 'message',
@@ -669,17 +669,6 @@ export class IOCore extends EventEmitter {
         }
         break;
 
-      case IOMsg.SET:
-        try {
-          let setPack = MBP.unpack(buffer)
-          if (setPack && typeof setPack.topic === 'string' && !INTERNAL_EVENTS.has(setPack.topic)) {
-            this.emit(setPack.topic, ...(setPack.args ?? []))
-          }
-        } catch (error) {
-          this.emit('error', new Error('SET parsing error'))
-        }
-        break;
-
       case IOMsg.SIGNAL_E2E:
       case IOMsg.SIGNAL:
         try {
@@ -1014,34 +1003,6 @@ export class IOCore extends EventEmitter {
     )
 
     this.send_enc_mode(signalPack)
-  }
-
-
-  /**
-   * Sets a value in the store.
-   * @param {string} storeName - The name of the store.
-   * @param {...any} args - Arguments to set.
-   * @returns {Promise<any>}
-   */
-  set(storeName, ...args) {
-    if (!storeName || args.length == 0) {
-      return Promise.reject(new Error('set need storeName and value)'))
-    }
-    return this.call('store', 'set', storeName, ...args)
-  }
-
-  /**
-   * Gets a value from the store.
-   * @param {string} storeName - The name of the store.
-   * @returns {Promise<any>}
-   */
-  async get(storeName) {
-    if (!storeName) {
-      return Promise.reject(new Error('store get need storeName)'))
-    }
-    let pack = await this.call('store', 'get', storeName)
-    let { $ } = MBP.unpack(pack.body)
-    return $
   }
 
 

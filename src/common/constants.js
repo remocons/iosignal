@@ -193,7 +193,7 @@ export let IOMsg = {
   IAM_RES: 0xDA,
 
   //.. 
-  SET: 0xDB,   //
+  SET: 0xDB,   // reserved: the store service used it (removed 2026-11-23); clients ignore it
   // RESPONSE_CODE: 0xDC,
   RESPONSE_MBP: 0xDD,
   CALL: 0xDE, // rpc call

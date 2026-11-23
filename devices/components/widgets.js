@@ -6,6 +6,9 @@ import { textCommand } from '../shared/schema.js'
 import { base } from './tokens.css.js'
 
 const PENDING_MS = 2500
+// Sliders and the color picker send one command at a time: the next value goes after the device's
+// $state answer (or ANSWER_MS), and never sooner than the gap, so a slow link is not flooded.
+const ANSWER_MS = 1000
 
 class Widget extends HTMLElement {
   #state = {}
@@ -114,7 +117,7 @@ define('io-w-slider', class extends Widget {
       <input type="range" min="${min}" max="${max}" step="${step}"></label>`)
     this.$('.label span').textContent = this.label()
     const input = this.$('input')
-    const throttle = createThrottle(value => this.emit(renderCommand(this.spec.cmd, value)), 150)
+    const throttle = this.throttle = createThrottle(value => this.emit(renderCommand(this.spec.cmd, value)), 150, globalThis, { answerMs: ANSWER_MS })
     this.paint = value => { if (this.spec.track === 'hue') input.style.setProperty('--thumb', `hsl(${(value - min) / (max - min) * 360} 100% 50%)`) }
     input.oninput = () => {
       this.hold()
@@ -135,7 +138,8 @@ define('io-w-slider', class extends Widget {
     this.paint(value)
     this.$('output').textContent = value + (this.spec.unit ?? '')
   }
-  set state(state) { this.pendingUntil = 0; super.state = state }
+  set state(state) { this.pendingUntil = 0; super.state = state; this.throttle?.answered() }
+  disconnectedCallback() { this.throttle?.cancel() }
   get state() { return super.state }
 })
 
@@ -162,13 +166,16 @@ define('io-w-color', class extends Widget {
     this.html(`<style>input { width: 46px; height: 30px; padding: 0; border: 1px solid var(--_line); border-radius: 6px; background: none; }</style>
       <label class="field inline"><span class="label"></span><input type="color"></label>`)
     this.$('.label').textContent = this.label()
-    const throttle = createThrottle(value => this.emit(renderCommand(this.spec.cmd, value)), 200)
+    const throttle = this.throttle = createThrottle(value => this.emit(renderCommand(this.spec.cmd, value)), 200, globalThis, { answerMs: ANSWER_MS })
     this.$('input').oninput = event => { this.hold(); throttle.call(event.target.value) }
     this.$('input').onchange = event => throttle.flush(event.target.value)
   }
   update() {
     if (!this.held() && /^#[0-9a-fA-F]{6}$/.test(this.value() ?? '')) this.$('input').value = this.value()
   }
+  set state(state) { super.state = state; this.throttle?.answered() }
+  get state() { return super.state }
+  disconnectedCallback() { this.throttle?.cancel() }
 })
 
 define('io-w-value', class extends Widget {

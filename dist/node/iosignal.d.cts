@@ -515,19 +515,6 @@ declare class IOCore extends EventEmitter<string | symbol, any> {
      */
     signal_e2e(tag: string, data: Buffer$1, key: string): void;
     /**
-     * Sets a value in the store.
-     * @param {string} storeName - The name of the store.
-     * @param {...any} args - Arguments to set.
-     * @returns {Promise<any>}
-     */
-    set(storeName: string, ...args: any[]): Promise<any>;
-    /**
-     * Gets a value from the store.
-     * @param {string} storeName - The name of the store.
-     * @returns {Promise<any>}
-     */
-    get(storeName: string): Promise<any>;
-    /**
      * Sends a request to a target and topic.(remote service call)
      * @param {string} target - The target(service name) of the request.
      * @param {string} topic - The topic(service function name) of the request.
