@@ -138,7 +138,16 @@ define('io-w-slider', class extends Widget {
     this.paint(value)
     this.$('output').textContent = value + (this.spec.unit ?? '')
   }
-  set state(state) { this.pendingUntil = 0; super.state = state; this.throttle?.answered() }
+  // The device's answer is a change of this widget's key: the card also hands over a new state object for other
+  // reasons. While dragging, answers are for values sent earlier, so the value on screen stays until the device
+  // reports that same value (or PENDING_MS passes): the thumb does not jump back.
+  set state(state) {
+    const before = this.value()
+    const shown = this.built ? this.$('input').value : undefined
+    if (shown !== undefined && String(state?.[this.spec.key]) === String(shown)) this.pendingUntil = 0
+    super.state = state
+    if (this.value() !== before) this.throttle?.answered()
+  }
   disconnectedCallback() { this.throttle?.cancel() }
   get state() { return super.state }
 })
@@ -173,7 +182,11 @@ define('io-w-color', class extends Widget {
   update() {
     if (!this.held() && /^#[0-9a-fA-F]{6}$/.test(this.value() ?? '')) this.$('input').value = this.value()
   }
-  set state(state) { super.state = state; this.throttle?.answered() }
+  set state(state) {
+    const before = this.value()
+    super.state = state
+    if (this.value() !== before) this.throttle?.answered() // only a change of this key is the device's answer
+  }
   get state() { return super.state }
   disconnectedCallback() { this.throttle?.cancel() }
 })
