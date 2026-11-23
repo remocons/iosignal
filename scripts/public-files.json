@@ -105,6 +105,7 @@
     "devices/types/switch4.1.json",
     "devices/types/switch8.1.json",
     "devices/types/thermo-hygrometer.1.json",
+    "test/devices/command.test.mjs",
     "test/devices/conformance.test.mjs",
     "test/devices/devices.test.mjs",
     "test/devices/discovery-groups.test.mjs",
