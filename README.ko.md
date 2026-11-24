@@ -131,7 +131,7 @@ io.on('ready', () => {
 ## Arduino 지원
 
 [iosignal-arduino](https://github.com/remocons/iosignal-arduino)는 Arduino 클라이언트와
-ESP32·ESP8266 등의 예제를 제공합니다. 라이브러리와 Boho·Crypto 의존성을 설치하고,
+ESP32·ESP8266 등의 예제를 제공합니다. 라이브러리를 설치하고(10.0.0부터 Boho가 들어 있으며 의존성은 Crypto·Bounce2),
 보드에 맞는 예제에서 네트워크·서버 설정을 변경해 사용하세요.
 설치와 연결 방법은 [Arduino 공식 가이드](https://docs.iosignal.net/docs/arduino)와
 [라이브러리 README](https://github.com/remocons/iosignal-arduino#readme)를 참고하세요.
@@ -183,7 +183,8 @@ io-client -c ws://localhost:8080
 ## 인증과 암호화
 
 [Boho](https://github.com/remocons/boho)는 JavaScript와 Arduino에서 공유 키 인증과
-메시지 암호화를 제공합니다. 종단간 암호화(E2E)는 최종 송수신자만 공유하는 별도
+메시지 암호화를 제공합니다. 10.0.0부터 자체 SHA-256 구성 대신 표준 Ascon(NIST SP 800-232)을
+씁니다. 9.x 클라이언트는 10.0.0 서버에 로그인할 수 없으며 장치 키는 다시 등록합니다. 종단간 암호화(E2E)는 최종 송수신자만 공유하는 별도
 데이터 키로 설정합니다. 키 관리, TLS와의 관계, 세션 검증 및 구현의 적용 조건은
 [Boho 기술 가이드](https://github.com/remocons/iosignal/blob/main/docs/boho.ko.md)를 참고하세요.
 

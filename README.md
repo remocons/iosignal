@@ -135,7 +135,7 @@ to close the connection and stop automatic reconnection.
 
 [iosignal-arduino](https://github.com/remocons/iosignal-arduino) provides an Arduino
 client and examples for boards including ESP32 and ESP8266. Install the library
-and its Boho and Crypto dependencies, then configure the network and server in
+(from 10.0.0 Boho is built in; it depends on Crypto and Bounce2), then configure the network and server in
 an example for your board. See the [official Arduino guide](https://docs.iosignal.net/docs/arduino)
 and [library README](https://github.com/remocons/iosignal-arduino/blob/main/README.en.md)
 for setup and connection instructions.
@@ -188,7 +188,9 @@ for more options.
 ## Authentication and encryption
 
 [Boho](https://github.com/remocons/boho) provides shared-key authentication and
-message encryption for JavaScript and Arduino. End-to-end encryption (E2E) uses
+message encryption for JavaScript and Arduino. Since 10.0.0 it is built on the
+standard Ascon (NIST SP 800-232) instead of a custom SHA-256 construction;
+9.x clients cannot log in to a 10.0.0 server and device keys are registered again. End-to-end encryption (E2E) uses
 a separate data key shared only by the final endpoints. See the
 [Boho technical guide](https://github.com/remocons/iosignal/blob/main/docs/boho.md) for key management, the relationship
 with TLS, session validation and implementation conditions.

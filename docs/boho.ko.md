@@ -2,10 +2,11 @@
 
 [README](https://github.com/remocons/iosignal/blob/main/README.ko.md) | [English](https://github.com/remocons/iosignal/blob/main/docs/boho.md) | [한국어](https://github.com/remocons/iosignal/blob/main/docs/boho.ko.md)
 
-IOSignal은 [boho](https://github.com/remocons/boho)를 사용하여 공유 키 기반
-인증과 메시지 암호화를 제공합니다. boho에는
-[Arduino 구현](https://github.com/remocons/boho-arduino)과 Node.js·브라우저용
-JavaScript 구현이 있어, 직접 만든 장치와 웹앱을 같은 방식으로 연결할 수 있습니다.
+IOSignal은 공유 키 인증과 메시지 암호화에 [boho](https://github.com/remocons/boho)를 씁니다.
+IOSignal 10.0.0(boho 3.0.0)부터 boho는 예전의 SHA-256 자체 구성 대신 표준 **Ascon**(NIST SP 800-232)을
+씁니다. Arduino 구현은 [IOSignal Arduino](https://github.com/remocons/iosignal-arduino) 10.0.0에 들어 있고,
+JavaScript 구현은 Node.js와 브라우저에서 동작하므로 직접 만든 장치와 웹앱이 같은 방식을 씁니다.
+IOSignal 9.x 클라이언트는 10.0.0 서버에 로그인할 수 없으며, 9.x 서버에 등록한 키는 다시 등록해야 합니다.
 
 ## 왜 공유 키 기반의 boho인가요?
 
@@ -20,45 +21,21 @@ Arduino 장치와 직접 개발한 웹앱, 관리 주체가 같은 서버에서�
 방법은 여전히 필요합니다. 웹앱의 공개 JavaScript 번들에 공통 비밀 키를 넣는
 것은 안전한 키 배포가 아닙니다.
 
-boho는 이 환경을 위해 SHA-256 기반 키스트림, XOR 암호화, 공유 키 인증과
-바이너리 패킷을 묶습니다. 차별점은 암호 연산 자체의 새로움보다 **Arduino와
-JavaScript의 호환 구현을 IOSignal의 연결·메시지 전달에 활용할 수 있다는 점**입니다.
+boho는 이 환경을 위해 공유 키 인증과 바이너리 패킷을 표준 Ascon 위에 구성합니다. 특징은 새로운 암호가 아니라
+**IOSignal 연결·메시지 전달과 통합된, 서로 호환되는 Arduino·JavaScript·Kotlin·Python 구현**입니다.
 
-## XOR와 해시 기반 ‘가상 OTP’
+## Ascon 위의 boho
 
-XOR는 같은 값으로 두 번 연산하면 원래 값으로 돌아오는 단순한 연산입니다.
+| 용도 | 알고리즘 |
+| --- | --- |
+| 메시지 암호화와 변조 검사 | Ascon-AEAD128, 태그 8바이트 |
+| 키 문자열 → 16바이트 키 | Ascon-CXOF128 (`boho/v2/key`) |
+| 로그인 → 세션 키와 양쪽 증명 | Ascon-CXOF128 (`boho/v2/session`) |
 
-```text
-암호화: 암호문 = 평문 XOR 키스트림
-복호화: 평문   = 암호문 XOR 키스트림
-```
-
-진짜 일회용 패드(One-Time Pad, OTP)는 평문과 독립적인 완전한 무작위 패드를
-데이터 길이만큼 준비하고, 비밀로 유지하며 한 번만 사용합니다. 이 조건에서는
-완전한 비밀성을 얻지만, 1MB 데이터마다 새로운 1MB 비밀 패드를 양쪽에 공급해야
-합니다. 같은 패드를 재사용하면 `C1 XOR C2 = P1 XOR P2`로 평문 사이의 관계가
-노출됩니다.
-
-boho는 데이터 길이만큼 패드를 저장하는 대신, 비밀 키와 메시지별 값에서
-SHA-256으로 키스트림을 생성합니다. 일반적인 `set_key` 경로는 다음과 같습니다.
-
-```text
-K   = SHA256(입력 키)
-B   = SHA256(K || salt12)
-S_i = SHA256(B || LE32(i))       // i = 1, 2, 3, …
-키스트림 = S_1 || S_2 || …      // 평문 길이만큼 사용
-```
-
-`||`는 바이트열 연결이고, `LE32`는 4바이트 little-endian 정수입니다.
-각 해시 출력은 32바이트입니다. `salt12`는 시각·카운터·nonce로 구성되며,
-수신자도 같은 값과 키를 사용해 키스트림을 재현합니다.
-
-‘가상 OTP’는 이 의사난수 키스트림을 설명하는 표현이며 진짜 OTP의 완전한
-비밀성을 뜻하지 않습니다. **공개된 랜덤 값만 해시하면 누구나 같은 출력을
-계산할 수 있으므로 공유 비밀 키가 필요합니다.** 같은 키와 `salt12`의 중복도
-피해야 합니다. XOR만으로 변조를 검출할 수 없어 boho는 데이터 패킷에
-`SHA256(K || salt12 || 평문)`의 앞 8바이트로 계산한 태그도 포함합니다.
-이 태그는 기존 코드의 명칭과 달리 표준 HMAC이 아닙니다.
+서버는 키 문자열이 아니라 그것으로 만든 16바이트 키(`Boho.deriveKey`)만 저장합니다. 로그인
+(`SERVER_TIME_NONCE` 13B → `AUTH_REQ` 33B → `AUTH_RES` 17B)마다 새 세션 키를 만들고, 로그인한 메시지는
+`ENC`(헤더 21바이트: 타입, 길이, 시계, 태그), E2E 라우팅 헤더는 `ENC_E2E`, 독립 데이터와 E2E 본문은
+`ENC_PACK`(헤더 29바이트)입니다. 자세한 내용은 [프로토콜 문서](https://github.com/remocons/boho/blob/main/docs/PROTOCOL.md)를 보세요.
 
 ## TLS와 함께 이해하기
 
@@ -101,7 +78,7 @@ Arduino 장치 ←→ IOSignal 서버 ←→ 브라우저 웹앱
 
 서버는 허용 시간 차이를 벗어나거나 이미 허용한 시간·카운터 조합을 다시
 사용한 암호 패킷을 거부하고, 명령 실행·중계 전에 연결을 종료합니다.
-`ENC_488`과 `ENC_E2E` 라우팅 암호 헤더에 같은 정책을 적용하며 패킷 형식은 유지합니다.
+`ENC`(10.0.0 전에는 `ENC_488`)와 `ENC_E2E` 라우팅 암호 헤더에 같은 정책을 적용합니다.
 
 ```js
 const server = new Server({
@@ -162,7 +139,7 @@ const server = new Server({
 
 ## 현재 구현의 적용 조건
 
-- 충분히 무작위인 키를 사용하세요. `set_key`의 SHA-256 한 번은 비밀번호용 느린 KDF가 아닙니다.
-- JavaScript는 `crypto.getRandomValues()`를 사용하지만 현재 Arduino 구현의 독립 패킷과 인증 요청의 클라이언트 nonce는 `micros()`에 기반합니다. 이는 암호학적 난수가 아니므로 재시작·장치·통신 방향을 포함해 같은 키와 `salt12`가 반복되지 않는지 검토해야 합니다.
-- boho 자체는 재전송 거부나 challenge 만료를 강제하지 않습니다. 유효한 태그만으로 메시지의 신선도나 명령 실행 권한이 보장되지 않으므로 호출 측과 응용 계층의 수신 정책을 확인해야 합니다.
-- boho는 SHA-256을 조합한 자체 프로토콜입니다. 표준 AEAD/TLS와 동일한 보안 보장이나 장기 키 유출 후 과거 통신을 보호하는 순방향 비밀성을 제공한다고 취급해서는 안 됩니다.
+- 충분히 무작위인 키를 사용하세요. 키 유도(Ascon-CXOF128)는 비밀번호용 느린 KDF가 아닙니다.
+- JavaScript는 `crypto.getRandomValues()`, ESP32·ESP8266은 칩의 난수를 씁니다. 하드웨어 난수가 없는 보드(Arduino Uno)는 모은 타이밍과 `setNonceSeed()` 값으로 로그인 nonce를 만들므로, 부팅마다 달라지는 값을 넣어 주세요.
+- boho 자체는 재전송 거부나 challenge 만료를 강제하지 않으며 IOSignal 서버가 합니다. 유효한 태그만으로 명령 실행 권한이 생기지는 않으니 응용에서 수신 정책을 확인하세요.
+- 순방향 비밀성이 없습니다. 장기 키가 유출되면 그 키로 보호한 통신이 드러납니다.

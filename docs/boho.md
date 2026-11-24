@@ -3,10 +3,13 @@
 [README](https://github.com/remocons/iosignal/blob/main/README.md) | [English](https://github.com/remocons/iosignal/blob/main/docs/boho.md) | [한국어](https://github.com/remocons/iosignal/blob/main/docs/boho.ko.md)
 
 IOSignal uses [Boho](https://github.com/remocons/boho) for shared-key authentication
-and message encryption. Boho has an
-[Arduino implementation](https://github.com/remocons/boho-arduino) and a JavaScript
-implementation for Node.js and browsers, allowing DIY devices and web apps to use
-the same approach.
+and message encryption. Since IOSignal 10.0.0 (boho 3.0.0), Boho is built on the
+standard **Ascon** (NIST SP 800-232) instead of the earlier custom SHA-256
+construction. The Arduino implementation is part of
+[IOSignal Arduino](https://github.com/remocons/iosignal-arduino) 10.0.0, and the
+JavaScript implementation runs in Node.js and browsers, so DIY devices and web apps
+use the same approach. IOSignal 9.x clients cannot log in to a 10.0.0 server, and
+keys registered on a 9.x server must be registered again.
 
 ## Why shared-key Boho?
 
@@ -23,47 +26,25 @@ endpoint software. Device-specific keys, secure storage, rotation and revocation
 are still necessary. Embedding a common secret in a public JavaScript bundle is
 not secure key distribution.
 
-Boho combines a SHA-256-based keystream, XOR encryption, shared-key authentication
-and binary packets for this environment. Its distinction is **compatible Arduino
-and JavaScript implementations integrated with IOSignal connections and message
-delivery**, rather than novelty in the cryptographic operations themselves.
+Boho puts shared-key authentication and binary packets for this environment on
+standard Ascon. Its distinction is **compatible Arduino, JavaScript, Kotlin and
+Python implementations integrated with IOSignal connections and message delivery**,
+not new cryptography.
 
-## XOR and a hash-based “virtual OTP”
+## Boho on Ascon
 
-XOR is a simple operation that restores the original value when applied twice
-with the same value.
+| Purpose | Algorithm |
+| --- | --- |
+| Message encryption and tamper check | Ascon-AEAD128, 8-byte tag |
+| Key string → 16-byte key | Ascon-CXOF128 (`boho/v2/key`) |
+| Login → session key and both proofs | Ascon-CXOF128 (`boho/v2/session`) |
 
-```text
-Encryption: ciphertext = plaintext XOR keystream
-Decryption: plaintext  = ciphertext XOR keystream
-```
-
-A true one-time pad (OTP) uses a uniformly random pad independent of the
-plaintext, as long as the data, kept secret and used only once. This provides
-perfect secrecy, but requires supplying both endpoints with a new 1 MB secret
-pad for every 1 MB of data. Reusing a pad exposes `C1 XOR C2 = P1 XOR P2`, revealing
-a relationship between plaintexts.
-
-Instead of storing a pad as large as the data, Boho generates a SHA-256 keystream
-from a secret key and message-specific values. The usual `set_key` path is:
-
-```text
-K   = SHA256(input key)
-B   = SHA256(K || salt12)
-S_i = SHA256(B || LE32(i))       // i = 1, 2, 3, …
-keystream = S_1 || S_2 || …     // use only the plaintext length
-```
-
-`||` means byte concatenation; `LE32` is a four-byte little-endian integer. Each
-hash output is 32 bytes. `salt12` contains time, counter and nonce values, and
-the receiver reproduces the stream using the same values and key.
-
-“Virtual OTP” describes this pseudorandom stream, not the perfect secrecy of a
-true OTP. **Public random values alone can be hashed by anyone, so a shared secret
-key is required.** Repeating the same key and `salt12` must also be avoided. XOR
-alone does not detect tampering, so Boho data packets include the first eight
-bytes of `SHA256(K || salt12 || plaintext)` as a tag. Despite legacy names in the
-code, this tag is not standard HMAC.
+The server stores only the 16-byte key made from each key string
+(`Boho.deriveKey`), never the key string. A login (`SERVER_TIME_NONCE` 13 B →
+`AUTH_REQ` 33 B → `AUTH_RES` 17 B) makes a new session key; logged-in messages are
+`ENC` (21-byte header: type, length, clock, tag), E2E routing headers `ENC_E2E`,
+and standalone or E2E bodies `ENC_PACK` (29-byte header). See the
+[protocol notes](https://github.com/remocons/boho/blob/main/docs/PROTOCOL.md).
 
 ## Understanding the relationship with TLS
 
@@ -105,12 +86,12 @@ also applying E2E to message bodies. Modified app code can expose keys and
 plaintext, so E2E still requires trust in the app code provider. Boho does not
 bypass browser mixed content rules.
 
-## Session freshness in 7.0.0
+## Session freshness (since 7.0.0)
 
-The server now rejects encrypted session packets outside the configured clock
-window or with an already accepted time/counter pair. Both `ENC_488` and the
-`ENC_E2E` routing envelope share this policy. Rejection terminates the connection
-before executing or routing the message. Wire formats remain unchanged.
+The server rejects encrypted session packets outside the configured clock
+window or with an already accepted time/counter pair. Both `ENC` (`ENC_488`
+before 10.0.0) and the `ENC_E2E` routing envelope share this policy. Rejection terminates the connection
+before executing or routing the message.
 
 ```js
 const server = new Server({
@@ -135,8 +116,8 @@ for reauthentication or if manual login occurs after challenge expiry; calling
 current device timestamp, so this stage checks challenge age. Device clock skew
 is checked on encrypted packets. Plaintext/TLS transport policy is unchanged.
 
-JS clients must have a clock within the configured window. Boho Arduino 1.0.0
-adds gradual clock correction from authenticated server envelopes; plain
+JS clients must have a clock within the configured window. IOSignal Arduino
+corrects its clock gradually from authenticated server envelopes; plain
 PING/PONG provides no time sample. Inner E2E payload freshness remains an
 application concern, separate from the connection envelope.
 
@@ -173,7 +154,7 @@ const server = new Server({
 
 ## Conditions in the current implementation
 
-- Use sufficiently random keys. A single SHA-256 in `set_key` is not a slow password KDF.
-- JavaScript uses `crypto.getRandomValues()`, but current Arduino standalone-packet nonces and the authentication client nonce use `micros()`. This is not cryptographic randomness; consider repeated key/`salt12` combinations across restarts, devices and communication directions.
-- Boho itself does not enforce replay rejection or challenge expiry. A valid tag alone does not establish freshness or permission to execute a command; check receive policies in the caller and application layer.
-- Boho is a custom SHA-256-based protocol. Do not assume standard AEAD/TLS guarantees or forward secrecy protecting past traffic after a long-term key leak.
+- Use sufficiently random keys. Key derivation (Ascon-CXOF128) is not a slow password KDF.
+- JavaScript uses `crypto.getRandomValues()`; ESP32 and ESP8266 use the chip's random numbers. Boards without one (Arduino Uno) make the login nonce from gathered timing and `setNonceSeed()`: give them a value that changes on every boot.
+- Boho itself does not enforce replay rejection or challenge expiry; the IOSignal server does. A valid tag alone does not establish permission to execute a command; check receive policies in the application.
+- There is no forward secrecy: a leaked long-term key exposes the traffic it protected.
