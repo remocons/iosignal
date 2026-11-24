@@ -11,6 +11,7 @@ import { pickSchema, validateSchema } from '../shared/schema.js'
 import { normalizeType } from '../shared/typeName.js'
 import { parseState } from '../shared/state.js'
 import { imageWidgets, decodeImage, loadKey, saveKey } from '../shared/media.js'
+import { createReceiver, TAGS as SESSION_TAGS } from '../shared/e2eSession.js'
 import { pickView } from '../shared/view.js'
 import './widgets.js'
 import './vdevice-view.js'
@@ -99,6 +100,8 @@ class DeviceCard extends HTMLElement {
       const key = String(event.detail.key ?? '').trim()
       saveKey(this.device.id, tag, key)
       this.keys[tag] = key
+      // e2e 'session': the key proves this card; a new key starts a new session.
+      if (this.sessionTags?.includes(tag)) { this.restartSession?.(); return }
       // The next picture shows whether the key fits.
       const item = this.media[tag]
       if (item) this.setMedia(tag, item.status === 'plain' ? { ...item, hasKey: Boolean(key) } : { status: 'waiting', hasKey: Boolean(key) })
@@ -159,26 +162,72 @@ class DeviceCard extends HTMLElement {
 
   // Pictures for image widgets: subscribe to <cid>@<tag> while the card is shown and the device online.
   // Groups have none. The broker does not keep them, so a new subscription waits for the next picture.
-  follow(io, id, tags, online) {
-    const signature = io && online && tags.length ? `${id}|${tags.join(',')}` : ''
+  // images: [{ tag, e2e }] from imageWidgets(). e2e 'session' (camera-session.1) opens pictures with a key this
+  // card agrees with the device (shared/e2eSession.js, as remocon.kr does); the typed E2E key only proves the card.
+  follow(io, id, images, online) {
+    const signature = io && online && images.length ? `${id}|${images.map(i => `${i.tag}:${i.e2e}`).join(',')}` : ''
     if (signature === this.mediaSignature && io === this.mediaIo) return
     if (this.mediaIo && this.mediaScope) this.mediaIo.unlinkAll(this.mediaScope)
+    this.receiver?.close()
+    this.receiver = null
+    this.restartSession = null
+    if (this.sessionTimer) clearInterval(this.sessionTimer)
+    this.sessionTimer = null
     for (const item of Object.values(this.media)) if (item.src) URL.revokeObjectURL(item.src)
     this.media = {}
     this.controls.media = this.media
     this.mediaSignature = signature
     this.mediaIo = io
     this.mediaScope = signature ? `card-image:${this.device.network}:${id}` : ''
+    this.sessionTags = images.filter(i => i.e2e === 'session').map(i => i.tag)
     if (!signature) return
-    for (const tag of tags) {
+    const bytesOf = payload => (payload instanceof Uint8Array ? payload : null)
+    const takeOver = () => this.receiver?.takeOver()
+    // While a session tag shows no picture of this session, it shows the session's status.
+    const showSession = () => {
+      const status = this.receiver?.status ?? 'waiting'
+      for (const tag of this.sessionTags) {
+        const item = this.media[tag] ?? {}
+        const keep = status === 'session' && item.status === 'session'
+        this.setMedia(tag, { src: keep ? item.src : undefined, status: keep ? 'session' : (status === 'session' ? 'waiting' : status),
+          hasKey: Boolean(this.keys[tag]), takeOver })
+      }
+    }
+    if (this.sessionTags.length) {
+      this.restartSession = () => {
+        this.receiver?.close()
+        this.receiver = createReceiver({
+          key: this.keys[this.sessionTags[0]] ?? '',
+          send: bytes => io.signal(`${id}@${SESSION_TAGS.hello}`, bytes),
+          onChange: showSession,
+        })
+        showSession()
+        this.receiver.start()
+      }
+      io.link(this.mediaScope, `${id}@${SESSION_TAGS.challenge}`, (_tag, payload) => this.receiver?.challenge(bytesOf(payload)))
+      io.link(this.mediaScope, `${id}@${SESSION_TAGS.ready}`, (_tag, payload) => this.receiver?.ready(bytesOf(payload)))
+      this.sessionTimer = setInterval(() => this.receiver?.tick(), 1000)
+    }
+    for (const { tag, e2e } of images) {
       this.keys[tag] = loadKey(id, tag)
       this.setMedia(tag, { status: 'waiting', hasKey: Boolean(this.keys[tag]) })
+      const session = e2e === 'session'
       io.link(this.mediaScope, `${id}@${tag}`, (_tag, payload) => {
-        const { bytes, type, status } = decodeImage(payload instanceof Uint8Array ? payload : null, this.keys[tag] ?? '', (data, key) => io.decrypt_e2e(data, key))
+        if (session) {
+          // Only pictures that open with this card's session key count; others belong to a session that ended
+          // or to another card, and leave the last picture as it is.
+          if (this.receiver?.status !== 'session') return
+          const { bytes, type, status } = decodeImage(bytesOf(payload), this.receiver.sessionKey, (data, key) => io.decrypt_e2e(data, key))
+          if (status !== 'e2e') return
+          this.setMedia(tag, { src: URL.createObjectURL(new Blob([bytes], { type })), status: 'session', hasKey: true, takeOver })
+          return
+        }
+        const { bytes, type, status } = decodeImage(bytesOf(payload), this.keys[tag] ?? '', (data, key) => io.decrypt_e2e(data, key))
         if (status === 'invalid') return
         this.setMedia(tag, { src: bytes ? URL.createObjectURL(new Blob([bytes], { type })) : undefined, status, hasKey: Boolean(this.keys[tag]) })
       })
     }
+    this.restartSession?.()
   }
 
   async update(device, typesRoot, { broker, virtual, io } = {}) {
@@ -209,7 +258,7 @@ class DeviceCard extends HTMLElement {
       const { source, schema } = pickSchema({ typeSchema, ui: device.ui })
       root.querySelector('#source').textContent = source === 'type' ? (device.type || 'schema') : `ui ${device.ui}`
       this.controls.controls = schema.controls
-      this.imageTags = device.isGroup ? [] : imageWidgets(schema.controls).map(image => image.tag)
+      this.imageTags = device.isGroup ? [] : imageWidgets(schema.controls)
     }
     this.follow(io, device.id, this.imageTags ?? [], Boolean(device.state))
     this.controls.state = parseState(device.state)

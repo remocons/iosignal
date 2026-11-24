@@ -293,6 +293,16 @@ const IMAGE_NOTES = {
   'need-key': '암호화된 사진입니다. 장치에 넣은 E2E 키를 입력하세요.',
   'wrong-key': '키가 맞지 않아 사진을 풀 수 없습니다.',
 }
+// e2e 'session' (camera-session.1): the key proves this card, the pictures open with a session key.
+const SESSION_NOTES = {
+  waiting: '장치와 세션을 맺는 중입니다.',
+  session: '이 브라우저만 열 수 있는 세션 키로 받은 사진입니다.',
+  'need-key': '장치에 넣은 E2E 키를 입력하세요. 장치와 세션을 맺는 데 씁니다.',
+  'wrong-key': 'E2E 키가 장치에 넣은 키와 다릅니다.',
+  other: '다른 브라우저가 이 카메라의 사진을 받고 있습니다.',
+  'no-reply': '장치가 세션 요청에 답하지 않습니다. 잠시 뒤 다시 요청합니다.',
+  unsupported: '이 브라우저는 X25519(WebCrypto)를 지원하지 않아 사진을 열 수 없습니다.',
+}
 define('io-w-image', class extends Widget {
   #media = {}
   editing = false
@@ -309,7 +319,7 @@ define('io-w-image', class extends Widget {
       form[hidden] { display: none; }
       input { flex: 1; min-width: 0; min-height: 34px; padding: 0 10px; border: 1px solid var(--_line); border-radius: 8px; background: var(--_bg); }
     </style><div class="field"><span class="label"></span><div class="frame"><img alt="" hidden><span class="empty">사진 없음</span></div>
-      <p class="note" role="status"><span></span><button type="button" class="edit" hidden></button></p>
+      <p class="note" role="status"><span></span><button type="button" class="take" hidden>이 브라우저로 받기</button><button type="button" class="edit" hidden></button></p>
       <form hidden><input type="password" autocomplete="off" spellcheck="false" maxlength="64" placeholder="E2E 키" aria-label="E2E 키">
         <button type="submit">저장</button><button type="button" class="cancel">취소</button></form></div>`)
     this.$('.label').textContent = this.label() || '사진'
@@ -317,6 +327,7 @@ define('io-w-image', class extends Widget {
     const input = this.$('input')
     input.oninput = () => { this.$('form button[type=submit]').textContent = input.value ? '저장' : '지우기' }
     this.$('.edit').onclick = () => { this.editing = true; this.update(); input.focus() }
+    this.$('.take').onclick = () => (this.#media[this.spec.tag] ?? {}).takeOver?.()
     this.$('.cancel').onclick = () => { this.editing = false; input.value = ''; this.update() }
     this.$('form').onsubmit = event => {
       event.preventDefault()
@@ -332,9 +343,13 @@ define('io-w-image', class extends Widget {
     if (item.src) { if (img.getAttribute('src') !== item.src) img.src = item.src } else img.removeAttribute('src')
     img.hidden = !item.src
     this.$('.empty').hidden = Boolean(item.src)
-    this.$('.empty').textContent = item.status === 'need-key' || item.status === 'wrong-key' ? '🔒 잠긴 사진' : '사진 없음'
+    const session = this.spec.e2e === 'session'
+    const locked = ['need-key', 'wrong-key', 'other', 'unsupported'].includes(item.status)
+    this.$('.empty').textContent = locked ? '🔒 잠긴 사진' : '사진 없음'
     // A key typed here only opens pictures; the device must encrypt with it too.
-    this.$('.note span').textContent = item.status === 'plain' && item.hasKey ? '암호화되지 않은 사진입니다. 장치가 E2E 키 없이 보내고 있어 넣은 키는 쓰이지 않습니다. 장치에도 같은 키를 넣으세요.' : IMAGE_NOTES[item.status] ?? ''
+    this.$('.note span').textContent = session ? SESSION_NOTES[item.status] ?? ''
+      : item.status === 'plain' && item.hasKey ? '암호화되지 않은 사진입니다. 장치가 E2E 키 없이 보내고 있어 넣은 키는 쓰이지 않습니다. 장치에도 같은 키를 넣으세요.' : IMAGE_NOTES[item.status] ?? ''
+    this.$('.take').hidden = !(session && item.status === 'other' && item.takeOver)
     const askKey = Boolean(this.spec.e2e) && (this.editing || item.status === 'need-key' || item.status === 'wrong-key')
     this.$('form').hidden = !askKey
     this.$('.cancel').hidden = !this.editing
