@@ -1,4 +1,6 @@
 import Boho from 'boho'
+// The stored key: Boho.deriveKey of the key string (Ascon, 16 bytes), base64. Never the key string.
+const storedKey = keyStr => Buffer.from(Boho.deriveKey(keyStr)).toString('base64')
 import { checkLoginId } from '../../common/util.js'
 const DEVICE_PREFIX = "device:"
 // Every device CID in use. The account service picks new CIDs outside it, so a device added here
@@ -55,8 +57,7 @@ export class RedisKeyProvider {
   // role and quota are optional (see StringKeyProvider); an omitted one is not stored.
   async addAuth(id, keyStr, cid = '', role, quota) {
     checkLoginId(id)
-    let Base64hashKey = Buffer.from(Boho.sha256.hash(keyStr)).toString('base64')
-    const fields = { 'key': Base64hashKey, 'cid': cid }
+    const fields = { 'key': storedKey(keyStr), 'cid': cid }
     if (role) fields.role = role
     if (quota) fields.quota = quota
     const old = await this.redis.hGet(DEVICE_PREFIX + id, 'cid')

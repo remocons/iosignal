@@ -12,6 +12,8 @@
  */
 
 import Boho from 'boho'
+// The stored key: Boho.deriveKey of the key string (Ascon, 16 bytes), base64. Never the key string.
+const storedKey = keyStr => Buffer.from(Boho.deriveKey(keyStr)).toString('base64')
 import { checkLoginId } from '../../common/util.js'
 import { ROLES } from '../BohoAuth.js'
 
@@ -47,7 +49,6 @@ export class StringKeyProvider {
 
   addAuth(id, keyStr, cid, role, quota) {
     checkLoginId(id)
-    let Base64hashKey = Buffer.from(Boho.sha256.hash(keyStr)).toString('base64')
-    this.AUTH.set(id, { key: Base64hashKey, cid, ...(role && { role }), ...(quota && { quota }) })
+    this.AUTH.set(id, { key: storedKey(keyStr), cid, ...(role && { role }), ...(quota && { quota }) })
   }
 }

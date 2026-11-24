@@ -17,7 +17,8 @@ import Boho from 'boho'
 import { ROLES } from '../BohoAuth.js'
 
 const MODES = ['idKey', 'sharedKey']
-const hashKey = keyStr => Buffer.from(Boho.sha256.hash(keyStr)).toString('base64')
+// The stored key: Boho.deriveKey of the key string (Ascon, 16 bytes), base64. Never the key string.
+const storedKey = keyStr => Buffer.from(Boho.deriveKey(keyStr)).toString('base64')
 
 export class LocalKeyProvider {
   /**
@@ -42,14 +43,14 @@ export class LocalKeyProvider {
     this.mode = mode
     this.role = role
     this.quota = quota
-    // Hashed like StringKeyProvider, so a 44-character shared key is not mistaken for a stored hash.
-    this.sharedKeyHash = mode === 'sharedKey' ? hashKey(key) : null
+    // Stored like StringKeyProvider (deriveKey, base64), so a shared key is never taken for a stored key.
+    this.sharedKey = mode === 'sharedKey' ? storedKey(key) : null
   }
 
   async getAuth(id) {
     if (!id) return undefined
     return {
-      key: this.sharedKeyHash ?? hashKey(id),
+      key: this.sharedKey ?? storedKey(id),
       cid: id,
       role: this.role,
       ...(this.quota && { quota: this.quota })

@@ -594,7 +594,7 @@ for (const [format, api] of variants) {
     const reply = await io.call('reply', 'echo', 'authenticated');
     assert.equal(reply.ok, true);
     assert.deepEqual(reply.body, ['authenticated']);
-    assert.ok(wireTypes.includes(api.Boho.BohoMsg.ENC_488), 'RPC response traveled in an encrypted frame');
+    assert.ok(wireTypes.includes(api.Boho.BohoMsg.ENC), 'RPC response traveled in an encrypted frame');
   });
 
   test(`${format}: stop closes the connection and the client can reopen`, { timeout: 10000 }, async t => {
@@ -931,18 +931,12 @@ for (const [format, api] of variants) {
 
 // Build correctly authenticated test packets with explicit wire clocks, without
 // changing the process clock or the production JS/Arduino senders.
-function packetWithClock(io, timeMs, counter, plain) {
-  const setClock = io.boho.set_clock_nonce;
-  io.boho.set_clock_nonce = function (nonce) {
-    const salt = Buffer.alloc(12);
-    salt.writeUInt32LE(Math.floor(timeMs / 1000), 0);
-    salt.writeUInt16LE(timeMs % 1000, 4);
-    salt.writeUInt16LE(counter, 6);
-    salt.set(nonce, 8);
-    this.set_salt12(salt);
-  };
-  try { return Buffer.from(io.boho.encrypt_488(plain)); }
-  finally { io.boho.set_clock_nonce = setClock; }
+// An ENC (or ENC_E2E) packet of io's session with a chosen clock tuple.
+function packetWithClock(io, timeMs, counter, plain, type = variants[0][1].Boho.BohoMsg.ENC) {
+  const next = io.boho._nextClock;
+  io.boho._nextClock = () => ({ sec: Math.floor(timeMs / 1000), ms: timeMs % 1000, counter });
+  try { return Buffer.from(io.boho.encrypt_session(plain, type)); }
+  finally { io.boho._nextClock = next; }
 }
 
 for (const [format, api] of variants) {
@@ -958,7 +952,7 @@ for (const [format, api] of variants) {
       const send = io.socket_send.bind(io);
       io.socket_send = data => { captured = Buffer.from(data); send(data); };
       assert.deepEqual((await io.call('reply', 'echo', 'once')).body, ['once']);
-      assert.equal(captured[0], api.Boho.BohoMsg.ENC_488);
+      assert.equal(captured[0], api.Boho.BohoMsg.ENC);
       const closed = event(remote.socket, 'close', t.signal);
       const failure = event(server, 'security:mismatch', t.signal);
       io.send(captured);
@@ -1011,16 +1005,16 @@ for (const [format, api] of variants) {
     assert.equal(deliveries, 6);
   });
 
-  test(`${format}: ENC_E2E shares replay history with ENC_488 before routing`, { timeout: 10000 }, async t => {
+  test(`${format}: ENC_E2E shares replay history with ENC before routing`, { timeout: 10000 }, async t => {
     const { server, connect } = await fixture(t, api, true);
     const io = await connect(['tester', 'fixture-key']);
     io.autoReconnect = false;
     const remote = server.manager.cid2remote.get(io.cid);
     const now = Date.now();
     const routing = Buffer.from([api.IOMsg.SIGNAL_E2E, 1, 120, api.PAYLOAD_TYPE.BINARY]);
-    const header = packetWithClock(io, now, 77, routing);
-    const wire = Buffer.concat([header, io.boho.encrypt_e2e('opaque-body', 'e2e-fixture-key')]);
-    wire[0] = api.Boho.BohoMsg.ENC_E2E;
+    const wire = Buffer.concat([packetWithClock(io, now, 77, routing, api.Boho.BohoMsg.ENC_E2E),
+      io.boho.encrypt_e2e('opaque-body', 'e2e-fixture-key')]);
+    const header = packetWithClock(io, now, 77, routing); // the same clock tuple as an ENC
     let routed = 0;
     server.manager.sender = tag => { if (tag === 'x') routed++; };
     remote.onSocketMessage(Buffer.from(wire), true, now);
@@ -1521,7 +1515,7 @@ for (const [format, api] of variants) {
     await connect(['tester', 'fixture-key']);
     assert.ok(lines.some(line => line.startsWith('[debug]showAuthInfo') && line.includes('fixture-client')), lines.join('\n'));
     // The stored hash is the authentication key itself, so it must not appear either.
-    const storedKey = Buffer.from(api.Boho.sha256.hash('fixture-key')).toString('base64');
+    const storedKey = Buffer.from(api.Boho.deriveKey('fixture-key')).toString('base64');
     for (const secret of ['fixture-key', storedKey, '"key"']) {
       assert.equal(lines.some(line => line.includes(secret)), false, secret);
     }
@@ -1897,7 +1891,7 @@ function quickAuthFail(t, api) {
 }
 
 for (const [format, api] of variants) {
-  const quotaKey = createHash('sha256').update('quota-key').digest('base64');
+  const quotaKey = Buffer.from(api.Boho.deriveKey('quota-key')).toString('base64');
   // Logins 'q1'... with the given account fields; every account belongs to uid 'u1'.
   const quotaAuth = (fields = {}, options) => new api.BohoAuth({
     async getAuth(id) { return /^q\d$/.test(id) ? { key: quotaKey, cid: id + '-client', uid: 'u1', ...fields } : undefined }
@@ -2079,7 +2073,7 @@ for (const [format, api] of variants) {
 }
 
 for (const [format, api] of variants) {
-  const key = createHash('sha256').update('role-key').digest('base64');
+  const key = Buffer.from(api.Boho.deriveKey('role-key')).toString('base64');
   const providerWith = info => ({ async getAuth(id) { return id === 'rl' ? { key, cid: 'rl-client', ...info } : undefined } });
 
   for (const [label, info, role] of [

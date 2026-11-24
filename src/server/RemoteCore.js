@@ -8,6 +8,9 @@ const decoder = new TextDecoder()
 
 // With security.requireEncryption, what a logged-in connection without TLS may not send in plain.
 // PING, PONG, CID_REQ, ECHO and CLOSE carry nothing and stay plain, as clients send them.
+// Boho 2.x (SHA-256 based) login request code, before Boho 3 (Ascon). Answered with AUTH_FAIL.
+const CLASSIC_AUTH_REQ = 0xB1
+
 const PLAINTEXT_REFUSED = new Set([IOMsg.SIGNAL, IOMsg.SIGNAL_E2E, IOMsg.SUBSCRIBE, IOMsg.SUBSCRIBE_REQ,
   IOMsg.UNSUBSCRIBE, IOMsg.CALL, IOMsg.IAM])
 
@@ -216,7 +219,7 @@ export class RemoteCore {
   }
 
   issueAuthChallenge() {
-    const packet = this.boho.server_time_nonce();
+    const packet = this.boho.server_time_nonce(); // kept by this.boho for verify_auth_req
     this._challengeIssuedAt = performance.now();
     return packet;
   }
@@ -280,7 +283,7 @@ export class RemoteCore {
   decryptSessionPacket(message, receivedAtMs) {
     let decoded;
     try {
-      decoded = this.boho.decrypt_488(message);
+      decoded = this.boho.decrypt_session(message);
     } catch {
       this.securityMismatch('INVALID_ENCRYPTED_PACKET');
       return;
@@ -314,7 +317,7 @@ export class RemoteCore {
     if (isBinary) {
       msgType = message[0]
 
-      if (msgType === Boho.BohoMsg.ENC_488) {
+      if (msgType === Boho.BohoMsg.ENC) {
 
         decoded = this.decryptSessionPacket(message, receivedAtMs);
 
@@ -331,8 +334,8 @@ export class RemoteCore {
         // console.log('e2e unpack:', decoded )
         if (decoded) {
           msgType = decoded[0]
-          message.set(decoded, Boho.MetaSize.ENC_488) // set decoded signal_e2e headaer.
-          message = message.subarray(Boho.MetaSize.ENC_488) // reset offset.
+          message.set(decoded, Boho.MetaSize.ENC) // set decoded signal_e2e headaer.
+          message = message.subarray(Boho.MetaSize.ENC) // reset offset.
           encrypted = true
         } else {
           return
@@ -495,6 +498,11 @@ export class RemoteCore {
           break;
 
 
+        // A Boho 2.x client: told AUTH_FAIL instead of being left waiting.
+        case CLASSIC_AUTH_REQ:
+          this.send(Buffer.from([Boho.BohoMsg.AUTH_FAIL]))
+          return
+
         // client's auth requst
         case Boho.BohoMsg.AUTH_REQ:
           // No login on this server: say so, or the client would wait in auth_req forever.
@@ -588,13 +596,12 @@ export class RemoteCore {
       // let tagInfo = decoder.decode( data.subarray( 2, 2 + tagLen) )
       // console.log('server bypass E2E signal taginfo:', tagInfo )
 
-      let encHeader = this.boho.encrypt_488(data.subarray(0, 3 + tagLen))
-      encHeader[0] = Boho.BohoMsg.ENC_E2E
+      let encHeader = this.boho.encrypt_session(data.subarray(0, 3 + tagLen), Boho.BohoMsg.ENC_E2E)
       let newEncBuffer = Buffer.concat([encHeader, data.subarray(3 + tagLen)])
       this.send(newEncBuffer)
 
     } else if (useEncryption) {
-      let encPack = this.boho.encrypt_488(data)
+      let encPack = this.boho.encrypt_session(data)
       if (encPack) {
         this.send(encPack)
       } else {

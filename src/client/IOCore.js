@@ -512,8 +512,8 @@ export class IOCore extends EventEmitter {
     let msgType = buffer[0];
     let decoded;
 
-    if (msgType === Boho.BohoMsg.ENC_488) {
-      decoded = this.boho.decrypt_488(buffer)
+    if (msgType === Boho.BohoMsg.ENC) {
+      decoded = this.boho.decrypt_session(buffer)
       if (decoded) {
         msgType = decoded[0]
         buffer = decoded
@@ -524,13 +524,13 @@ export class IOCore extends EventEmitter {
     } else if (msgType === Boho.BohoMsg.ENC_E2E) {
 
       try {
-        decoded = this.boho.decrypt_488(buffer)
+        decoded = this.boho.decrypt_session(buffer)
         if (decoded) {
           // console.log( 'ENC_E2E decoded ', decoded )
           msgType = decoded[0]
           // decoded has msg_header only. 
-          buffer.set(decoded, Boho.MetaSize.ENC_488) // set decoded signal_e2e headaer. 
-          buffer = buffer.subarray(Boho.MetaSize.ENC_488) // reset offset. 
+          buffer.set(decoded, Boho.MetaSize.ENC) // set decoded signal_e2e headaer. 
+          buffer = buffer.subarray(Boho.MetaSize.ENC) // reset offset. 
           // console.log('DECODED MsgType:', IOMsg[ msgType ] )
         } else {
           // console.log('488 DEC_FAIL', buffer)
@@ -722,6 +722,8 @@ export class IOCore extends EventEmitter {
         break;
 
       default:
+        // 0xB0-0xBF belong to Boho: an unknown one (a Boho 2.x code, or one that did not decrypt) is dropped.
+        if (msgType >= 0xB0 && msgType <= 0xBF) break;
         try {
           decoded = decoder.decode(buffer)
           // console.log('text message:', decoded)
@@ -880,14 +882,13 @@ export class IOCore extends EventEmitter {
       // input data:  signal_header + e2ePayload
       // encrypt signal_header area only. payload is encrypted with e2e key already.
       let tagLen = data[1]
-      let encHeader = this.boho.encrypt_488(data.subarray(0, 3 + tagLen))
-      encHeader[0] = Boho.BohoMsg.ENC_E2E
+      let encHeader = this.boho.encrypt_session(data.subarray(0, 3 + tagLen), Boho.BohoMsg.ENC_E2E)
       this.send(Buffer.concat([encHeader, data.subarray(3 + tagLen)]))
       // console.log('<< send_enc_mode [ ENC_E2E ]')
 
     } else if (useEncryption) {
-      // console.log('<< send_enc_mode [ ENC_488 ]')
-      let encPack = this.boho.encrypt_488(data)
+      // console.log('<< send_enc_mode [ ENC ]')
+      let encPack = this.boho.encrypt_session(data)
       this.send(encPack)
     } else {
       // console.log('<< send_enc_mode  [ PLAIN ]' )

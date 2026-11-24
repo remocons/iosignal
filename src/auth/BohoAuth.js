@@ -7,6 +7,9 @@ import { compileDeliveryPolicy } from '../server/deliveryPolicy.js'
 import { getSignalPack } from '../common/payload.js'
 import { isPrivateIP } from '../common/util.js'
 
+// The stored key: base64 of Boho.deriveKey(key string), 16 bytes. 44 characters: a Boho 2.x hash.
+const STORED_KEY = /^[A-Za-z0-9+/]{22}==$/
+const CLASSIC_HASH_LENGTH = 44
 const decoder = new TextDecoder()
 const DUPLICATE_LOGIN_POLICIES = ['keepOld', 'keepNew']
 // Only WebSocket remotes carry socketType; CongSocket remotes leave it unset.
@@ -208,8 +211,8 @@ export class BohoAuth {
         peer.securityMismatch('INVALID_AUTH_PACKET');
         return;
       }
-      //1. unpack 
-      let infoPack = MBP.unpack(auth_req, Boho.Meta.AUTH_REQ)
+      //1. the login ID: bytes 1..8
+      let infoPack = { id8: auth_req.subarray(1, 9) }
       if (!infoPack) {
         this.send_auth_fail(peer, 'unpack auth_pack fail');
         return
@@ -247,21 +250,20 @@ export class BohoAuth {
         console.log('[debug]showAuthInfo', { id, cid: authInfo.cid, uid: authInfo.uid, role: authInfo.role, quota: authInfo.quota })
       }
 
-      peer.boho.copy_id8(infoPack.id8)
-      // type of key
-      let authKey;
-      const SHA256_HASH_BASE64_LEN = 44
-      if (authInfo.key.length == SHA256_HASH_BASE64_LEN) {
-        // hashed key
-        authKey = Buffer.from(authInfo.key, 'base64')
-        peer.boho.copy_key(authKey)
-      } else {
-        // plain key
-        peer.boho.set_key(authInfo.key)
+      //3. check the proof with the stored key (Boho 3, Ascon)
+      const key = authInfo.key
+      if (typeof key !== 'string' || !key) {
+        this.send_auth_fail(peer, 'NO KEY:' + id, true);
+        return
       }
-
-      //3. check hmac
-      let auth_res = peer.boho.verify_auth_req(infoPack)
+      if (key.length === CLASSIC_HASH_LENGTH) {
+        // A Boho 2.x (SHA-256) key hash: the ID was registered before Boho 3 and its key must be set again.
+        this.send_auth_fail(peer, 'BOHO 2.x KEY, SET IT AGAIN:' + id, true);
+        return
+      }
+      if (STORED_KEY.test(key)) peer.boho.copy_key(Buffer.from(key, 'base64'))
+      else peer.boho.set_key(key) // a provider that keeps the plain key
+      let auth_res = peer.boho.verify_auth_req(auth_req)
       if (!auth_res) {
         this.send_auth_fail(peer, 'hmac dismatched', true);
         return

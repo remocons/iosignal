@@ -1497,7 +1497,7 @@ declare class LocalKeyProvider {
     mode: "idKey" | "sharedKey";
     role: "device" | "service" | "admin";
     quota: string | undefined;
-    sharedKeyHash: string | null;
+    sharedKey: string | null;
     getAuth(id: any): Promise<{
         quota?: string | undefined;
         key: string;

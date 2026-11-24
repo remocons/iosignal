@@ -187,7 +187,7 @@ function describeRx(ctx, who, showPing, server) {
     }
     case Boho.BohoMsg.AUTH_REQ:
       return { type: 'auth', from, note: 'login request' }
-    case Boho.BohoMsg.ENC_488:
+    case Boho.BohoMsg.ENC:
     case Boho.BohoMsg.ENC_E2E:
       return { type: 'other', from, note: `encrypted message (${data.byteLength} bytes)` }
     default:
