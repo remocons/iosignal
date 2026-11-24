@@ -120,6 +120,7 @@
     "dist/devices/shared/typeName.js",
     "dist/devices/shared/view.js",
     "dist/devices/types/camera-session.1.json",
+    "dist/devices/types/micropython.1.json",
     "dist/devices/types/camera.1.json",
     "dist/devices/types/dimmer.1.json",
     "dist/devices/types/fan.1.json",
