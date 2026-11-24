@@ -1,0 +1,13 @@
+{
+	"schema": 1,
+	"type": "micropython.1",
+	"rev": 1,
+	"title": "MicroPython 보드",
+	"icon": "memory",
+	"traits": ["repl"],
+	"controls": [
+		{ "widget": "value", "label": "원격 REPL", "key": "repl" },
+		{ "widget": "value", "label": "여유 메모리", "key": "mem", "unit": "B" },
+		{ "widget": "value", "label": "MicroPython", "key": "ver" }
+	]
+}

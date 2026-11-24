@@ -15,6 +15,7 @@
 		"iris.1",
 		"iris.2",
 		"camera.1",
-		"camera-session.1"
+		"camera-session.1",
+		"micropython.1"
 	]
 }
