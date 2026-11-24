@@ -17,7 +17,7 @@ export const controls = [
   'docs/messaging.md',
   'docs/ping.ko.md',
   'docs/ping.md',
-  '.github/workflows/verify.yml', 'scripts/public-files.json',
+  '.github/workflows/verify.yml', '.github/workflows/publish.yml', 'scripts/public-files.json',
   'scripts/public-policy.mjs', 'scripts/verify.mjs', 'scripts/type-consumer.mjs', 'scripts/devices.mjs',
   'checks/release.test.mjs', 'checks/policy.test.mjs',
 ];

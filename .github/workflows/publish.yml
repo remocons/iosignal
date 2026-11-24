@@ -1,0 +1,38 @@
+# Publishes to npm when a version tag (v<version>) is pushed, with npm Trusted Publishing (OIDC):
+# no npm token is stored anywhere. Set up once on npmjs.com: package → Settings → Trusted Publisher →
+# GitHub Actions, this repository, workflow file publish.yml, environment npm.
+name: Publish to npm
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: read
+  id-token: write
+concurrency:
+  group: npm-publish
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: npm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - name: npm with Trusted Publishing (11.5.1 or later)
+        run: npm install -g npm@^11.5.1
+      - name: The tag is the package.json version
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          test "v$version" = "$GITHUB_REF_NAME" || { echo "tag $GITHUB_REF_NAME does not match package.json $version"; exit 1; }
+      - name: Not published yet
+        run: |
+          name="$(node -p "require('./package.json').name")"; version="$(node -p "require('./package.json').version")"
+          if npm view "$name@$version" version >/dev/null 2>&1; then echo "$name@$version is already on npm"; exit 1; fi
+      - run: npm ci
+      - run: npm run verify
+      - name: Committed bundles match the sources
+        run: git diff --exit-code -- dist
+      - run: npm publish --provenance --access public --ignore-scripts
