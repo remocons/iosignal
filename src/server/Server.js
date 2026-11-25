@@ -3,6 +3,8 @@ import http from 'http'
 import EventEmitter from 'events'
 import { WebSocketServer } from 'ws'
 import { Manager } from './Manager.js'
+import { connectionLimits } from './AddressLimiter.js'
+import { getClientAddress, normalizeIP } from './Remote.js'
 import { Host } from './Host.js'
 import { Dashboard } from './Dashboard.js'
 import { serverOption } from './serverOption.js'
@@ -115,6 +117,9 @@ export class Server extends EventEmitter {
    *   options.maxPayload: largest WebSocket message and CongSocket frame in bytes (default 32 MiB).
    *   options.maxBufferedBytes: close a peer whose unsent data exceeds this (default 64 MiB).
    *   options.membersOnly: only authenticated connections may send signals or subscribe.
+   *   options.connectionLimits: { newPerAddressPerMin, failedPerAddressPerMin, maxPerAddress, windowMs,
+   *   exempt } per public address, merged over serverOption.connectionLimits; false turns them off.
+   *   A connection over a limit is closed when accepted (WebSocket code 1013); see AddressLimiter.
    *   options.logMessages: log each received message after decryption: type and tag, never the payload.
    *   options.logStats: print a one-line summary every N ms (>= 1000; 0 = off); see stats().
    *   options.security: { maxClockSkewMs, authChallengeMaxAgeMs, maxReplayEntries, requireEncryption }.
@@ -167,6 +172,8 @@ export class Server extends EventEmitter {
       throw new RangeError("trustProxy must be true, false, 'private' or a positive integer");
     }
     this.membersOnly = boolean('membersOnly', options.membersOnly ?? serverOption.membersOnly);
+    // Per-address connection limits (AddressLimiter); adjustable later on server.connectionLimits.
+    this.connectionLimits = connectionLimits(options.connectionLimits, serverOption.connectionLimits);
     this.serviceNames = new Set()
     this.services = new Map()   // name -> service module (for lifecycle hooks)
     this.hosts = new Set()      // open hosts (server.host)
@@ -280,7 +287,11 @@ export class Server extends EventEmitter {
     })
 
     this.wss.on('connection', (ws, req) => {
+      // Too many connections from this address: closed before anything is sent (try again later).
+      const ip = getClientAddress(req, this.trustProxy).ip
+      if (!this.manager.admitConnection(ip)) return ws.close(1013, 'too many connections')
       ws.socketType = 'websocket'
+      ws._limitIp = ip
       this.manager.addRemote(ws, req)
     })
 
@@ -291,6 +302,9 @@ export class Server extends EventEmitter {
     this.congServer = net.createServer((socket) => {
       // Signals are small frames; send each immediately instead of waiting on Nagle.
       socket.setNoDelay(true)
+      const ip = normalizeIP(socket.remoteAddress) ?? '0.0.0.0'
+      if (!this.manager.admitConnection(ip)) return socket.destroy()
+      socket._limitIp = ip
       this.manager.addRemote(socket)
     })
       .on('error', (err) => this.onListenerError('cong', err))

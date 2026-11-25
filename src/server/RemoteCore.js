@@ -500,7 +500,8 @@ export class RemoteCore {
 
         // A Boho 2.x client: told AUTH_FAIL instead of being left waiting.
         case CLASSIC_AUTH_REQ:
-          this.send(Buffer.from([Boho.BohoMsg.AUTH_FAIL]))
+          if (typeof this.manager.authManager?.refuseClassic === 'function') this.manager.authManager.refuseClassic(this)
+          else this.send(Buffer.from([Boho.BohoMsg.AUTH_FAIL]))
           return
 
         // client's auth requst

@@ -21,6 +21,19 @@ export const serverOption = {
   // Only authenticated connections may send signals or subscribe; an anonymous one that tries
   // gets AUTH_CLEAR and is closed.
   membersOnly: false,
+  // Connections per public address, checked when a socket is accepted (see AddressLimiter):
+  // newPerAddressPerMin new connections, failedPerAddressPerMin connections that ended without a
+  // CID (refused logins, Boho 2.x and broken clients) in windowMs, and maxPerAddress open at once.
+  // Over a rate limit the address's new connections are closed at once until the window ends; open
+  // ones are never touched. 0 turns a limit off. Loopback, private and exempt addresses are not
+  // counted. A Server's connectionLimits option is merged over this (false: all off).
+  connectionLimits: {
+    newPerAddressPerMin: 300,
+    failedPerAddressPerMin: 30,
+    maxPerAddress: 1000,
+    windowMs: 60000,
+    exempt: []
+  },
   // Observability. logMessages: log each received message (type and tag, never the payload).
   // logStats: print a one-line summary every N ms (0 = off).
   logMessages: false,
@@ -73,23 +86,40 @@ export const serverOption = {
 
   // --- Process-wide: read directly where used, not per Server ---
 
+  // File logs, off by default. Each file is rotated at maxBytes into path.1 … path.<keep>
+  // (maxBytes 0: never). A write error is reported once and never stops the server.
+  // connection, attack: text lines with an ISO time. auth: JSON Lines (one object per line), see
+  // BohoAuth; level 'normal' writes logins, failed logins of known IDs, address blocks and the
+  // failure summaries; 'all' also every failed attempt (unknown IDs, blocked addresses, bad packets).
+  // A BohoAuth's fileLog option overrides auth for that instance.
   fileLogger: {
     connection: {
       use: false,
-      path: 'connection.log'
+      path: 'connection.log',
+      maxBytes: 10 * 1024 * 1024,
+      keep: 5
     },
     auth: {
       use: false,
-      path: 'auth.log'
+      path: 'auth.log',
+      level: 'normal',
+      maxBytes: 10 * 1024 * 1024,
+      keep: 5
     },
     attack: {
       use: false,
-      path: 'attack.log'
+      path: 'attack.log',
+      maxBytes: 10 * 1024 * 1024,
+      keep: 5
     }
   },
 
   auth: {
     failDelay: 600, // ms before AUTH_FAIL is sent
+    // A refused connection has no CID: it is closed this long after AUTH_FAIL unless it logs in or
+    // goes on anonymously (CID_REQ) meanwhile, so the client reconnects and tries again on its own
+    // schedule instead of staying online unseen. 0 keeps it open.
+    failCloseMs: 30000,
     // Wrong logins: a connection is closed after maxFailuresPerConnection; a public address with
     // maxFailuresPerAddress in failureWindowMs gets its next logins closed unchecked until the window
     // has passed (closed, not AUTH_FAIL, so a device with the right key there connects again).
@@ -97,6 +127,10 @@ export const serverOption = {
     maxFailuresPerConnection: 5,
     maxFailuresPerAddress: 30,
     failureWindowMs: 60000,
+    // Failed logins are counted by kind, address and login ID, and reported as one summary per
+    // window (console line, or BohoAuth's onAuthSummary option). Nothing is written while no login
+    // fails. 0 turns the summary off.
+    summaryMs: 10 * 60 * 1000,
     // Default for BohoAuth, when the same authenticated CID is already online:
     // 'keepNew' replaces the old connection, 'keepOld' rejects the new login.
     // Override per BohoAuth with its duplicateLogin option, and per Server with options.duplicateLogin

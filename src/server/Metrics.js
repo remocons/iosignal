@@ -56,14 +56,32 @@ export class Metrics {
   }
 
   // Compact summary for metrics reports ('@$metrics'); byte counters are cumulative.
+  // authFail (a BohoAuth server only): failed logins as counts, never addresses or IDs, since
+  // '@$metrics' is readable by anyone: { open: in the window now, last: the last window's total,
+  // lastAt: when it ended, blocked: addresses blocked now }. connLimit: connections refused by the
+  // per-address limits since start, and addresses limited now (counts only).
   oneline() {
-    return {
+    const line = {
       lastSSID: this.manager.lastSSID,
       remotes: this.manager.remotes.size,
       channels: this.manager.channel_map.size,
       txBytes: this.manager.counters.txBytes,
       rxBytes: this.manager.counters.rxBytes,
     }
+    if (this.manager.addressLimiter) {
+      line.connLimit = { refused: this.manager.counters.connectionsRefused ?? 0, limited: this.manager.addressLimiter.limited().length }
+    }
+    const auth = this.manager.authManager
+    const summary = auth?.failureSummary
+    if (summary) {
+      line.authFail = {
+        open: summary.current()?.total ?? 0,
+        last: summary.last?.total ?? 0,
+        lastAt: summary.last?.until ?? null,
+        blocked: typeof auth.blockedAddresses === 'function' ? auth.blockedAddresses().length : 0
+      }
+    }
+    return line
   }
 
   getRemotes() {

@@ -7540,6 +7540,19 @@ const serverOption = {
   // Only authenticated connections may send signals or subscribe; an anonymous one that tries
   // gets AUTH_CLEAR and is closed.
   membersOnly: false,
+  // Connections per public address, checked when a socket is accepted (see AddressLimiter):
+  // newPerAddressPerMin new connections, failedPerAddressPerMin connections that ended without a
+  // CID (refused logins, Boho 2.x and broken clients) in windowMs, and maxPerAddress open at once.
+  // Over a rate limit the address's new connections are closed at once until the window ends; open
+  // ones are never touched. 0 turns a limit off. Loopback, private and exempt addresses are not
+  // counted. A Server's connectionLimits option is merged over this (false: all off).
+  connectionLimits: {
+    newPerAddressPerMin: 300,
+    failedPerAddressPerMin: 30,
+    maxPerAddress: 1000,
+    windowMs: 60000,
+    exempt: []
+  },
   // Observability. logMessages: log each received message (type and tag, never the payload).
   // logStats: print a one-line summary every N ms (0 = off).
   logMessages: false,
@@ -7592,23 +7605,40 @@ const serverOption = {
 
   // --- Process-wide: read directly where used, not per Server ---
 
+  // File logs, off by default. Each file is rotated at maxBytes into path.1 … path.<keep>
+  // (maxBytes 0: never). A write error is reported once and never stops the server.
+  // connection, attack: text lines with an ISO time. auth: JSON Lines (one object per line), see
+  // BohoAuth; level 'normal' writes logins, failed logins of known IDs, address blocks and the
+  // failure summaries; 'all' also every failed attempt (unknown IDs, blocked addresses, bad packets).
+  // A BohoAuth's fileLog option overrides auth for that instance.
   fileLogger: {
     connection: {
       use: false,
-      path: 'connection.log'
+      path: 'connection.log',
+      maxBytes: 10 * 1024 * 1024,
+      keep: 5
     },
     auth: {
       use: false,
-      path: 'auth.log'
+      path: 'auth.log',
+      level: 'normal',
+      maxBytes: 10 * 1024 * 1024,
+      keep: 5
     },
     attack: {
       use: false,
-      path: 'attack.log'
+      path: 'attack.log',
+      maxBytes: 10 * 1024 * 1024,
+      keep: 5
     }
   },
 
   auth: {
     failDelay: 600, // ms before AUTH_FAIL is sent
+    // A refused connection has no CID: it is closed this long after AUTH_FAIL unless it logs in or
+    // goes on anonymously (CID_REQ) meanwhile, so the client reconnects and tries again on its own
+    // schedule instead of staying online unseen. 0 keeps it open.
+    failCloseMs: 30000,
     // Wrong logins: a connection is closed after maxFailuresPerConnection; a public address with
     // maxFailuresPerAddress in failureWindowMs gets its next logins closed unchecked until the window
     // has passed (closed, not AUTH_FAIL, so a device with the right key there connects again).
@@ -7616,6 +7646,10 @@ const serverOption = {
     maxFailuresPerConnection: 5,
     maxFailuresPerAddress: 30,
     failureWindowMs: 60000,
+    // Failed logins are counted by kind, address and login ID, and reported as one summary per
+    // window (console line, or BohoAuth's onAuthSummary option). Nothing is written while no login
+    // fails. 0 turns the summary off.
+    summaryMs: 10 * 60 * 1000,
     // Default for BohoAuth, when the same authenticated CID is already online:
     // 'keepNew' replaces the old connection, 'keepOld' rejects the new login.
     // Override per BohoAuth with its duplicateLogin option, and per Server with options.duplicateLogin
@@ -8125,7 +8159,8 @@ class RemoteCore {
 
         // A Boho 2.x client: told AUTH_FAIL instead of being left waiting.
         case CLASSIC_AUTH_REQ:
-          this.send(Buffer.from([mt.BohoMsg.AUTH_FAIL]));
+          if (typeof this.manager.authManager?.refuseClassic === 'function') this.manager.authManager.refuseClassic(this);
+          else this.send(Buffer.from([mt.BohoMsg.AUTH_FAIL]));
           return
 
         // client's auth requst
@@ -8644,33 +8679,147 @@ class Remote extends RemoteCore {
 
 }
 
-const formatter = new Intl.DateTimeFormat('ko-KR', {
-  // hour12: true,
-  // hour: 'numeric',
-  // minute: '2-digit',
-  // second: '2-digit'
-  year: 'numeric', month: 'numeric', day: 'numeric',
-  hour: 'numeric', minute: 'numeric',
-  hour12: false,
-  timeZone: 'Asia/Seoul'
-});
+const MIB$1 = 1024 * 1024;
+const RETRY_MS = 60 * 1000; // after a write error, lines are dropped this long before trying again
 
-
+/**
+ * Appends lines to a file, with size-based rotation. A write error never throws: it is reported
+ * once, lines are dropped for a minute, then writing is tried again (a full disk may recover).
+ *
+ * Rotation: when the file reaches maxBytes it becomes `path.1` (`.1` → `.2` …, at most keep old
+ * files) and a new file is started. maxBytes 0 turns rotation off. Another process may rotate the
+ * same path (or logrotate may move it): the logger then reopens the path instead of rotating again.
+ * With logrotate, `copytruncate` also works (writes append at the current end).
+ */
 class FileLogger {
-  constructor(path) {
-    this.file = fs.openSync(path, 'a+');
-    console.log('new FileLogger logFile: ', path, this.file);
+  /**
+   * @param {string} path
+   * @param {{ maxBytes?: number, keep?: number }} [options] defaults: 10 MiB, 5 old files
+   */
+  constructor(path, { maxBytes = 10 * MIB$1, keep = 5 } = {}) {
+    this.path = path;
+    this.maxBytes = Number.isFinite(maxBytes) && maxBytes > 0 ? maxBytes : 0;
+    this.keep = Number.isInteger(keep) && keep > 0 ? keep : 1;
+    this.file = -1;      // file descriptor; -1 while closed
+    this.ino = 0;
+    this.size = 0;       // bytes in the file, as far as this logger knows
+    this.retryAt = 0;    // after a write error: when to try again
+    this.dropped = 0;    // lines dropped since the last error
+    this.#open();
+  }
+
+  #open() {
+    try {
+      this.file = fs.openSync(this.path, 'a');
+      const stat = fs.fstatSync(this.file);
+      this.ino = stat.ino;
+      this.size = stat.size;
+      return true
+    } catch (error) {
+      this.file = -1;
+      this.#failed(error);
+      return false
+    }
+  }
+
+  #failed(error) {
+    if (!this.retryAt) console.error(`FileLogger ${this.path}: ${error?.code ?? error?.message ?? error}; lines are dropped for ${RETRY_MS / 1000}s`);
+    this.retryAt = Date.now() + RETRY_MS;
+  }
+
+  #closeFile() {
+    if (this.file < 0) return
+    try { fs.closeSync(this.file); } catch { }
+    this.file = -1;
+  }
+
+  // Before a write that would pass maxBytes: rotate, or follow a rotation done elsewhere.
+  #rotateIfNeeded(adding) {
+    if (!this.maxBytes || this.size + adding <= this.maxBytes) return
+    let stat = null;
+    try { stat = fs.statSync(this.path); } catch { }
+    if (!stat || stat.ino !== this.ino) { // moved or rotated by another writer: start on the new file
+      this.#closeFile();
+      this.#open();
+      if (this.size + adding <= this.maxBytes) return
+    } else if (stat.size + adding <= this.maxBytes) { // truncated elsewhere (copytruncate)
+      this.size = stat.size;
+      return
+    }
+    this.#closeFile();
+    try {
+      for (let i = this.keep - 1; i >= 1; i--) {
+        if (fs.existsSync(`${this.path}.${i}`)) fs.renameSync(`${this.path}.${i}`, `${this.path}.${i + 1}`);
+      }
+      fs.renameSync(this.path, `${this.path}.1`);
+    } catch (error) {
+      console.error(`FileLogger ${this.path}: rotation failed: ${error?.code ?? error?.message ?? error}`);
+    }
+    this.#open();
+  }
+
+  /** Appends one line (a newline is added). Returns false when the line was dropped. */
+  writeLine(line) {
+    const text = String(line).replace(/[\r\n]+/g, ' ') + '\n';
+    if (this.retryAt) {
+      if (Date.now() < this.retryAt) { this.dropped++; return false }
+      this.retryAt = 0;
+      if (this.file < 0 && !this.#open()) { this.dropped++; return false }
+    }
+    if (this.file < 0) { this.dropped++; return false }
+    const bytes = Buffer.byteLength(text);
+    try {
+      this.#rotateIfNeeded(bytes);
+      if (this.file < 0) { this.dropped++; return false }
+      if (this.dropped) {
+        const note = `${new Date().toISOString()} [FileLogger] ${this.dropped} lines dropped after a write error\n`;
+        this.dropped = 0;
+        this.size += fs.writeSync(this.file, note);
+      }
+      this.size += fs.writeSync(this.file, text);
+      return true
+    } catch (error) {
+      this.dropped++;
+      this.#failed(error);
+      return false
+    }
+  }
+
+  /** Appends a text line, prefixed with the time (ISO 8601, UTC). */
+  log(msg) {
+    return this.writeLine(`${new Date().toISOString()} ${msg}`)
+  }
+
+  /** Opens the path again, e.g. after logrotate moved the file without copytruncate. */
+  reopen() {
+    this.#closeFile();
+    this.retryAt = 0;
+    this.#open();
+  }
+
+  close() {
+    this.#closeFile();
+  }
+}
+
+/**
+ * One JSON object per line ({"at": ISO time, ...record}), for jq and fail2ban. log(text) writes
+ * {"at", "event": "note", "text"} so text callers keep working.
+ */
+class JsonLinesLogger extends FileLogger {
+  write(record) {
+    let line;
+    try {
+      line = JSON.stringify({ at: new Date().toISOString(), ...record });
+    } catch (error) {
+      line = JSON.stringify({ at: new Date().toISOString(), event: 'unserializable', error: String(error?.message ?? error) });
+    }
+    return this.writeLine(line)
   }
 
   log(msg) {
-    let format = formatter.format(new Date()) + " " + msg + '\n';
-    fs.write(this.file, format, (err) => {
-      if (err) throw err;
-    });
-
+    return this.write({ event: 'note', text: String(msg) })
   }
-
-
 }
 
 const KIB = 1024, MIB = 1024 * 1024;
@@ -8727,14 +8876,32 @@ class Metrics {
   }
 
   // Compact summary for metrics reports ('@$metrics'); byte counters are cumulative.
+  // authFail (a BohoAuth server only): failed logins as counts, never addresses or IDs, since
+  // '@$metrics' is readable by anyone: { open: in the window now, last: the last window's total,
+  // lastAt: when it ended, blocked: addresses blocked now }. connLimit: connections refused by the
+  // per-address limits since start, and addresses limited now (counts only).
   oneline() {
-    return {
+    const line = {
       lastSSID: this.manager.lastSSID,
       remotes: this.manager.remotes.size,
       channels: this.manager.channel_map.size,
       txBytes: this.manager.counters.txBytes,
       rxBytes: this.manager.counters.rxBytes,
+    };
+    if (this.manager.addressLimiter) {
+      line.connLimit = { refused: this.manager.counters.connectionsRefused ?? 0, limited: this.manager.addressLimiter.limited().length };
     }
+    const auth = this.manager.authManager;
+    const summary = auth?.failureSummary;
+    if (summary) {
+      line.authFail = {
+        open: summary.current()?.total ?? 0,
+        last: summary.last?.total ?? 0,
+        lastAt: summary.last?.until ?? null,
+        blocked: typeof auth.blockedAddresses === 'function' ? auth.blockedAddresses().length : 0
+      };
+    }
+    return line
   }
 
   getRemotes() {
@@ -9330,6 +9497,158 @@ class Host extends require$$0$3 {
   }
 }
 
+const MAX_ADDRESSES = 10000; // tracked public addresses; past windows are forgotten first
+
+const LIMIT_KEYS = ['newPerAddressPerMin', 'failedPerAddressPerMin', 'maxPerAddress', 'windowMs'];
+
+/**
+ * Checks a limits object ({ newPerAddressPerMin, failedPerAddressPerMin, maxPerAddress, windowMs,
+ * exempt }) and returns a copy. A count of 0 turns that limit off; windowMs is at least 1000.
+ */
+function connectionLimits(given, defaults) {
+  if (given === false) return { ...defaults, newPerAddressPerMin: 0, failedPerAddressPerMin: 0, maxPerAddress: 0, exempt: [] }
+  if (given !== undefined && (given === null || typeof given !== 'object')) {
+    throw new TypeError('connectionLimits must be an object or false')
+  }
+  const limits = { ...defaults, ...given };
+  for (const key of Object.keys(given ?? {})) {
+    if (!LIMIT_KEYS.includes(key) && key !== 'exempt') throw new TypeError(`unknown option connectionLimits.${key}`)
+  }
+  for (const key of LIMIT_KEYS) {
+    const value = limits[key];
+    if (!Number.isSafeInteger(value) || value < (key === 'windowMs' ? 1000 : 0)) {
+      throw new RangeError(`connectionLimits.${key} must be an integer >= ${key === 'windowMs' ? 1000 : 0}`)
+    }
+  }
+  if (!Array.isArray(limits.exempt) || limits.exempt.some(ip => typeof ip !== 'string')) {
+    throw new TypeError('connectionLimits.exempt must be an array of addresses')
+  }
+  limits.exempt = limits.exempt.map(ip => normalizeIP(ip) ?? ip);
+  return limits
+}
+
+/**
+ * Connections per public address, checked when a socket is accepted, before anything is sent:
+ *  - new:    more than newPerAddressPerMin new connections in a window → refused until it ends
+ *  - failed: failedPerAddressPerMin connections in a window that ended without a CID (a refused
+ *            login, a Boho 2.x client, a broken or scanning client) → refused until it ends
+ *  - open:   maxPerAddress connections open at once → further ones refused while they stay
+ * Connections already open are never touched. Loopback, private and exempt addresses are not
+ * counted (a proxy, a LAN, other servers). A refused connection is closed at once and costs no
+ * key lookup; well-behaved clients reconnect later on their own.
+ *
+ * The limits object is read on every call, so a running server can adjust it.
+ */
+class AddressLimiter {
+  /**
+   * @param {() => object} getLimits returns the limits in force (see connectionLimits)
+   * @param {{ onLimit?: (ip: string, reason: 'new' | 'failed' | 'open', count: number, ms: number) => any }} [options]
+   *   onLimit: called once when an address starts being limited (ms: for how long; 0 for 'open').
+   */
+  constructor(getLimits, { onLimit } = {}) {
+    this.getLimits = getLimits;
+    this.onLimit = onLimit ?? null;
+    this.addresses = new Map(); // ip -> { since, created, failed, open, until, reason }
+    this.refused = { new: 0, failed: 0, open: 0 }; // cumulative
+  }
+
+  #exempt(ip, limits) {
+    return typeof ip !== 'string' || !ip || isPrivateIP(ip) || limits.exempt.includes(ip)
+  }
+
+  // The entry of an address, its window renewed when it has passed (open connections stay counted).
+  #entry(ip, limits, now, create) {
+    let entry = this.addresses.get(ip);
+    if (entry && now - entry.since >= limits.windowMs) {
+      if (!entry.open) { this.addresses.delete(ip); entry = undefined; }
+      else Object.assign(entry, { since: now, created: 0, failed: 0, until: 0, reason: null, openNoted: false });
+    }
+    if (!entry && create) {
+      if (this.addresses.size >= MAX_ADDRESSES) this.#prune(limits, now);
+      entry = { since: now, created: 0, failed: 0, open: 0, until: 0, reason: null, openNoted: false };
+      this.addresses.set(ip, entry);
+    }
+    return entry
+  }
+
+  #prune(limits, now) {
+    for (const [ip, e] of this.addresses) if (!e.open && now - e.since >= limits.windowMs) this.addresses.delete(ip);
+    if (this.addresses.size >= MAX_ADDRESSES) for (const [ip, e] of this.addresses) if (!e.open) this.addresses.delete(ip);
+  }
+
+  #limit(ip, entry, reason, count, limits, now) {
+    entry.until = entry.since + limits.windowMs;
+    entry.reason = reason;
+    this.#notify(ip, reason, count, entry.until - now);
+  }
+
+  #notify(ip, reason, count, ms) {
+    try { this.onLimit?.(ip, reason, count, Math.max(0, ms)); } catch (error) { console.error('AddressLimiter onLimit error:', error); }
+  }
+
+  /**
+   * A new connection from ip: true to accept it (it is then counted as open; call closed() when it
+   * ends), false to close it at once. Its reason is in lastRefusal.
+   */
+  admit(ip, now = Date.now()) {
+    const limits = this.getLimits();
+    if (this.#exempt(ip, limits)) return true
+    const entry = this.#entry(ip, limits, now, true);
+    if (entry.until > now) return this.#refuse(entry.reason)
+    entry.created++;
+    if (limits.newPerAddressPerMin && entry.created > limits.newPerAddressPerMin) {
+      this.#limit(ip, entry, 'new', entry.created - 1, limits, now);
+      return this.#refuse('new')
+    }
+    if (limits.maxPerAddress && entry.open >= limits.maxPerAddress) {
+      if (!entry.openNoted) { entry.openNoted = true; this.#notify(ip, 'open', entry.open, 0); }
+      return this.#refuse('open')
+    }
+    entry.open++;
+    return true
+  }
+
+  #refuse(reason) {
+    this.refused[reason]++;
+    this.lastRefusal = reason;
+    return false
+  }
+
+  /**
+   * An accepted connection from ip ended. failed: it never got a CID (a refused login, a Boho 2.x
+   * client, a broken client); too many of those in a window limit the address.
+   */
+  closed(ip, failed = false, now = Date.now()) {
+    const limits = this.getLimits();
+    if (this.#exempt(ip, limits)) return
+    const entry = this.#entry(ip, limits, now, failed);
+    if (!entry) return
+    if (entry.open > 0) entry.open--;
+    if (entry.open < limits.maxPerAddress) entry.openNoted = false;
+    if (!failed) return
+    entry.failed++;
+    if (limits.failedPerAddressPerMin && entry.failed >= limits.failedPerAddressPerMin && !(entry.until > now)) {
+      this.#limit(ip, entry, 'failed', entry.failed, limits, now);
+    }
+  }
+
+  /** Addresses limited now: [{ ip, reason, count, until }] (most first, at most limit), and those at maxPerAddress. */
+  limited(limit = 100, now = Date.now()) {
+    const limits = this.getLimits();
+    const list = [];
+    for (const [ip, e] of this.addresses) {
+      if (e.until > now) list.push({ ip, reason: e.reason, count: e.reason === 'failed' ? e.failed : e.created, until: e.until });
+      else if (limits.maxPerAddress && e.open >= limits.maxPerAddress) list.push({ ip, reason: 'open', count: e.open, until: null });
+    }
+    return list.sort((a, b) => b.count - a.count).slice(0, limit)
+  }
+
+  /** Open connections counted for an address (0 for an exempt one). */
+  openCount(ip) {
+    return this.addresses.get(ip)?.open ?? 0
+  }
+}
+
 // Characters of an anonymous CID after its '?': lowercase Crockford base32, easy to read aloud and type.
 const ANONYMOUS_CID_ALPHABET = '0123456789abcdefghjkmnpqrstvwxyz';
 
@@ -9355,19 +9674,26 @@ class Manager {
       policyDenied: 0,       // unicasts and CID publications a device's delivery policy kept back
       hostInbound: 0,        // client signals handed to a host (server.host)
       hostRejected: 0,       // signals to a host tag that were not handed over (E2E, malformed payload)
-      hostDenied: 0 };       // client signals to a tag a host owns, dropped
+      hostDenied: 0,         // client signals to a tag a host owns, dropped
+      connectionsRefused: 0 }; // connections closed when accepted: over a per-address limit
+
+    // Per-address connection limits: the Server's (adjustable there), else the defaults.
+    const defaultLimits = connectionLimits(undefined, serverOption.connectionLimits);
+    this.addressLimiter = new AddressLimiter(() => server?.connectionLimits ?? defaultLimits, {
+      onLimit: (ip, reason, count, ms) => this.onAddressLimit(ip, reason, count, ms)
+    });
 
     this.authManager = authManager;
 
     this.connectionLogger;
     if (serverOption.fileLogger.connection.use) {
-      this.connectionLogger = new FileLogger(serverOption.fileLogger.connection.path);
+      this.connectionLogger = new FileLogger(serverOption.fileLogger.connection.path, serverOption.fileLogger.connection);
       // console.log('Manager: begin file logger [connection]')
     }
 
     this.attackLogger;
     if (serverOption.fileLogger.attack.use) {
-      this.attackLogger = new FileLogger(serverOption.fileLogger.attack.path);
+      this.attackLogger = new FileLogger(serverOption.fileLogger.attack.path, serverOption.fileLogger.attack);
       // console.log('Manager: begin file logger.[attack]')
     }
 
@@ -9497,6 +9823,24 @@ class Manager {
     }
   }
 
+  /** A socket from ip is being accepted: false when a per-address limit refuses it (close it then). */
+  admitConnection(ip) {
+    if (this.addressLimiter.admit(ip)) return true;
+    this.counters.connectionsRefused++;
+    return false;
+  }
+
+  // Logged once when an address starts being limited, never per refused connection.
+  onAddressLimit(ip, reason, count, ms) {
+    const limits = this.server?.connectionLimits ?? serverOption.connectionLimits;
+    const what = { new: 'new connections', failed: 'connections that ended without a CID', open: 'open connections' }[reason];
+    const text = reason === 'open'
+      ? `[conn] ${ip} has ${count} ${what}: new ones refused`
+      : `[conn] ${ip} limited for ${Math.round(ms / 1000)}s: ${count} ${what} in ${Math.round(limits.windowMs / 1000)}s`;
+    console.log(text);
+    this.authManager?.authLogger?.write?.({ event: 'conn_limit', ip, reason, count, seconds: Math.round(ms / 1000) });
+  }
+
   addRemote(socket, req) {
     socket.isAlive = true;
     let remote = new Remote(socket, req, this);
@@ -9517,6 +9861,13 @@ class Manager {
   removeRemote(remote) {
 
     remote._closing = true;
+    // A connection accepted through admitConnection: counted out; one that never got a CID (a
+    // refused login, a Boho 2.x or broken client) counts as failed for its address.
+    const limitIp = remote.socket?._limitIp;
+    if (limitIp !== undefined) {
+      remote.socket._limitIp = undefined;
+      this.addressLimiter.closed(limitIp, !remote.cid);
+    }
     this.removeAccountConnection(remote);
     this.pingGroups[remote.pingGroup]?.delete(remote);
     this.heartbeatPending.delete(remote);
@@ -10145,6 +10496,121 @@ const DUPLICATE_LOGIN_POLICIES = ['keepOld', 'keepNew'];
 // Only WebSocket remotes carry socketType; CongSocket remotes leave it unset.
 const transportOf = remote => remote.socketType === 'websocket' ? 'websocket' : 'congsocket';
 
+// Kind of a failed login, from its reason (which may carry the login ID): the summary and event key.
+// Summary-only kinds: 'bad_packet' (an AUTH_REQ of the wrong size), 'boho2_client' (a Boho 2.x
+// login request: an IOSignal 9.x client), 'blocked' (an address with too many wrong logins, closed
+// unchecked), 'unavailable' (key store).
+const FAIL_KINDS = [
+  ['NO ID', 'no_id'], ['NO KEY', 'no_key'], ['BOHO 2.x KEY', 'boho2_key'], ['hmac', 'wrong_key'],
+  ['unknown auth.role', 'unknown_role'], ['unknown quota', 'unknown_quota'],
+  ['too many connections', 'too_many_connections'], ['duplicate login', 'duplicate'], ['unpack', 'bad_packet']
+];
+function authFailKind(reason) {
+  const text = String(reason ?? '');
+  for (const [prefix, kind] of FAIL_KINDS) if (text.startsWith(prefix)) return kind
+  return 'error'
+}
+// A login ID as received (any 8 bytes): printable ASCII only, for logs.
+const cleanId = id => String(id ?? '').slice(0, 8).replace(/[^\x21-\x7e]/g, '?');
+const MAX_SUMMARY_KEYS = 1000; // distinct addresses or IDs kept per window; the rest count as 'other'
+const TOP = 5;
+const RECENT = 12; // reported summaries kept for monitors (two hours at the default window)
+
+/**
+ * Failed logins in a time window: counts by kind, address and login ID, reported once when the
+ * window ends. Nothing runs while no login fails (the window starts with its first failure).
+ */
+class AuthFailureSummary {
+  /** @param {{ windowMs: () => number, onSummary: (summary: object) => any }} options */
+  constructor({ windowMs, onSummary }) {
+    this.windowMs = windowMs;
+    this.onSummary = onSummary;
+    this.last = null; // the last reported summary
+    this.recent = []; // reported summaries, newest first (at most RECENT)
+    this.seq = 0; // number of the last reported summary (1, 2, ...): tells windows apart
+    this.#reset();
+  }
+
+  // The window's figures so far (a summary without until), or null before its first failure.
+  #figures() {
+    if (!this.since) return null
+    const top = map => [...map].sort((a, b) => b[1] - a[1]).slice(0, TOP);
+    return {
+      since: this.since, total: this.total,
+      kinds: Object.fromEntries([...this.kinds].sort((a, b) => b[1] - a[1])),
+      ips: this.ips.size + (this.otherIps ? 1 : 0), topIps: top(this.ips),
+      ids: this.ids.size + (this.otherIds ? 1 : 0), topIds: top(this.ids)
+    }
+  }
+
+  /** The window in progress, as a summary without until; null while no login has failed in it. */
+  current() {
+    return this.#figures()
+  }
+
+  #reset() {
+    this.since = 0;
+    this.total = 0;
+    this.kinds = new Map();
+    this.ips = new Map();
+    this.ids = new Map();
+    this.otherIps = 0;
+    this.otherIds = 0;
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = null;
+  }
+
+  #count(map, key, overflow) {
+    if (map.has(key)) map.set(key, map.get(key) + 1);
+    else if (map.size < MAX_SUMMARY_KEYS) map.set(key, 1);
+    else this[overflow]++;
+  }
+
+  add(kind, ip, id) {
+    const windowMs = this.windowMs();
+    if (!(windowMs > 0)) return
+    if (!this.since) {
+      this.since = Date.now();
+      this.timer = setTimeout(() => this.flush(), windowMs);
+      this.timer.unref?.();
+    }
+    this.total++;
+    this.kinds.set(kind, (this.kinds.get(kind) ?? 0) + 1);
+    if (ip) this.#count(this.ips, ip, 'otherIps');
+    if (id !== undefined && id !== null) this.#count(this.ids, cleanId(id), 'otherIds');
+  }
+
+  /** Ends the window now: returns its summary (null when nothing failed) and reports it. */
+  flush() {
+    const figures = this.#figures();
+    if (!figures) return null
+    const { since, ...rest } = figures;
+    const summary = { seq: ++this.seq, since, until: Date.now(), ...rest };
+    this.#reset();
+    this.last = summary;
+    this.recent = [summary, ...this.recent].slice(0, RECENT);
+    try {
+      Promise.resolve(this.onSummary?.(summary)).catch(error => console.error('onAuthSummary error:', error));
+    } catch (error) {
+      console.error('onAuthSummary error:', error);
+    }
+    return summary
+  }
+
+  close() {
+    this.#reset();
+  }
+}
+
+/** One log line for a summary: `[auth] fail 2026-11-25T10:00:00Z +10m 45: no_id 42, ... | ip ... | id ...` */
+function formatAuthSummary(s) {
+  const pairs = list => list.map(([k, n]) => `${k}×${n}`).join(' ');
+  const minutes = Math.max(1, Math.round((s.until - s.since) / 60000));
+  return `[auth] fail ${new Date(s.since).toISOString().slice(0, 19)}Z +${minutes}m ${s.total}: ` +
+    Object.entries(s.kinds).map(([k, n]) => `${k} ${n}`).join(', ') +
+    ` | ip(${s.ips}) ${pairs(s.topIps)} | id(${s.ids}) ${pairs(s.topIds)}`
+}
+
 function validateDuplicateLogin(policy) {
   if (!DUPLICATE_LOGIN_POLICIES.includes(policy)) {
     throw new RangeError(`duplicateLogin must be one of: ${DUPLICATE_LOGIN_POLICIES.join(', ')}`)
@@ -10179,15 +10645,28 @@ class BohoAuth {
   /**
    * @param {object} keyProvider
    * @param {{ duplicateLogin?: 'keepOld' | 'keepNew', onAuthEvent?: (event: object) => any,
+   *   onAuthSummary?: (summary: object) => any, summaryMs?: number,
+   *   fileLog?: false | { path?: string, level?: 'normal' | 'all', maxBytes?: number, keep?: number },
    *   resolveQuota?: (authInfo: object, role: string) => string | Promise<string> }} [options]
    *   duplicateLogin: unset follows serverOption.auth.duplicateLogin (default 'keepNew').
    *   A Server's duplicateLogin option takes precedence for that Server's connections.
    *   onAuthEvent: called with { type, did, cid, uid, ip, oldIp, socketType, oldSocketType, reason, at }
-   *   for 'replaced' (keepNew evicted the old connection) and 'duplicate_rejected' (keepOld).
+   *   for 'replaced' (keepNew evicted the old connection) and 'duplicate_rejected' (keepOld), and
+   *   { type: 'auth_fail', did, cid, uid, ip, socketType, reason: kind, at } for a failed login of an
+   *   ID that has an owner (authInfo.uid; kind from authFailKind, e.g. 'wrong_key'). An unknown ID
+   *   has no event: it is only counted in the summary.
    *   socketType/oldSocketType are 'websocket' or 'congsocket'.
    *   Errors and rejected promises are logged and never affect authentication.
    *   resolveQuota: name of the Server quota profile for a login (default: defaultQuota), e.g. from
    *   the account owner's plan. An unknown name fails the login.
+   *   onAuthSummary: called with each failed-login summary { seq, since, until, total, kinds, ips, topIps,
+   *   ids, topIds } (default: one console line, formatAuthSummary). summaryMs: its window, default
+   *   serverOption.auth.summaryMs; 0 turns it off.
+   *   fileLog: the auth file log of this instance, JSON Lines with { at, event, ... }: 'ok' (login,
+   *   with id, cid, role, uid), 'fail' (kind, id, cid when known), 'block' (an address blocked),
+   *   'summary', 'unavailable'; at level 'all' also 'fail' for unknown IDs and bad packets and
+   *   'blocked' (an attempt from a blocked address). Never a key. Without it,
+   *   serverOption.fileLogger.auth applies when its use is true; false turns it off here.
    */
   constructor(keyProvider, options = {}) {
     if (!keyProvider) {
@@ -10199,11 +10678,37 @@ class BohoAuth {
     this.onAuthEvent = options.onAuthEvent ?? null;
     this.resolveQuota = options.resolveQuota ?? defaultQuota;
     this.addressFailures = new Map(); // public address -> { count, since } of wrong logins
+    // Failed logins per window (serverOption.auth.summaryMs, or options.summaryMs). Reported to
+    // options.onAuthSummary(summary), else as one console line; the last one is failureSummary.last.
+    this.onAuthSummary = options.onAuthSummary ?? (summary => console.log(formatAuthSummary(summary)));
+    this.failureSummary = new AuthFailureSummary({
+      windowMs: () => options.summaryMs ?? serverOption.auth.summaryMs,
+      onSummary: summary => {
+        this.#fileLog({ event: 'summary', ...summary });
+        this.onAuthSummary?.(summary);
+      }
+    });
+    // Auth file log (JSON Lines): options.fileLog { path, level, maxBytes, keep }, false for none;
+    // without it serverOption.fileLogger.auth when its use is true.
+    const fileLog = options.fileLog !== undefined ? options.fileLog
+      : serverOption.fileLogger.auth.use ? serverOption.fileLogger.auth : null;
+    this.authLogLevel = fileLog?.level === 'all' ? 'all' : 'normal';
     this.authLogger;
-    if (serverOption.fileLogger.auth.use) {
-      this.authLogger = new FileLogger(serverOption.fileLogger.auth.path);
-      console.log('Auth: begin file logger.[auth]');
+    if (fileLog) {
+      this.authLogger = new JsonLinesLogger(fileLog.path ?? 'auth.log', fileLog);
+      console.log(`Auth: file log ${this.authLogger.path} (${this.authLogLevel})`);
     }
+  }
+
+  // One auth log record (never a key). 'all' records are written only at level 'all'.
+  #fileLog(record, all = false) {
+    if (!this.authLogger || (all && this.authLogLevel !== 'all')) return
+    this.authLogger.write(record);
+  }
+
+  // Who a record is about: connection number, address, transport.
+  #peerOf(peer) {
+    return { ssid: peer.ssid, ip: peer.ip, transport: transportOf(peer) }
   }
 
   /** Effective duplicate login policy: this instance's setting, else serverOption.auth.duplicateLogin. */
@@ -10250,6 +10755,16 @@ class BohoAuth {
     return entry ?? { count: 0, since: now, fresh: true }
   }
 
+  /** Addresses blocked now: [{ ip, count, until }], most wrong logins first (at most limit). */
+  blockedAddresses(limit = 100, now = Date.now()) {
+    const list = [];
+    for (const [ip, entry] of this.addressFailures) {
+      const until = entry.since + serverOption.auth.failureWindowMs;
+      if (until > now && entry.count >= serverOption.auth.maxFailuresPerAddress) list.push({ ip, count: entry.count, until });
+    }
+    return list.sort((a, b) => b.count - a.count).slice(0, limit)
+  }
+
   /** True while this address has too many wrong logins: its logins are closed without a check. */
   addressBlocked(ip) {
     const entry = this.#addressEntry(ip);
@@ -10271,20 +10786,38 @@ class BohoAuth {
       this.addressFailures.set(peer.ip, entry);
     }
     entry.count++;
+    if (entry.count === serverOption.auth.maxFailuresPerAddress) {
+      const seconds = Math.round((entry.since + serverOption.auth.failureWindowMs - Date.now()) / 1000);
+      console.log(`[auth] ${peer.ip} blocked for ${Math.max(0, seconds)}s: ${entry.count} wrong logins`);
+      this.#fileLog({ event: 'block', ip: peer.ip, count: entry.count, seconds: Math.max(0, seconds) });
+    }
   }
 
   // countFailure: a wrong ID or key (not a refusal of a valid key, such as a duplicate login).
-  send_auth_fail(peer, reason, countFailure = false) {
+  // login: { id, authInfo } when known. The failure is counted in the summary, and for an ID with
+  // an owner (authInfo.uid) reported as an 'auth_fail' event (a duplicate login has its own event).
+  send_auth_fail(peer, reason, countFailure = false, login = null) {
     if (peer._closing || peer.state === STATE.CLOSED) return;
     peer.boho.isAuthorized = false;
     if (countFailure) this.#countFailure(peer);
-    const lastTry = countFailure && peer.authFailures >= serverOption.auth.maxFailuresPerConnection;
-    if (this.authLogger) {
-      let peerInfo = `FAIL #${peer.ssid} reason:${reason} `;
-      this.authLogger.log(peerInfo);
+    const kind = authFailKind(reason);
+    this.failureSummary.add(kind, peer.ip, login?.id);
+    const authInfo = login?.authInfo;
+    if (authInfo?.uid && kind !== 'duplicate') {
+      this.emitAuthEvent({
+        type: 'auth_fail', did: login.id, cid: authInfo.cid, uid: authInfo.uid,
+        ip: peer.ip, socketType: transportOf(peer), reason: kind, at: Date.now()
+      });
     }
+    const lastTry = countFailure && peer.authFailures >= serverOption.auth.maxFailuresPerConnection;
+    // A known ID always (someone has or guesses a real ID); an unknown one only at level 'all'.
+    const failRecord = { event: 'fail', kind, ...this.#peerOf(peer) };
+    if (login?.id !== undefined) failRecord.id = cleanId(login.id);
+    if (authInfo?.cid) failRecord.cid = authInfo.cid;
+    this.#fileLog(failRecord, !authInfo);
     // console.log('##### AUTH_FAIL reason: ', reason)
     peer.setState(STATE.AUTH_FAIL);
+    if (!lastTry) this.#closeLater(peer);
     // add some delay time.
     setTimeout(e => {
       if (!peer._closing && peer.state === STATE.AUTH_FAIL) {
@@ -10296,13 +10829,41 @@ class BohoAuth {
   }
 
 
+  // A refused connection left without a CID is closed after serverOption.auth.failCloseMs, unless
+  // it logs in or goes on anonymously meanwhile (its state is then no longer AUTH_FAIL).
+  #closeLater(peer) {
+    const ms = serverOption.auth.failCloseMs;
+    if (!(ms > 0)) return
+    clearTimeout(peer._authFailCloseTimer);
+    peer._authFailCloseTimer = setTimeout(() => {
+      peer._authFailCloseTimer = null;
+      if (!peer._closing && peer.state === STATE.AUTH_FAIL) peer.close();
+    }, ms);
+    peer._authFailCloseTimer.unref?.();
+  }
+
+  /**
+   * A Boho 2.x login request (an IOSignal 9.x client): answered with AUTH_FAIL, counted in the
+   * summary as 'boho2_client' and closed after failCloseMs like any refused login.
+   */
+  refuseClassic(peer) {
+    if (peer._closing || peer.state === STATE.CLOSED) return;
+    peer.boho.isAuthorized = false;
+    this.failureSummary.add('boho2_client', peer.ip);
+    this.#fileLog({ event: 'fail', kind: 'boho2_client', ...this.#peerOf(peer) }, true);
+    peer.setState(STATE.AUTH_FAIL);
+    peer.send(Buffer.from([mt.BohoMsg.AUTH_FAIL]));
+    this.#closeLater(peer);
+  }
+
   // The login could not be checked (key store unreachable): not an answer about the key. The
   // connection is closed, so the client connects and logs in again, instead of AUTH_FAIL, which
   // clients take as "wrong key" and do not retry.
   close_unavailable(peer, reason) {
     if (peer._closing || peer.state === STATE.CLOSED) return;
     console.error('BohoAuth: login not checked, closing the connection:', reason);
-    if (this.authLogger) this.authLogger.log(`UNAVAILABLE #${peer.ssid} reason:${reason} `);
+    this.failureSummary.add('unavailable', peer.ip);
+    this.#fileLog({ event: 'unavailable', ...this.#peerOf(peer), reason: String(reason).slice(0, 200) });
     peer.boho.isAuthorized = false;
     peer.close();
   }
@@ -10338,6 +10899,8 @@ class BohoAuth {
       if (!peer.checkAuthChallenge()) return;
       if (!(auth_req instanceof Uint8Array) || auth_req.length !== mt.MetaSize.AUTH_REQ ||
           auth_req[0] !== mt.BohoMsg.AUTH_REQ) {
+        this.failureSummary.add('bad_packet', peer.ip);
+        this.#fileLog({ event: 'fail', kind: 'bad_packet', ...this.#peerOf(peer) }, true);
         peer.securityMismatch('INVALID_AUTH_PACKET');
         return;
       }
@@ -10356,8 +10919,12 @@ class BohoAuth {
       }
 
       // Too many wrong logins from this address: not checked until its window has passed.
+      // Counted in the summary only: no line per attempt (its start is logged once, #countFailure).
       if (this.addressBlocked(peer.ip)) {
-        this.close_unavailable(peer, 'too many wrong logins from ' + peer.ip);
+        this.failureSummary.add('blocked', peer.ip, id);
+        this.#fileLog({ event: 'blocked', ...this.#peerOf(peer), id: cleanId(id) }, true);
+        peer.boho.isAuthorized = false;
+        peer.close();
         return
       }
 
@@ -10371,7 +10938,7 @@ class BohoAuth {
       }
       if (!peer.checkAuthChallenge()) return;
       if (!authInfo) {
-        this.send_auth_fail(peer, 'NO ID:' + id, true);
+        this.send_auth_fail(peer, 'NO ID:' + id, true, { id, authInfo });
         return
       }
 
@@ -10383,19 +10950,19 @@ class BohoAuth {
       //3. check the proof with the stored key (Boho 3, Ascon)
       const key = authInfo.key;
       if (typeof key !== 'string' || !key) {
-        this.send_auth_fail(peer, 'NO KEY:' + id, true);
+        this.send_auth_fail(peer, 'NO KEY:' + id, true, { id, authInfo });
         return
       }
       if (key.length === CLASSIC_HASH_LENGTH) {
         // A Boho 2.x (SHA-256) key hash: the ID was registered before Boho 3 and its key must be set again.
-        this.send_auth_fail(peer, 'BOHO 2.x KEY, SET IT AGAIN:' + id, true);
+        this.send_auth_fail(peer, 'BOHO 2.x KEY, SET IT AGAIN:' + id, true, { id, authInfo });
         return
       }
       if (STORED_KEY.test(key)) peer.boho.copy_key(Buffer.from(key, 'base64'));
       else peer.boho.set_key(key); // a provider that keeps the plain key
       let auth_res = peer.boho.verify_auth_req(auth_req);
       if (!auth_res) {
-        this.send_auth_fail(peer, 'hmac dismatched', true);
+        this.send_auth_fail(peer, 'hmac dismatched', true, { id, authInfo });
         return
       }
 
@@ -10406,7 +10973,7 @@ class BohoAuth {
       //4. role and quota. Checked before a duplicate login replaces the old connection.
       const role = resolveRole(authInfo.role);
       if (role === undefined) {
-        this.send_auth_fail(peer, 'unknown auth.role: ' + authInfo.role);
+        this.send_auth_fail(peer, 'unknown auth.role: ' + authInfo.role, false, { id, authInfo });
         return
       }
       // A login another server should take (beforeAccept) goes there before it is counted here or
@@ -10428,7 +10995,7 @@ class BohoAuth {
       }
       const quota = Object.hasOwn(peer.manager.quotas, quotaName) ? peer.manager.quotas[quotaName] : undefined;
       if (!quota) {
-        this.send_auth_fail(peer, 'unknown quota: ' + quotaName);
+        this.send_auth_fail(peer, 'unknown quota: ' + quotaName, false, { id, authInfo });
         return
       }
       if (peer._closing) return; // closed while resolving
@@ -10438,7 +11005,7 @@ class BohoAuth {
         const old = peer.manager.cid2remote.get(authInfo.cid);
         const replaced = old && old !== peer && old.accountUid === uid && this.duplicateLoginFor(peer) === 'keepNew' ? 1 : 0;
         if (peer.manager.accountConnections(uid) - replaced >= quota.maxConnections) {
-          this.send_auth_fail(peer, 'too many connections');
+          this.send_auth_fail(peer, 'too many connections', false, { id, authInfo });
           return
         }
       }
@@ -10459,7 +11026,7 @@ class BohoAuth {
           // keep old connection. reject new connection by sending auth_fail signal.
           // peer.send(authClearSignal)
           if( peer.socketType == 'websocket'){
-            this.send_auth_fail(peer, 'duplicate login');
+            this.send_auth_fail(peer, 'duplicate login', false, { id });
           }else {
             peer.setState(STATE.AUTH_FAIL);
             peer.close(); //arduino 
@@ -10514,11 +11081,7 @@ class BohoAuth {
       //10. send ack.
       peer.send(auth_res);
       peer.setState(STATE.AUTH_RES);
-      if (this.authLogger) {
-        let peerInfo = `OK #${peer.ssid} cid: ${peer.cid} did:${peer.did}`;
-        if (peer.isAdmin) peerInfo = "#ADMIN# " + peerInfo;
-        this.authLogger.log(peerInfo);
-      }
+      this.#fileLog({ event: 'ok', ...this.#peerOf(peer), id: cleanId(id), cid: peer.cid, role, ...(uid && { uid }) });
       return authInfo
     } catch (error) {
       console.log('verify_auth_req error', error);
@@ -11557,6 +12120,9 @@ class Server extends require$$0$3 {
    *   options.maxPayload: largest WebSocket message and CongSocket frame in bytes (default 32 MiB).
    *   options.maxBufferedBytes: close a peer whose unsent data exceeds this (default 64 MiB).
    *   options.membersOnly: only authenticated connections may send signals or subscribe.
+   *   options.connectionLimits: { newPerAddressPerMin, failedPerAddressPerMin, maxPerAddress, windowMs,
+   *   exempt } per public address, merged over serverOption.connectionLimits; false turns them off.
+   *   A connection over a limit is closed when accepted (WebSocket code 1013); see AddressLimiter.
    *   options.logMessages: log each received message after decryption: type and tag, never the payload.
    *   options.logStats: print a one-line summary every N ms (>= 1000; 0 = off); see stats().
    *   options.security: { maxClockSkewMs, authChallengeMaxAgeMs, maxReplayEntries, requireEncryption }.
@@ -11609,6 +12175,8 @@ class Server extends require$$0$3 {
       throw new RangeError("trustProxy must be true, false, 'private' or a positive integer");
     }
     this.membersOnly = boolean('membersOnly', options.membersOnly ?? serverOption.membersOnly);
+    // Per-address connection limits (AddressLimiter); adjustable later on server.connectionLimits.
+    this.connectionLimits = connectionLimits(options.connectionLimits, serverOption.connectionLimits);
     this.serviceNames = new Set();
     this.services = new Map();   // name -> service module (for lifecycle hooks)
     this.hosts = new Set();      // open hosts (server.host)
@@ -11722,7 +12290,11 @@ class Server extends require$$0$3 {
     });
 
     this.wss.on('connection', (ws, req) => {
+      // Too many connections from this address: closed before anything is sent (try again later).
+      const ip = getClientAddress(req, this.trustProxy).ip;
+      if (!this.manager.admitConnection(ip)) return ws.close(1013, 'too many connections')
       ws.socketType = 'websocket';
+      ws._limitIp = ip;
       this.manager.addRemote(ws, req);
     });
 
@@ -11733,6 +12305,9 @@ class Server extends require$$0$3 {
     this.congServer = net.createServer((socket) => {
       // Signals are small frames; send each immediately instead of waiting on Nagle.
       socket.setNoDelay(true);
+      const ip = normalizeIP(socket.remoteAddress) ?? '0.0.0.0';
+      if (!this.manager.admitConnection(ip)) return socket.destroy()
+      socket._limitIp = ip;
       this.manager.addRemote(socket);
     })
       .on('error', (err) => this.onListenerError('cong', err))

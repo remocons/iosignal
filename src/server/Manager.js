@@ -8,6 +8,7 @@ import { FileLogger } from './FileLogger.js'
 import { Metrics } from './Metrics.js'
 import { compileDeliveryPolicy, deliveryAllowed, normalizeDeliveryPolicy } from './deliveryPolicy.js'
 import { HostTable } from './Host.js'
+import { AddressLimiter, connectionLimits } from './AddressLimiter.js'
 
 // Characters of an anonymous CID after its '?': lowercase Crockford base32, easy to read aloud and type.
 export const ANONYMOUS_CID_ALPHABET = '0123456789abcdefghjkmnpqrstvwxyz'
@@ -34,19 +35,26 @@ export class Manager {
       policyDenied: 0,       // unicasts and CID publications a device's delivery policy kept back
       hostInbound: 0,        // client signals handed to a host (server.host)
       hostRejected: 0,       // signals to a host tag that were not handed over (E2E, malformed payload)
-      hostDenied: 0 };       // client signals to a tag a host owns, dropped
+      hostDenied: 0,         // client signals to a tag a host owns, dropped
+      connectionsRefused: 0 }; // connections closed when accepted: over a per-address limit
+
+    // Per-address connection limits: the Server's (adjustable there), else the defaults.
+    const defaultLimits = connectionLimits(undefined, serverOption.connectionLimits);
+    this.addressLimiter = new AddressLimiter(() => server?.connectionLimits ?? defaultLimits, {
+      onLimit: (ip, reason, count, ms) => this.onAddressLimit(ip, reason, count, ms)
+    });
 
     this.authManager = authManager;
 
     this.connectionLogger;
     if (serverOption.fileLogger.connection.use) {
-      this.connectionLogger = new FileLogger(serverOption.fileLogger.connection.path)
+      this.connectionLogger = new FileLogger(serverOption.fileLogger.connection.path, serverOption.fileLogger.connection)
       // console.log('Manager: begin file logger [connection]')
     }
 
     this.attackLogger;
     if (serverOption.fileLogger.attack.use) {
-      this.attackLogger = new FileLogger(serverOption.fileLogger.attack.path)
+      this.attackLogger = new FileLogger(serverOption.fileLogger.attack.path, serverOption.fileLogger.attack)
       // console.log('Manager: begin file logger.[attack]')
     }
 
@@ -176,6 +184,24 @@ export class Manager {
     }
   }
 
+  /** A socket from ip is being accepted: false when a per-address limit refuses it (close it then). */
+  admitConnection(ip) {
+    if (this.addressLimiter.admit(ip)) return true;
+    this.counters.connectionsRefused++;
+    return false;
+  }
+
+  // Logged once when an address starts being limited, never per refused connection.
+  onAddressLimit(ip, reason, count, ms) {
+    const limits = this.server?.connectionLimits ?? serverOption.connectionLimits;
+    const what = { new: 'new connections', failed: 'connections that ended without a CID', open: 'open connections' }[reason];
+    const text = reason === 'open'
+      ? `[conn] ${ip} has ${count} ${what}: new ones refused`
+      : `[conn] ${ip} limited for ${Math.round(ms / 1000)}s: ${count} ${what} in ${Math.round(limits.windowMs / 1000)}s`;
+    console.log(text);
+    this.authManager?.authLogger?.write?.({ event: 'conn_limit', ip, reason, count, seconds: Math.round(ms / 1000) });
+  }
+
   addRemote(socket, req) {
     socket.isAlive = true;
     let remote = new Remote(socket, req, this)
@@ -196,6 +222,13 @@ export class Manager {
   removeRemote(remote) {
 
     remote._closing = true;
+    // A connection accepted through admitConnection: counted out; one that never got a CID (a
+    // refused login, a Boho 2.x or broken client) counts as failed for its address.
+    const limitIp = remote.socket?._limitIp;
+    if (limitIp !== undefined) {
+      remote.socket._limitIp = undefined;
+      this.addressLimiter.closed(limitIp, !remote.cid);
+    }
     this.removeAccountConnection(remote);
     this.pingGroups[remote.pingGroup]?.delete(remote);
     this.heartbeatPending.delete(remote);

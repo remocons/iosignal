@@ -681,10 +681,99 @@ declare class IOWS extends IOCore {
     socket_send(data: any): void;
 }
 
+/**
+ * Connections per public address, checked when a socket is accepted, before anything is sent:
+ *  - new:    more than newPerAddressPerMin new connections in a window → refused until it ends
+ *  - failed: failedPerAddressPerMin connections in a window that ended without a CID (a refused
+ *            login, a Boho 2.x client, a broken or scanning client) → refused until it ends
+ *  - open:   maxPerAddress connections open at once → further ones refused while they stay
+ * Connections already open are never touched. Loopback, private and exempt addresses are not
+ * counted (a proxy, a LAN, other servers). A refused connection is closed at once and costs no
+ * key lookup; well-behaved clients reconnect later on their own.
+ *
+ * The limits object is read on every call, so a running server can adjust it.
+ */
+declare class AddressLimiter {
+    /**
+     * @param {() => object} getLimits returns the limits in force (see connectionLimits)
+     * @param {{ onLimit?: (ip: string, reason: 'new' | 'failed' | 'open', count: number, ms: number) => any }} [options]
+     *   onLimit: called once when an address starts being limited (ms: for how long; 0 for 'open').
+     */
+    constructor(getLimits: () => object, { onLimit }?: {
+        onLimit?: (ip: string, reason: "new" | "failed" | "open", count: number, ms: number) => any;
+    });
+    getLimits: () => object;
+    onLimit: ((ip: string, reason: "new" | "failed" | "open", count: number, ms: number) => any) | null;
+    addresses: Map<any, any>;
+    refused: {
+        new: number;
+        failed: number;
+        open: number;
+    };
+    /**
+     * A new connection from ip: true to accept it (it is then counted as open; call closed() when it
+     * ends), false to close it at once. Its reason is in lastRefusal.
+     */
+    admit(ip: any, now?: number): boolean;
+    lastRefusal: any;
+    /**
+     * An accepted connection from ip ended. failed: it never got a CID (a refused login, a Boho 2.x
+     * client, a broken client); too many of those in a window limit the address.
+     */
+    closed(ip: any, failed?: boolean, now?: number): void;
+    /** Addresses limited now: [{ ip, reason, count, until }] (most first, at most limit), and those at maxPerAddress. */
+    limited(limit?: number, now?: number): {
+        ip: any;
+        reason: any;
+        count: any;
+        until: any;
+    }[];
+    /** Open connections counted for an address (0 for an exempt one). */
+    openCount(ip: any): any;
+    #private;
+}
+
+/**
+ * Appends lines to a file, with size-based rotation. A write error never throws: it is reported
+ * once, lines are dropped for a minute, then writing is tried again (a full disk may recover).
+ *
+ * Rotation: when the file reaches maxBytes it becomes `path.1` (`.1` → `.2` …, at most keep old
+ * files) and a new file is started. maxBytes 0 turns rotation off. Another process may rotate the
+ * same path (or logrotate may move it): the logger then reopens the path instead of rotating again.
+ * With logrotate, `copytruncate` also works (writes append at the current end).
+ */
 declare class FileLogger {
-    constructor(path: any);
+    /**
+     * @param {string} path
+     * @param {{ maxBytes?: number, keep?: number }} [options] defaults: 10 MiB, 5 old files
+     */
+    constructor(path: string, { maxBytes, keep }?: {
+        maxBytes?: number;
+        keep?: number;
+    });
+    path: string;
+    maxBytes: number;
+    keep: number;
     file: number;
-    log(msg: any): void;
+    ino: number;
+    size: number;
+    retryAt: number;
+    dropped: number;
+    /** Appends one line (a newline is added). Returns false when the line was dropped. */
+    writeLine(line: any): boolean;
+    /** Appends a text line, prefixed with the time (ISO 8601, UTC). */
+    log(msg: any): boolean;
+    /** Opens the path again, e.g. after logrotate moved the file without copytruncate. */
+    reopen(): void;
+    close(): void;
+    #private;
+}
+/**
+ * One JSON object per line ({"at": ISO time, ...record}), for jq and fail2ban. log(text) writes
+ * {"at", "event": "note", "text"} so text callers keep working.
+ */
+declare class JsonLinesLogger extends FileLogger {
+    write(record: any): boolean;
 }
 
 /**
@@ -954,7 +1043,9 @@ declare class Manager {
         hostInbound: number;
         hostRejected: number;
         hostDenied: number;
+        connectionsRefused: number;
     };
+    addressLimiter: AddressLimiter;
     authManager: any;
     connectionLogger: FileLogger | undefined;
     attackLogger: FileLogger | undefined;
@@ -1001,6 +1092,9 @@ declare class Manager {
     deliveryDenied(device: any, other: any, kind: any): void;
     removeAccountConnection(remote: any): void;
     heartbeatTick(): void;
+    /** A socket from ip is being accepted: false when a per-address limit refuses it (close it then). */
+    admitConnection(ip: any): boolean;
+    onAddressLimit(ip: any, reason: any, count: any, ms: any): void;
     addRemote(socket: any, req: any): void;
     removeRemote(remote: any): void;
     serverSignal(obj: any): void;
@@ -1200,6 +1294,9 @@ declare class Server extends EventEmitter$1<[never]> {
      *   options.maxPayload: largest WebSocket message and CongSocket frame in bytes (default 32 MiB).
      *   options.maxBufferedBytes: close a peer whose unsent data exceeds this (default 64 MiB).
      *   options.membersOnly: only authenticated connections may send signals or subscribe.
+     *   options.connectionLimits: { newPerAddressPerMin, failedPerAddressPerMin, maxPerAddress, windowMs,
+     *   exempt } per public address, merged over serverOption.connectionLimits; false turns them off.
+     *   A connection over a limit is closed when accepted (WebSocket code 1013); see AddressLimiter.
      *   options.logMessages: log each received message after decryption: type and tag, never the payload.
      *   options.logStats: print a one-line summary every N ms (>= 1000; 0 = off); see stats().
      *   options.security: { maxClockSkewMs, authChallengeMaxAgeMs, maxReplayEntries, requireEncryption }.
@@ -1232,6 +1329,7 @@ declare class Server extends EventEmitter$1<[never]> {
     logStats: any;
     trustProxy: any;
     membersOnly: boolean;
+    connectionLimits: any;
     serviceNames: Set<any>;
     services: Map<any, any>;
     hosts: Set<any>;
@@ -1340,6 +1438,13 @@ declare namespace serverOption {
     export let trustProxy: string;
     export let maxBufferedBytes: number;
     export let membersOnly: boolean;
+    export namespace connectionLimits {
+        let newPerAddressPerMin: number;
+        let failedPerAddressPerMin: number;
+        let maxPerAddress: number;
+        let windowMs: number;
+        let exempt: never[];
+    }
     export let logMessages: boolean;
     export let logStats: number;
     export namespace security {
@@ -1415,25 +1520,38 @@ declare namespace serverOption {
         namespace connection {
             let use: boolean;
             let path: string;
+            let maxBytes: number;
+            let keep: number;
         }
         namespace auth {
             let use_1: boolean;
             export { use_1 as use };
             let path_1: string;
             export { path_1 as path };
+            export let level: string;
+            let maxBytes_1: number;
+            export { maxBytes_1 as maxBytes };
+            let keep_1: number;
+            export { keep_1 as keep };
         }
         namespace attack {
             let use_2: boolean;
             export { use_2 as use };
             let path_2: string;
             export { path_2 as path };
+            let maxBytes_2: number;
+            export { maxBytes_2 as maxBytes };
+            let keep_2: number;
+            export { keep_2 as keep };
         }
     }
     export namespace auth_1 {
         let failDelay: number;
+        let failCloseMs: number;
         let maxFailuresPerConnection: number;
         let maxFailuresPerAddress: number;
         let failureWindowMs: number;
+        let summaryMs: number;
         let duplicateLogin: string;
     }
     export { auth_1 as auth };
@@ -1574,24 +1692,110 @@ declare function getPayloadFromSignalPack(signalPack: any): any;
 declare function hasRole(remote: any, role: any): boolean;
 /** Default quota profile of a login: the account's quota, else 'basic' for a device, 'unlimited' otherwise. */
 declare function defaultQuota(authInfo: any, role: any): any;
+/**
+ * Failed logins in a time window: counts by kind, address and login ID, reported once when the
+ * window ends. Nothing runs while no login fails (the window starts with its first failure).
+ */
+declare class AuthFailureSummary {
+    /** @param {{ windowMs: () => number, onSummary: (summary: object) => any }} options */
+    constructor({ windowMs, onSummary }: {
+        windowMs: () => number;
+        onSummary: (summary: object) => any;
+    });
+    windowMs: () => number;
+    onSummary: (summary: object) => any;
+    last: {
+        total: number | undefined;
+        kinds: {
+            [k: string]: any;
+        };
+        ips: number;
+        topIps: any[];
+        ids: number;
+        topIds: any[];
+        seq: number;
+        since: number;
+        until: number;
+    } | null;
+    recent: any[];
+    seq: number;
+    /** The window in progress, as a summary without until; null while no login has failed in it. */
+    current(): {
+        since: number;
+        total: number | undefined;
+        kinds: {
+            [k: string]: any;
+        };
+        ips: number;
+        topIps: any[];
+        ids: number;
+        topIds: any[];
+    } | null;
+    since: number | undefined;
+    total: number | undefined;
+    kinds: Map<any, any> | undefined;
+    ips: Map<any, any> | undefined;
+    ids: Map<any, any> | undefined;
+    otherIps: number | undefined;
+    otherIds: number | undefined;
+    timer: NodeJS.Timeout | null | undefined;
+    add(kind: any, ip: any, id: any): void;
+    /** Ends the window now: returns its summary (null when nothing failed) and reports it. */
+    flush(): {
+        total: number | undefined;
+        kinds: {
+            [k: string]: any;
+        };
+        ips: number;
+        topIps: any[];
+        ids: number;
+        topIds: any[];
+        seq: number;
+        since: number;
+        until: number;
+    } | null;
+    close(): void;
+    #private;
+}
 declare const ROLES: string[];
 declare class BohoAuth {
     /**
      * @param {object} keyProvider
      * @param {{ duplicateLogin?: 'keepOld' | 'keepNew', onAuthEvent?: (event: object) => any,
+     *   onAuthSummary?: (summary: object) => any, summaryMs?: number,
+     *   fileLog?: false | { path?: string, level?: 'normal' | 'all', maxBytes?: number, keep?: number },
      *   resolveQuota?: (authInfo: object, role: string) => string | Promise<string> }} [options]
      *   duplicateLogin: unset follows serverOption.auth.duplicateLogin (default 'keepNew').
      *   A Server's duplicateLogin option takes precedence for that Server's connections.
      *   onAuthEvent: called with { type, did, cid, uid, ip, oldIp, socketType, oldSocketType, reason, at }
-     *   for 'replaced' (keepNew evicted the old connection) and 'duplicate_rejected' (keepOld).
+     *   for 'replaced' (keepNew evicted the old connection) and 'duplicate_rejected' (keepOld), and
+     *   { type: 'auth_fail', did, cid, uid, ip, socketType, reason: kind, at } for a failed login of an
+     *   ID that has an owner (authInfo.uid; kind from authFailKind, e.g. 'wrong_key'). An unknown ID
+     *   has no event: it is only counted in the summary.
      *   socketType/oldSocketType are 'websocket' or 'congsocket'.
      *   Errors and rejected promises are logged and never affect authentication.
      *   resolveQuota: name of the Server quota profile for a login (default: defaultQuota), e.g. from
      *   the account owner's plan. An unknown name fails the login.
+     *   onAuthSummary: called with each failed-login summary { seq, since, until, total, kinds, ips, topIps,
+     *   ids, topIds } (default: one console line, formatAuthSummary). summaryMs: its window, default
+     *   serverOption.auth.summaryMs; 0 turns it off.
+     *   fileLog: the auth file log of this instance, JSON Lines with { at, event, ... }: 'ok' (login,
+     *   with id, cid, role, uid), 'fail' (kind, id, cid when known), 'block' (an address blocked),
+     *   'summary', 'unavailable'; at level 'all' also 'fail' for unknown IDs and bad packets and
+     *   'blocked' (an attempt from a blocked address). Never a key. Without it,
+     *   serverOption.fileLogger.auth applies when its use is true; false turns it off here.
      */
     constructor(keyProvider: object, options?: {
         duplicateLogin?: "keepOld" | "keepNew";
         onAuthEvent?: (event: object) => any;
+        onAuthSummary?: (summary: object) => any;
+        summaryMs?: number;
+        fileLog?: false | {
+            path?: string;
+            level?: "normal" | "all";
+            maxBytes?: number;
+            keep?: number;
+        };
         resolveQuota?: (authInfo: object, role: string) => string | Promise<string>;
     });
     keyProvider: object;
@@ -1603,15 +1807,29 @@ declare class BohoAuth {
     onAuthEvent: ((event: object) => any) | null;
     resolveQuota: typeof defaultQuota | ((authInfo: object, role: string) => string | Promise<string>);
     addressFailures: Map<any, any>;
-    authLogger: FileLogger | undefined;
+    onAuthSummary: (summary: object) => any;
+    failureSummary: AuthFailureSummary;
+    authLogLevel: string;
+    authLogger: JsonLinesLogger | undefined;
     /** Policy for a connection: its Server's duplicateLogin option, else this instance's policy. */
     duplicateLoginFor(peer: any): any;
     set keepOldConnection(keepOld: boolean);
     get keepOldConnection(): boolean;
     emitAuthEvent(event: any): void;
+    /** Addresses blocked now: [{ ip, count, until }], most wrong logins first (at most limit). */
+    blockedAddresses(limit?: number, now?: number): {
+        ip: any;
+        count: any;
+        until: any;
+    }[];
     /** True while this address has too many wrong logins: its logins are closed without a check. */
     addressBlocked(ip: any): boolean;
-    send_auth_fail(peer: any, reason: any, countFailure?: boolean): void;
+    send_auth_fail(peer: any, reason: any, countFailure?: boolean, login?: null): void;
+    /**
+     * A Boho 2.x login request (an IOSignal 9.x client): answered with AUTH_FAIL, counted in the
+     * summary as 'boho2_client' and closed after failCloseMs like any refused login.
+     */
+    refuseClassic(peer: any): void;
     close_unavailable(peer: any, reason: any): void;
     /**
      * Hook for a subclass: decide where a verified login belongs before it is accepted.
