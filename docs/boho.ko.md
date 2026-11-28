@@ -121,12 +121,12 @@ JS 클라이언트 시계는 허용 범위 안에 있어야 합니다. Boho Ardu
 const server = new Server({
   port: 7777,
   congPort: 8888,
-  localAuth: { mode: 'sharedKey', key: 'lab2026', quota: 'basic' },
+  localAuth: { mode: 'sharedKey', key: 'lab2026' },
   membersOnly: true
 });
 ```
 
-- `role`(기본 `'device'`)과 `quota`(`quotas` 프로필 이름, 기본은 device의 `basic`)가
+- `role`(기본 `'device'`)과 `quota`(`quotas`에 정의한 프로필 이름, 기본은 없음 = 제한 없음)가
   모든 로그인에 적용됩니다. 9.0부터 `level`을 대신합니다.
 - 익명 연결도 계속 받습니다. `membersOnly: true`를 주면 익명 연결의 시그널을 막습니다.
 - `duplicateLogin`, `onAuthEvent`는 일반 `BohoAuth`와 같이 동작합니다. `localAuth`와

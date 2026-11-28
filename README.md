@@ -231,20 +231,24 @@ how much it may send. They are independent.
   `admin`, `RedisService(client, minRole)` defaults to `service`.
 - Quota profiles are named sets of limits in the `quotas` server option:
   `maxMessageBytes`, `fanout` (subscribers one publish reaches), `msgPerSec`,
-  `bytesPerSec`, `maxConnections` per account and `maxSubscriptions` (tags one
-  connection may be subscribed to). `null` means unlimited.
-  The server always enforces them. Unauthenticated connections use
-  `anonymousQuota`; a login uses its key entry's quota, or the result of the
-  `BohoAuth` `resolveQuota(authInfo, role)` option.
-- The built-in profiles (`anonymous`, `basic`, `pro`, `unlimited` in
-  `serverOption.quotas`) are starting points for the operator to tune, not
-  values to rely on. Clients read `io.quota.maxMessageBytes` after `ready`.
+  `bytesPerSec`, `maxConnections` per account, `maxSubscriptions` (tags one
+  connection may be subscribed to) and `deliveriesPerSec`. A missing limit or
+  `null` means unlimited.
+- **Nothing is limited by default.** There are no built-in profiles:
+  unauthenticated connections use `anonymousQuota` (default `null`, unlimited),
+  and a login uses its key entry's quota or the result of the `BohoAuth`
+  `resolveQuota(authInfo, role)` option (none: unlimited). Per-address limits
+  (`connectionLimits`), retain budgets (`retain`) and the delivery policy of
+  owned devices (`deliveryPolicy`) are off by default too. Turn on what your
+  deployment needs. Clients read `io.quota.maxMessageBytes` after `ready`.
 
 ```js
 const server = new Server({
   port: 7777,
-  quotas: { anonymous: { maxMessageBytes: 64 * 1024 }, basic: { fanout: 200 } },
-  anonymousQuota: 'anonymous'
+  // your own profile names and limits; logins pick one with key entry 'id.key.cid.device.basic'
+  quotas: { guest: { maxMessageBytes: 64 * 1024, msgPerSec: 100 }, basic: { fanout: 200 } },
+  anonymousQuota: 'guest',
+  connectionLimits: { maxPerAddress: 200, newPerAddressPerMin: 300 }
 }, new BohoAuth(new StringKeyProvider('dev1.k1.dev1,cli.k2.cli.admin')));
 ```
 

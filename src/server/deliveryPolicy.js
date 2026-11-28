@@ -4,14 +4,16 @@
  * The policy belongs to an owned device (one whose login has a uid) and comes with its login
  * (authInfo.rxPolicy from the key provider, JSON text or an object) or later from
  * Manager.setDeliveryPolicy(). A device without an owner uid is never filtered.
- * An owned device without a stored policy uses mode 'home' (2026-11-27; before that, no policy was open).
+ * An owned device without a stored policy uses the Server's deliveryPolicy option: null (the default) is
+ * open, so nothing is filtered unless the operator chooses a policy (2026-11-29; from 2026-11-27 to then
+ * it was mode 'home'; before that, open).
  *
  * {
  *   v: 1,
  *   mode: 'home' | 'open' | 'allowlist' | 'denylist',
  *                                               // home: its own network (same public IP, HOME_CHANNEL) and the
- *                                               //   listed senders (the default for an owned device);
- *                                               // open: everyone, anywhere (only when chosen)
+ *                                               //   listed senders (e.g. the Server option deliveryPolicy: 'home');
+ *                                               // open: everyone, anywhere (also when nothing is chosen)
  *   anonymous: 'allow' | 'deny',                // default: allow for denylist, deny otherwise (home: anonymous
  *                                               //   senders on its own network are let in by rule 5 anyway)
  *   publish: 'all' | 'policy',                  // who gets its CID publications ('@topic', '@$topic'):
@@ -37,8 +39,8 @@
  */
 
 export const DELIVERY_POLICY_MODES = Object.freeze(['home', 'open', 'allowlist', 'denylist'])
-// What an owned device without a stored policy uses.
-export const DEFAULT_DELIVERY_POLICY = Object.freeze({ v: 1, mode: 'home', anonymous: 'deny', publish: 'all', allow: Object.freeze({ cids: [], uids: [] }), deny: Object.freeze({ cids: [], uids: [] }) })
+// The 'home' policy as a whole, for a Server's deliveryPolicy option.
+export const HOME_DELIVERY_POLICY = Object.freeze({ v: 1, mode: 'home', anonymous: 'deny', publish: 'all', allow: Object.freeze({ cids: [], uids: [] }), deny: Object.freeze({ cids: [], uids: [] }) })
 export const DELIVERY_POLICY_MAX_ENTRIES = 200
 const ENTRY_MAX_LENGTH = 64
 const LISTS = ['cids', 'uids']
@@ -97,15 +99,15 @@ export function normalizeDeliveryPolicy(raw) {
 
 /**
  * The form Manager checks per message, or null when nothing is filtered (no owner, or mode open).
- * No stored policy is DEFAULT_DELIVERY_POLICY (home).
+ * No stored policy is `fallback` (the Server's deliveryPolicy option, null: open).
  * Never throws: a stored policy that cannot be read only lets the owner's own senders through
  * (fail closed), since ignoring it would deliver what the owner asked to block.
  */
-export function compileDeliveryPolicy(raw, ownerUid) {
+export function compileDeliveryPolicy(raw, ownerUid, fallback = null) {
   if (typeof ownerUid !== 'string' || !ownerUid) return null
   let policy
   try {
-    policy = normalizeDeliveryPolicy(raw) ?? DEFAULT_DELIVERY_POLICY
+    policy = normalizeDeliveryPolicy(raw) ?? fallback
   } catch (error) {
     console.warn(`[iosignal] unreadable delivery policy of uid ${ownerUid}, owner only:`, error.message)
     policy = { mode: 'allowlist', anonymous: 'deny', publish: 'policy', allow: { cids: [], uids: [] }, deny: { cids: [], uids: [] } }

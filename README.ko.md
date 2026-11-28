@@ -221,19 +221,21 @@ new Server({ port: 7777, localAuth: { mode: 'sharedKey', key: 'lab2026' } })  //
   `RedisService(client, minRole)`의 기본값은 `service`입니다.
 - 쿼터 프로필은 `quotas` 서버 옵션에 이름으로 정의한 제한 묶음입니다.
   `maxMessageBytes`, `fanout`(발행 한 건이 전달되는 구독자 수), `msgPerSec`, `bytesPerSec`,
-  계정별 `maxConnections`, 연결 하나가 구독할 수 있는 태그 수 `maxSubscriptions`를 지정하며
-  `null`은 무제한입니다. 서버가 항상 적용합니다.
-  미로그인 연결은 `anonymousQuota`를, 로그인은 키 항목의 quota 또는
-  `BohoAuth`의 `resolveQuota(authInfo, role)` 옵션 결과를 사용합니다.
-- 내장 프로필(`serverOption.quotas`의 `anonymous`, `basic`, `pro`, `unlimited`)은 운영자가
-  조정하기 위한 시작값이며 보장된 값이 아닙니다. 클라이언트는 `ready` 이후
-  `io.quota.maxMessageBytes`를 읽습니다.
+  계정별 `maxConnections`, 연결 하나가 구독할 수 있는 태그 수 `maxSubscriptions`,
+  `deliveriesPerSec`를 지정하며, 빠진 값이나 `null`은 무제한입니다.
+- **기본으로는 아무것도 제한하지 않습니다.** 내장 프로필이 없습니다. 미로그인 연결은
+  `anonymousQuota`(기본 `null`, 제한 없음)를, 로그인은 키 항목의 quota 또는 `BohoAuth`의
+  `resolveQuota(authInfo, role)` 결과(없으면 제한 없음)를 씁니다. 주소별 연결 제한
+  (`connectionLimits`), retain 예산(`retain`), 소유 장치의 수신 정책(`deliveryPolicy`)도 기본은
+  꺼져 있습니다. 필요한 것만 켜세요. 클라이언트는 `ready` 이후 `io.quota.maxMessageBytes`를 읽습니다.
 
 ```js
 const server = new Server({
   port: 7777,
-  quotas: { anonymous: { maxMessageBytes: 64 * 1024 }, basic: { fanout: 200 } },
-  anonymousQuota: 'anonymous'
+  // 프로필 이름과 값은 운영자가 정합니다. 로그인은 키 항목 'id.key.cid.device.basic'으로 고릅니다.
+  quotas: { guest: { maxMessageBytes: 64 * 1024, msgPerSec: 100 }, basic: { fanout: 200 } },
+  anonymousQuota: 'guest',
+  connectionLimits: { maxPerAddress: 200, newPerAddressPerMin: 300 }
 }, new BohoAuth(new StringKeyProvider('dev1.k1.dev1,cli.k2.cli.admin')));
 ```
 

@@ -7600,15 +7600,15 @@ const serverOption = {
   // Over a rate limit the address's new connections are closed at once until the window ends; open
   // ones are never touched. 0 turns a limit off. Loopback, private and exempt addresses are not
   // counted. A Server's connectionLimits option is merged over this (false: all off).
-  // msgPerAddressPerSec, bytesPerAddressPerSec: what all the anonymous-quota connections of one address may
-  // send together (token bucket, 1 s burst); over: dropped and told once (quota_exceeded). Without it the
-  // per-connection quota multiplies by maxPerAddress (2026-11-28).
+  // msgPerAddressPerSec, bytesPerAddressPerSec: what all the anonymous connections of one address may
+  // send together (token bucket, 1 s burst); over: dropped and told once (quota_exceeded).
+  // All off by default (2026-11-29): an operator turns on what the deployment needs.
   connectionLimits: {
-    newPerAddressPerMin: 300,
-    failedPerAddressPerMin: 30,
-    maxPerAddress: 1000,
-    msgPerAddressPerSec: 1000,
-    bytesPerAddressPerSec: 8 * 1024 * 1024,
+    newPerAddressPerMin: 0,
+    failedPerAddressPerMin: 0,
+    maxPerAddress: 0,
+    msgPerAddressPerSec: 0,
+    bytesPerAddressPerSec: 0,
     windowMs: 60000,
     exempt: []
   },
@@ -7628,10 +7628,11 @@ const serverOption = {
     // Off by default: a client with encMode NO would be closed.
     requireEncryption: false
   },
-  // Named quota profiles. A connection uses one: an anonymous connection the Server's
-  // anonymousQuota, an authenticated one the profile its account resolves to (see BohoAuth
-  // resolveQuota). null is unlimited. A Server merges its quotas option over these per profile
-  // and may add profiles; a running server's profiles can be adjusted (server.quotas.basic.fanout = 50).
+  // Quota profiles: none by default, so every connection is unlimited (2026-11-29). An operator who
+  // wants limits names its own profiles in the Server's quotas option and picks one with
+  // anonymousQuota (connections that have not authenticated) and BohoAuth resolveQuota or a key
+  // entry's quota (logins). null is unlimited; a running server's profiles can be adjusted
+  // (server.quotas.<name>.fanout = 50).
   //   maxMessageBytes: largest message the connection may send (larger: OVER_SIZE, dropped)
   //   fanout:          most subscribers one channel publish is delivered to
   //   msgPerSec, bytesPerSec: sustained receive rate (token bucket, 1 s burst); over: dropped
@@ -7639,29 +7640,30 @@ const serverOption = {
   //   maxSubscriptions: tags one connection may be subscribed to at a time; over: the tag is left out
   //   deliveriesPerSec: subscribers the connection's publishes reach per second in all (token bucket,
   //                    1 s burst; msgPerSec × fanout without it); over: a publish reaches fewer, like fanout
-  quotas: {
-    anonymous: { maxMessageBytes: 256 * 1024, fanout: 1000, msgPerSec: 100, bytesPerSec: 2 * 1024 * 1024, maxConnections: null, maxSubscriptions: 1000, deliveriesPerSec: 2000 },
-    basic: { maxMessageBytes: 1024 * 1024, fanout: 1000, msgPerSec: 200, bytesPerSec: 4 * 1024 * 1024, maxConnections: 20, maxSubscriptions: 2000, deliveriesPerSec: 10000 },
-    pro: { maxMessageBytes: 4 * 1024 * 1024, fanout: 10000, msgPerSec: 1000, bytesPerSec: 16 * 1024 * 1024, maxConnections: 200, maxSubscriptions: 10000, deliveriesPerSec: 50000 },
-    unlimited: { maxMessageBytes: null, fanout: null, msgPerSec: null, bytesPerSec: null, maxConnections: null, maxSubscriptions: null, deliveriesPerSec: null }
-  },
-  anonymousQuota: 'anonymous', // profile of a connection that has not authenticated
+  quotas: {},
+  anonymousQuota: null, // profile of a connection that has not authenticated (null: unlimited)
+
+  // Delivery policy of an owned device (its login has a uid) that has none stored: null lets everyone
+  // reach it ('open'). An operator may give a mode ('home', 'allowlist', 'denylist') or a whole
+  // policy, see deliveryPolicy.js. Devices without an owner are never filtered.
+  deliveryPolicy: null,
 
   retain: {
     enabled: true,
-    limitSize: 100000,      // a retained message must be smaller than this many bytes
-    limitCounter: 1000,     // channel retain tags per server, and CID retain tags per connection
+    // Budgets, null (unlimited) by default (2026-11-29); an operator sets what memory allows.
+    limitSize: null,        // a retained message must be smaller than this many bytes
+    limitCounter: null,     // channel retain tags per server, and CID retain tags per connection
     // A channel retain belongs to its last writer: an authenticated account (CID, shared by its
     // connections) or a live anonymous connection. Each owner holds at most tagsPerOwner tags and
     // bytesPerOwner bytes. An account's values stay until restart; a closed anonymous connection's
     // move to its network's grace pool (same budget) and are removed after anonymousGraceMs.
-    tagsPerOwner: 32,
-    bytesPerOwner: 1024 * 1024,
+    tagsPerOwner: null,
+    bytesPerOwner: null,
     anonymousGraceMs: 60 * 60 * 1000,
     // CID retains of one connection (removed with it), and all retained messages of the server.
     // A value over budget is not stored, and removes the value it would have replaced.
-    bytesPerConnection: 1024 * 1024,
-    bytesTotal: 256 * 1024 * 1024
+    bytesPerConnection: null,
+    bytesTotal: null
   },
 
   // --- Process-wide: read directly where used, not per Server ---
@@ -7768,6 +7770,13 @@ class EmptyMap extends Map {
 }
 const NO_RETAINS = new EmptyMap();
 
+// No limits: the quota of a connection without a profile (the default, see serverOption.quotas).
+const UNLIMITED_QUOTA = Object.freeze({ maxMessageBytes: null, fanout: null, msgPerSec: null, bytesPerSec: null,
+  maxConnections: null, maxSubscriptions: null, deliveriesPerSec: null });
+function quotaOf(manager, name) {
+  return name === null ? UNLIMITED_QUOTA : manager.quotas[name] ?? UNLIMITED_QUOTA
+}
+
 class RemoteCore {
   constructor(socket, manager) {
 
@@ -7807,9 +7816,10 @@ class RemoteCore {
     this.accountUid = null;  // counted in manager.accountConnections while authenticated with a uid
     this.ownerUid = null;    // the device's owner (login uid); a web sign-in later changes uid, not this
     this.rxPolicy = null;    // compiled delivery policy of an owned device, see deliveryPolicy.js
-    // Quota profile (a server.quotas entry, read live): the anonymous one until authenticated.
-    this.quotaName = manager.anonymousQuota;
-    this.quota = manager.quotas[this.quotaName];
+    // Quota profile (a server.quotas entry, read live): the anonymous one until authenticated;
+    // no profile (null) is unlimited.
+    this.quotaName = manager.anonymousQuota ?? null;
+    this.quota = quotaOf(manager, this.quotaName);
     this._rateAt = null; // token buckets of quota msgPerSec / bytesPerSec
     this._msgTokens = 0;
     this._byteTokens = 0;
@@ -7888,8 +7898,8 @@ class RemoteCore {
 
   // Switches to a server.quotas profile; tell: send it to the client (QUOTA: its maxMessageBytes).
   setQuota(name, tell) {
-    this.quotaName = name;
-    this.quota = this.manager.quotas[name];
+    this.quotaName = name ?? null;
+    this.quota = quotaOf(this.manager, this.quotaName);
     this._quotaNoticed = null; // a new profile: its limits may be told once again (noticeQuota)
     // The CongSocket frame ceiling follows maxMessageBytes.
     this.refreshRxFrameLimit?.();
@@ -7941,7 +7951,7 @@ class RemoteCore {
     }
     // All the anonymous connections of one address together (connectionLimits msg/bytesPerAddressPerSec).
     const limitIp = this.socket?._limitIp;
-    if (limitIp !== undefined && this.quotaName === this.manager.anonymousQuota) {
+    if (limitIp !== undefined && !this.boho?.isAuthorized) {
       const over = this.manager.addressLimiter?.takeRate(limitIp, rxBytes);
       if (over) {
         this.manager.counters.addressRateLimited++;
@@ -9082,14 +9092,16 @@ function limitedText(counters, previous) {
  * The policy belongs to an owned device (one whose login has a uid) and comes with its login
  * (authInfo.rxPolicy from the key provider, JSON text or an object) or later from
  * Manager.setDeliveryPolicy(). A device without an owner uid is never filtered.
- * An owned device without a stored policy uses mode 'home' (2026-11-27; before that, no policy was open).
+ * An owned device without a stored policy uses the Server's deliveryPolicy option: null (the default) is
+ * open, so nothing is filtered unless the operator chooses a policy (2026-11-29; from 2026-11-27 to then
+ * it was mode 'home'; before that, open).
  *
  * {
  *   v: 1,
  *   mode: 'home' | 'open' | 'allowlist' | 'denylist',
  *                                               // home: its own network (same public IP, HOME_CHANNEL) and the
- *                                               //   listed senders (the default for an owned device);
- *                                               // open: everyone, anywhere (only when chosen)
+ *                                               //   listed senders (e.g. the Server option deliveryPolicy: 'home');
+ *                                               // open: everyone, anywhere (also when nothing is chosen)
  *   anonymous: 'allow' | 'deny',                // default: allow for denylist, deny otherwise (home: anonymous
  *                                               //   senders on its own network are let in by rule 5 anyway)
  *   publish: 'all' | 'policy',                  // who gets its CID publications ('@topic', '@$topic'):
@@ -9115,8 +9127,6 @@ function limitedText(counters, previous) {
  */
 
 const DELIVERY_POLICY_MODES = Object.freeze(['home', 'open', 'allowlist', 'denylist']);
-// What an owned device without a stored policy uses.
-const DEFAULT_DELIVERY_POLICY = Object.freeze({ v: 1, mode: 'home', anonymous: 'deny', publish: 'all', allow: Object.freeze({ cids: [], uids: [] }), deny: Object.freeze({ cids: [], uids: [] }) });
 const DELIVERY_POLICY_MAX_ENTRIES = 200;
 const ENTRY_MAX_LENGTH = 64;
 const LISTS = ['cids', 'uids'];
@@ -9175,15 +9185,15 @@ function normalizeDeliveryPolicy(raw) {
 
 /**
  * The form Manager checks per message, or null when nothing is filtered (no owner, or mode open).
- * No stored policy is DEFAULT_DELIVERY_POLICY (home).
+ * No stored policy is `fallback` (the Server's deliveryPolicy option, null: open).
  * Never throws: a stored policy that cannot be read only lets the owner's own senders through
  * (fail closed), since ignoring it would deliver what the owner asked to block.
  */
-function compileDeliveryPolicy(raw, ownerUid) {
+function compileDeliveryPolicy(raw, ownerUid, fallback = null) {
   if (typeof ownerUid !== 'string' || !ownerUid) return null
   let policy;
   try {
-    policy = normalizeDeliveryPolicy(raw) ?? DEFAULT_DELIVERY_POLICY;
+    policy = normalizeDeliveryPolicy(raw) ?? fallback;
   } catch (error) {
     console.warn(`[iosignal] unreadable delivery policy of uid ${ownerUid}, owner only:`, error.message);
     policy = { mode: 'allowlist', anonymous: 'deny', publish: 'policy', allow: { cids: [], uids: [] }, deny: { cids: [], uids: [] } };
@@ -9793,6 +9803,9 @@ const ANONYMOUS_CID_ALPHABET = '0123456789abcdefghjkmnpqrstvwxyz';
 const encoder = new TextEncoder();
 const decoder$1 = new TextDecoder();
 
+// count < limit, where a null limit is unlimited.
+const below = (count, limit) => limit === null || count < limit;
+
 class Manager {
 
   constructor(server, authManager) {
@@ -9909,7 +9922,7 @@ class Manager {
     const remote = this.cid2remote.get(cid);
     if (!remote?.boho.isAuthorized || !remote.ownerUid) return false
     normalizeDeliveryPolicy(policy);
-    remote.rxPolicy = compileDeliveryPolicy(policy, remote.ownerUid);
+    remote.rxPolicy = compileDeliveryPolicy(policy, remote.ownerUid, this.server?.deliveryPolicy ?? null);
     return true
   }
 
@@ -10284,10 +10297,12 @@ class Manager {
   // or 8 KiB Buffer pool slab alive), within an owner's budget and bytesTotal server-wide. A value
   // that cannot be stored (size, count or budget) also removes the value it would replace, so a
   // later subscriber never gets a stale one.
+  // A null limit is unlimited (the default for every budget, see serverOption.retain).
   retainFits(message, freed, ownerBytes, budget) {
-    return this.retainOptions.limitSize > message.byteLength &&
-      ownerBytes + message.byteLength <= budget &&
-      this.retainBytes + message.byteLength - freed <= this.retainOptions.bytesTotal
+    const { limitSize, bytesTotal } = this.retainOptions;
+    return (limitSize === null || limitSize > message.byteLength) &&
+      (budget === null || ownerBytes + message.byteLength <= budget) &&
+      (bytesTotal === null || this.retainBytes + message.byteLength - freed <= bytesTotal)
   }
 
   retainCopy(message) {
@@ -10302,7 +10317,7 @@ class Manager {
     const map = remote.writableRetainSignal();
     const old = map.get(key);
     const freed = old?.byteLength ?? 0;
-    if ((old || map.size < this.retainOptions.limitCounter) &&
+    if ((old || below(map.size, this.retainOptions.limitCounter)) &&
         this.retainFits(message, freed, remote.retainBytes - freed, this.retainOptions.bytesPerConnection)) {
       map.set(key, this.retainCopy(message));
       this.retainBytes -= freed;
@@ -10331,8 +10346,8 @@ class Manager {
     const bytesPerOwner = host?.retainBytes ?? this.retainOptions.bytesPerOwner;
     const old = this.retain_messages.get(tag);
     const freed = old?.byteLength ?? 0;
-    const room = old || (this.retain_messages.size < this.retainOptions.limitCounter &&
-      owner.tags.size < tagsPerOwner);
+    const room = old || (below(this.retain_messages.size, this.retainOptions.limitCounter) &&
+      below(owner.tags.size, tagsPerOwner));
     const ownerBytes = owner.bytes - (this.retain_owner.get(tag) === owner ? freed : 0);
     if (room && this.retainFits(message, freed, ownerBytes, bytesPerOwner)) {
       if (old) this.releaseChannelRetain(tag, freed);
@@ -10368,7 +10383,7 @@ class Manager {
       this.retain_owner.set(tag, pool);
       this.retainExpiry.set(tag, expires);
     }
-    while (pool.bytes > this.retainOptions.bytesPerOwner || pool.tags.size > this.retainOptions.tagsPerOwner) {
+    while (!below(pool.bytes - 1, this.retainOptions.bytesPerOwner) || !below(pool.tags.size - 1, this.retainOptions.tagsPerOwner)) {
       let first;
       for (const tag of pool.tags) {
         if (first === undefined || this.retainExpiry.get(tag) < this.retainExpiry.get(first)) first = tag;
@@ -10789,9 +10804,13 @@ function hasRole(remote, role) {
   return remote?.boho?.isAuthorized === true && ROLES.indexOf(remote.role) >= wanted
 }
 
-/** Default quota profile of a login: the account's quota, else 'basic' for a device, 'unlimited' otherwise. */
+/**
+ * Default quota profile of a login: the key entry's quota, else null (unlimited). The Server defines
+ * no profiles by default; an operator who wants limits names them and gives resolveQuota (2026-11-29;
+ * before that a device got 'basic').
+ */
 function defaultQuota(authInfo, role) {
-  return authInfo.quota || (role === 'device' ? 'basic' : 'unlimited')
+  return authInfo.quota || null
 }
 
 class BohoAuth {
@@ -11146,7 +11165,8 @@ class BohoAuth {
         this.close_unavailable(peer, 'quota: ' + (error?.message ?? error));
         return
       }
-      const quota = Object.hasOwn(peer.manager.quotas, quotaName) ? peer.manager.quotas[quotaName] : undefined;
+      quotaName = quotaName || null; // null: unlimited
+      const quota = quotaName === null ? { maxConnections: null } : Object.hasOwn(peer.manager.quotas, quotaName) ? peer.manager.quotas[quotaName] : undefined;
       if (!quota) {
         this.send_auth_fail(peer, 'unknown quota: ' + quotaName, false, { id, authInfo });
         return
@@ -11221,7 +11241,7 @@ class BohoAuth {
       if (authInfo.uid) peer.uid = authInfo.uid;
       // Delivery policy of an owned device, in place before the CID is reachable (step 9).
       peer.ownerUid = uid;
-      peer.rxPolicy = compileDeliveryPolicy(authInfo.rxPolicy, uid);
+      peer.rxPolicy = compileDeliveryPolicy(authInfo.rxPolicy, uid, peer.manager.server?.deliveryPolicy ?? null);
 
       //8. role and quota; the client is told its quota.
       peer.role = role;
@@ -12177,7 +12197,7 @@ const REMOVED = [
   ['timeout', 'heartbeatInterval'],
   ['pingTimeoutGrace', 'heartbeatGrace'],
   ['retain.isAvailable', 'retain.enabled'],
-  ['useQuota', 'quotas: named quota profiles, always enforced (null: unlimited)'],
+  ['useQuota', 'quotas: named quota profiles (none by default: unlimited)'],
   ['defaultQuotaIndex', "anonymousQuota: a quotas profile name; logins use their account's quota"],
   ['auth.delay_auth_fail', 'auth.failDelay', 'global'],
   ['adminLevel', "role: 'admin' in the account (key entry)", 'global'],
@@ -12207,6 +12227,7 @@ function integer(name, value, min, max = Number.MAX_SAFE_INTEGER) {
 }
 const positive = (name, value) => integer(name, value, 1);
 const nonNegative = (name, value) => integer(name, value, 0);
+const positiveOrNull = (name, value) => value === null ? null : positive(name, value);
 const QUOTA_LIMITS = ['maxMessageBytes', 'fanout', 'msgPerSec', 'bytesPerSec', 'maxConnections', 'maxSubscriptions', 'deliveriesPerSec'];
 
 // This Server's quota profiles: the defaults with each given profile merged over its default
@@ -12273,17 +12294,22 @@ class Server extends require$$0$3 {
    *   options.maxPayload: largest WebSocket message and CongSocket frame in bytes (default 32 MiB).
    *   options.maxBufferedBytes: close a peer whose unsent data exceeds this (default 64 MiB).
    *   options.membersOnly: only authenticated connections may send signals or subscribe.
-   *   options.connectionLimits: { newPerAddressPerMin, failedPerAddressPerMin, maxPerAddress, windowMs,
-   *   exempt } per public address, merged over serverOption.connectionLimits; false turns them off.
+   *   options.connectionLimits: { newPerAddressPerMin, failedPerAddressPerMin, maxPerAddress,
+   *   msgPerAddressPerSec, bytesPerAddressPerSec, windowMs, exempt } per public address, merged over
+   *   serverOption.connectionLimits (all 0 = off by default); false turns them off.
    *   A connection over a limit is closed when accepted (WebSocket code 1013); see AddressLimiter.
    *   options.logMessages: log each received message after decryption: type and tag, never the payload.
    *   options.logStats: print a one-line summary every N ms (>= 1000; 0 = off); see stats().
    *   options.security: { maxClockSkewMs, authChallengeMaxAgeMs, maxReplayEntries, requireEncryption }.
-   *   options.retain: retained message limits, see serverOption.retain; adjustable later on server.retain.
-   *   options.quotas: named quota profiles { name: { maxMessageBytes, fanout, msgPerSec, bytesPerSec,
-   *   maxConnections, maxSubscriptions } }, merged over serverOption.quotas; always enforced, null is unlimited.
-   *   Adjustable later on server.quotas. The client is told its maxMessageBytes.
-   *   options.anonymousQuota: profile of a connection that has not authenticated (default 'anonymous').
+   *   options.retain: retained message limits, see serverOption.retain (budgets null = unlimited by
+   *   default); adjustable later on server.retain.
+   *   options.quotas: quota profiles named by the operator { name: { maxMessageBytes, fanout, msgPerSec,
+   *   bytesPerSec, maxConnections, maxSubscriptions, deliveriesPerSec } }; none by default. A missing
+   *   limit or null is unlimited. Adjustable later on server.quotas. The client is told its maxMessageBytes.
+   *   options.anonymousQuota: the profile of a connection that has not authenticated (default null:
+   *   unlimited). Logins use BohoAuth resolveQuota or their key entry's quota (none: unlimited).
+   *   options.deliveryPolicy: the policy of an owned device that has none stored: a mode ('home',
+   *   'allowlist', 'denylist', 'open') or a whole policy (see deliveryPolicy.js); default null (open).
    *   options.duplicateLogin: 'keepOld' | 'keepNew' for this Server's connections; overrides the auth
    *   manager's own policy without changing it, so an auth manager can be shared between servers.
    *   options.dashboard: true or { path, access, panels, history, maxViewers, showIdentities } shows a live
@@ -12308,13 +12334,17 @@ class Server extends require$$0$3 {
       { maxClockSkewMs: positive, authChallengeMaxAgeMs: positive, maxReplayEntries: positive, requireEncryption: boolean }));
     // retain and quotas may be adjusted on a running server, e.g. server.quotas.basic.fanout = 50.
     this.retain = group('retain', options.retain, {
-      enabled: boolean, limitSize: positive, limitCounter: positive, tagsPerOwner: positive,
-      bytesPerOwner: positive, anonymousGraceMs: nonNegative, bytesPerConnection: positive, bytesTotal: positive });
+      enabled: boolean, limitSize: positiveOrNull, limitCounter: positiveOrNull, tagsPerOwner: positiveOrNull,
+      bytesPerOwner: positiveOrNull, anonymousGraceMs: nonNegative, bytesPerConnection: positiveOrNull, bytesTotal: positiveOrNull });
     this.quotas = quotaProfiles(options.quotas);
-    this.anonymousQuota = options.anonymousQuota ?? serverOption.anonymousQuota;
-    if (!Object.hasOwn(this.quotas, this.anonymousQuota)) {
-      throw new RangeError(`anonymousQuota must be one of the quotas: ${Object.keys(this.quotas).join(', ')}`)
+    this.anonymousQuota = options.anonymousQuota !== undefined ? options.anonymousQuota : serverOption.anonymousQuota;
+    if (this.anonymousQuota !== null && !Object.hasOwn(this.quotas, this.anonymousQuota)) {
+      throw new RangeError(`anonymousQuota must be null or one of the quotas: ${Object.keys(this.quotas).join(', ') || '(none)'}`)
     }
+    // Policy of an owned device without a stored one (null: open); see deliveryPolicy.js.
+    const deliveryPolicy = options.deliveryPolicy !== undefined ? options.deliveryPolicy : serverOption.deliveryPolicy;
+    this.deliveryPolicy = deliveryPolicy === null ? null
+      : Object.freeze(normalizeDeliveryPolicy(typeof deliveryPolicy === 'string' ? { mode: deliveryPolicy } : deliveryPolicy));
     this.heartbeatInterval = integer('heartbeatInterval',
       options.heartbeatInterval ?? serverOption.heartbeatInterval, 1, MAX_TIMER_MS);
     this.heartbeatGrace = integer('heartbeatGrace', options.heartbeatGrace ?? serverOption.heartbeatGrace, 0, MAX_TIMER_MS);

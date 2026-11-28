@@ -155,9 +155,13 @@ export function hasRole(remote, role) {
   return remote?.boho?.isAuthorized === true && ROLES.indexOf(remote.role) >= wanted
 }
 
-/** Default quota profile of a login: the account's quota, else 'basic' for a device, 'unlimited' otherwise. */
+/**
+ * Default quota profile of a login: the key entry's quota, else null (unlimited). The Server defines
+ * no profiles by default; an operator who wants limits names them and gives resolveQuota (2026-11-29;
+ * before that a device got 'basic').
+ */
 export function defaultQuota(authInfo, role) {
-  return authInfo.quota || (role === 'device' ? 'basic' : 'unlimited')
+  return authInfo.quota || null
 }
 
 export class BohoAuth {
@@ -512,7 +516,8 @@ export class BohoAuth {
         this.close_unavailable(peer, 'quota: ' + (error?.message ?? error))
         return
       }
-      const quota = Object.hasOwn(peer.manager.quotas, quotaName) ? peer.manager.quotas[quotaName] : undefined;
+      quotaName = quotaName || null; // null: unlimited
+      const quota = quotaName === null ? { maxConnections: null } : Object.hasOwn(peer.manager.quotas, quotaName) ? peer.manager.quotas[quotaName] : undefined;
       if (!quota) {
         this.send_auth_fail(peer, 'unknown quota: ' + quotaName, false, { id, authInfo });
         return
@@ -587,7 +592,7 @@ export class BohoAuth {
       if (authInfo.uid) peer.uid = authInfo.uid
       // Delivery policy of an owned device, in place before the CID is reachable (step 9).
       peer.ownerUid = uid
-      peer.rxPolicy = compileDeliveryPolicy(authInfo.rxPolicy, uid)
+      peer.rxPolicy = compileDeliveryPolicy(authInfo.rxPolicy, uid, peer.manager.server?.deliveryPolicy ?? null)
 
       //8. role and quota; the client is told its quota.
       peer.role = role;

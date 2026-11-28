@@ -1310,17 +1310,22 @@ declare class Server extends EventEmitter$1<[never]> {
      *   options.maxPayload: largest WebSocket message and CongSocket frame in bytes (default 32 MiB).
      *   options.maxBufferedBytes: close a peer whose unsent data exceeds this (default 64 MiB).
      *   options.membersOnly: only authenticated connections may send signals or subscribe.
-     *   options.connectionLimits: { newPerAddressPerMin, failedPerAddressPerMin, maxPerAddress, windowMs,
-     *   exempt } per public address, merged over serverOption.connectionLimits; false turns them off.
+     *   options.connectionLimits: { newPerAddressPerMin, failedPerAddressPerMin, maxPerAddress,
+     *   msgPerAddressPerSec, bytesPerAddressPerSec, windowMs, exempt } per public address, merged over
+     *   serverOption.connectionLimits (all 0 = off by default); false turns them off.
      *   A connection over a limit is closed when accepted (WebSocket code 1013); see AddressLimiter.
      *   options.logMessages: log each received message after decryption: type and tag, never the payload.
      *   options.logStats: print a one-line summary every N ms (>= 1000; 0 = off); see stats().
      *   options.security: { maxClockSkewMs, authChallengeMaxAgeMs, maxReplayEntries, requireEncryption }.
-     *   options.retain: retained message limits, see serverOption.retain; adjustable later on server.retain.
-     *   options.quotas: named quota profiles { name: { maxMessageBytes, fanout, msgPerSec, bytesPerSec,
-     *   maxConnections, maxSubscriptions } }, merged over serverOption.quotas; always enforced, null is unlimited.
-     *   Adjustable later on server.quotas. The client is told its maxMessageBytes.
-     *   options.anonymousQuota: profile of a connection that has not authenticated (default 'anonymous').
+     *   options.retain: retained message limits, see serverOption.retain (budgets null = unlimited by
+     *   default); adjustable later on server.retain.
+     *   options.quotas: quota profiles named by the operator { name: { maxMessageBytes, fanout, msgPerSec,
+     *   bytesPerSec, maxConnections, maxSubscriptions, deliveriesPerSec } }; none by default. A missing
+     *   limit or null is unlimited. Adjustable later on server.quotas. The client is told its maxMessageBytes.
+     *   options.anonymousQuota: the profile of a connection that has not authenticated (default null:
+     *   unlimited). Logins use BohoAuth resolveQuota or their key entry's quota (none: unlimited).
+     *   options.deliveryPolicy: the policy of an owned device that has none stored: a mode ('home',
+     *   'allowlist', 'denylist', 'open') or a whole policy (see deliveryPolicy.js); default null (open).
      *   options.duplicateLogin: 'keepOld' | 'keepNew' for this Server's connections; overrides the auth
      *   manager's own policy without changing it, so an auth manager can be shared between servers.
      *   options.dashboard: true or { path, access, panels, history, maxViewers, showIdentities } shows a live
@@ -1337,6 +1342,20 @@ declare class Server extends EventEmitter$1<[never]> {
     retain: any;
     quotas: {};
     anonymousQuota: any;
+    deliveryPolicy: Readonly<{
+        v: number;
+        mode: any;
+        anonymous: any;
+        publish: any;
+        allow: {
+            cids: any[];
+            uids: any[];
+        };
+        deny: {
+            cids: any[];
+            uids: any[];
+        };
+    } | null>;
     heartbeatInterval: any;
     heartbeatGrace: any;
     maxPayload: any;
@@ -1471,75 +1490,18 @@ declare namespace serverOption {
         let maxReplayEntries: number;
         let requireEncryption: boolean;
     }
-    export namespace quotas {
-        namespace anonymous {
-            let maxMessageBytes: number;
-            let fanout: number;
-            let msgPerSec: number;
-            let bytesPerSec: number;
-            let maxConnections: null;
-            let maxSubscriptions: number;
-            let deliveriesPerSec: number;
-        }
-        namespace basic {
-            let maxMessageBytes_1: number;
-            export { maxMessageBytes_1 as maxMessageBytes };
-            let fanout_1: number;
-            export { fanout_1 as fanout };
-            let msgPerSec_1: number;
-            export { msgPerSec_1 as msgPerSec };
-            let bytesPerSec_1: number;
-            export { bytesPerSec_1 as bytesPerSec };
-            let maxConnections_1: number;
-            export { maxConnections_1 as maxConnections };
-            let maxSubscriptions_1: number;
-            export { maxSubscriptions_1 as maxSubscriptions };
-            let deliveriesPerSec_1: number;
-            export { deliveriesPerSec_1 as deliveriesPerSec };
-        }
-        namespace pro {
-            let maxMessageBytes_2: number;
-            export { maxMessageBytes_2 as maxMessageBytes };
-            let fanout_2: number;
-            export { fanout_2 as fanout };
-            let msgPerSec_2: number;
-            export { msgPerSec_2 as msgPerSec };
-            let bytesPerSec_2: number;
-            export { bytesPerSec_2 as bytesPerSec };
-            let maxConnections_2: number;
-            export { maxConnections_2 as maxConnections };
-            let maxSubscriptions_2: number;
-            export { maxSubscriptions_2 as maxSubscriptions };
-            let deliveriesPerSec_2: number;
-            export { deliveriesPerSec_2 as deliveriesPerSec };
-        }
-        namespace unlimited {
-            let maxMessageBytes_3: null;
-            export { maxMessageBytes_3 as maxMessageBytes };
-            let fanout_3: null;
-            export { fanout_3 as fanout };
-            let msgPerSec_3: null;
-            export { msgPerSec_3 as msgPerSec };
-            let bytesPerSec_3: null;
-            export { bytesPerSec_3 as bytesPerSec };
-            let maxConnections_3: null;
-            export { maxConnections_3 as maxConnections };
-            let maxSubscriptions_3: null;
-            export { maxSubscriptions_3 as maxSubscriptions };
-            let deliveriesPerSec_3: null;
-            export { deliveriesPerSec_3 as deliveriesPerSec };
-        }
-    }
-    export let anonymousQuota: string;
+    export let quotas: {};
+    export let anonymousQuota: null;
+    export let deliveryPolicy: null;
     export namespace retain {
         let enabled: boolean;
-        let limitSize: number;
-        let limitCounter: number;
-        let tagsPerOwner: number;
-        let bytesPerOwner: number;
+        let limitSize: null;
+        let limitCounter: null;
+        let tagsPerOwner: null;
+        let bytesPerOwner: null;
         let anonymousGraceMs: number;
-        let bytesPerConnection: number;
-        let bytesTotal: number;
+        let bytesPerConnection: null;
+        let bytesTotal: null;
     }
     export namespace fileLogger {
         namespace connection {
@@ -1714,7 +1676,11 @@ declare function getPayloadFromSignalPack(signalPack: any): any;
 
 /** True if the remote is authenticated with this role or a higher one ('anonymous': always). */
 declare function hasRole(remote: any, role: any): boolean;
-/** Default quota profile of a login: the account's quota, else 'basic' for a device, 'unlimited' otherwise. */
+/**
+ * Default quota profile of a login: the key entry's quota, else null (unlimited). The Server defines
+ * no profiles by default; an operator who wants limits names them and gives resolveQuota (2026-11-29;
+ * before that a device got 'basic').
+ */
 declare function defaultQuota(authInfo: any, role: any): any;
 /**
  * Failed logins in a time window: counts by kind, address and login ID, reported once when the

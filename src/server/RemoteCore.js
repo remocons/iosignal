@@ -46,6 +46,13 @@ class EmptyMap extends Map {
 }
 const NO_RETAINS = new EmptyMap()
 
+// No limits: the quota of a connection without a profile (the default, see serverOption.quotas).
+export const UNLIMITED_QUOTA = Object.freeze({ maxMessageBytes: null, fanout: null, msgPerSec: null, bytesPerSec: null,
+  maxConnections: null, maxSubscriptions: null, deliveriesPerSec: null })
+function quotaOf(manager, name) {
+  return name === null ? UNLIMITED_QUOTA : manager.quotas[name] ?? UNLIMITED_QUOTA
+}
+
 export class RemoteCore {
   constructor(socket, manager) {
 
@@ -85,9 +92,10 @@ export class RemoteCore {
     this.accountUid = null;  // counted in manager.accountConnections while authenticated with a uid
     this.ownerUid = null;    // the device's owner (login uid); a web sign-in later changes uid, not this
     this.rxPolicy = null;    // compiled delivery policy of an owned device, see deliveryPolicy.js
-    // Quota profile (a server.quotas entry, read live): the anonymous one until authenticated.
-    this.quotaName = manager.anonymousQuota;
-    this.quota = manager.quotas[this.quotaName];
+    // Quota profile (a server.quotas entry, read live): the anonymous one until authenticated;
+    // no profile (null) is unlimited.
+    this.quotaName = manager.anonymousQuota ?? null;
+    this.quota = quotaOf(manager, this.quotaName);
     this._rateAt = null; // token buckets of quota msgPerSec / bytesPerSec
     this._msgTokens = 0;
     this._byteTokens = 0;
@@ -166,8 +174,8 @@ export class RemoteCore {
 
   // Switches to a server.quotas profile; tell: send it to the client (QUOTA: its maxMessageBytes).
   setQuota(name, tell) {
-    this.quotaName = name;
-    this.quota = this.manager.quotas[name];
+    this.quotaName = name ?? null;
+    this.quota = quotaOf(this.manager, this.quotaName);
     this._quotaNoticed = null; // a new profile: its limits may be told once again (noticeQuota)
     // The CongSocket frame ceiling follows maxMessageBytes.
     this.refreshRxFrameLimit?.();
@@ -219,7 +227,7 @@ export class RemoteCore {
     }
     // All the anonymous connections of one address together (connectionLimits msg/bytesPerAddressPerSec).
     const limitIp = this.socket?._limitIp;
-    if (limitIp !== undefined && this.quotaName === this.manager.anonymousQuota) {
+    if (limitIp !== undefined && !this.boho?.isAuthorized) {
       const over = this.manager.addressLimiter?.takeRate(limitIp, rxBytes);
       if (over) {
         this.manager.counters.addressRateLimited++;

@@ -11,6 +11,7 @@ import { serverOption } from './serverOption.js'
 import { STATUS } from '../services/constant.js'
 import { BohoAuth, validateDuplicateLogin } from '../auth/BohoAuth.js'
 import { LocalKeyProvider } from '../auth/key_providers/LocalKeyProvider.js'
+import { normalizeDeliveryPolicy } from './deliveryPolicy.js'
 
 // Removed or renamed in 9.0, as Server options and as serverOption keys ('global': only as a
 // serverOption key). An error names the replacement instead of the setting silently doing nothing.
@@ -21,7 +22,7 @@ const REMOVED = [
   ['timeout', 'heartbeatInterval'],
   ['pingTimeoutGrace', 'heartbeatGrace'],
   ['retain.isAvailable', 'retain.enabled'],
-  ['useQuota', 'quotas: named quota profiles, always enforced (null: unlimited)'],
+  ['useQuota', 'quotas: named quota profiles (none by default: unlimited)'],
   ['defaultQuotaIndex', "anonymousQuota: a quotas profile name; logins use their account's quota"],
   ['auth.delay_auth_fail', 'auth.failDelay', 'global'],
   ['adminLevel', "role: 'admin' in the account (key entry)", 'global'],
@@ -51,6 +52,7 @@ function integer(name, value, min, max = Number.MAX_SAFE_INTEGER) {
 }
 const positive = (name, value) => integer(name, value, 1)
 const nonNegative = (name, value) => integer(name, value, 0)
+const positiveOrNull = (name, value) => value === null ? null : positive(name, value)
 const QUOTA_LIMITS = ['maxMessageBytes', 'fanout', 'msgPerSec', 'bytesPerSec', 'maxConnections', 'maxSubscriptions', 'deliveriesPerSec']
 
 // This Server's quota profiles: the defaults with each given profile merged over its default
@@ -117,17 +119,22 @@ export class Server extends EventEmitter {
    *   options.maxPayload: largest WebSocket message and CongSocket frame in bytes (default 32 MiB).
    *   options.maxBufferedBytes: close a peer whose unsent data exceeds this (default 64 MiB).
    *   options.membersOnly: only authenticated connections may send signals or subscribe.
-   *   options.connectionLimits: { newPerAddressPerMin, failedPerAddressPerMin, maxPerAddress, windowMs,
-   *   exempt } per public address, merged over serverOption.connectionLimits; false turns them off.
+   *   options.connectionLimits: { newPerAddressPerMin, failedPerAddressPerMin, maxPerAddress,
+   *   msgPerAddressPerSec, bytesPerAddressPerSec, windowMs, exempt } per public address, merged over
+   *   serverOption.connectionLimits (all 0 = off by default); false turns them off.
    *   A connection over a limit is closed when accepted (WebSocket code 1013); see AddressLimiter.
    *   options.logMessages: log each received message after decryption: type and tag, never the payload.
    *   options.logStats: print a one-line summary every N ms (>= 1000; 0 = off); see stats().
    *   options.security: { maxClockSkewMs, authChallengeMaxAgeMs, maxReplayEntries, requireEncryption }.
-   *   options.retain: retained message limits, see serverOption.retain; adjustable later on server.retain.
-   *   options.quotas: named quota profiles { name: { maxMessageBytes, fanout, msgPerSec, bytesPerSec,
-   *   maxConnections, maxSubscriptions } }, merged over serverOption.quotas; always enforced, null is unlimited.
-   *   Adjustable later on server.quotas. The client is told its maxMessageBytes.
-   *   options.anonymousQuota: profile of a connection that has not authenticated (default 'anonymous').
+   *   options.retain: retained message limits, see serverOption.retain (budgets null = unlimited by
+   *   default); adjustable later on server.retain.
+   *   options.quotas: quota profiles named by the operator { name: { maxMessageBytes, fanout, msgPerSec,
+   *   bytesPerSec, maxConnections, maxSubscriptions, deliveriesPerSec } }; none by default. A missing
+   *   limit or null is unlimited. Adjustable later on server.quotas. The client is told its maxMessageBytes.
+   *   options.anonymousQuota: the profile of a connection that has not authenticated (default null:
+   *   unlimited). Logins use BohoAuth resolveQuota or their key entry's quota (none: unlimited).
+   *   options.deliveryPolicy: the policy of an owned device that has none stored: a mode ('home',
+   *   'allowlist', 'denylist', 'open') or a whole policy (see deliveryPolicy.js); default null (open).
    *   options.duplicateLogin: 'keepOld' | 'keepNew' for this Server's connections; overrides the auth
    *   manager's own policy without changing it, so an auth manager can be shared between servers.
    *   options.dashboard: true or { path, access, panels, history, maxViewers, showIdentities } shows a live
@@ -152,13 +159,17 @@ export class Server extends EventEmitter {
       { maxClockSkewMs: positive, authChallengeMaxAgeMs: positive, maxReplayEntries: positive, requireEncryption: boolean }));
     // retain and quotas may be adjusted on a running server, e.g. server.quotas.basic.fanout = 50.
     this.retain = group('retain', options.retain, {
-      enabled: boolean, limitSize: positive, limitCounter: positive, tagsPerOwner: positive,
-      bytesPerOwner: positive, anonymousGraceMs: nonNegative, bytesPerConnection: positive, bytesTotal: positive });
+      enabled: boolean, limitSize: positiveOrNull, limitCounter: positiveOrNull, tagsPerOwner: positiveOrNull,
+      bytesPerOwner: positiveOrNull, anonymousGraceMs: nonNegative, bytesPerConnection: positiveOrNull, bytesTotal: positiveOrNull });
     this.quotas = quotaProfiles(options.quotas);
-    this.anonymousQuota = options.anonymousQuota ?? serverOption.anonymousQuota;
-    if (!Object.hasOwn(this.quotas, this.anonymousQuota)) {
-      throw new RangeError(`anonymousQuota must be one of the quotas: ${Object.keys(this.quotas).join(', ')}`)
+    this.anonymousQuota = options.anonymousQuota !== undefined ? options.anonymousQuota : serverOption.anonymousQuota;
+    if (this.anonymousQuota !== null && !Object.hasOwn(this.quotas, this.anonymousQuota)) {
+      throw new RangeError(`anonymousQuota must be null or one of the quotas: ${Object.keys(this.quotas).join(', ') || '(none)'}`)
     }
+    // Policy of an owned device without a stored one (null: open); see deliveryPolicy.js.
+    const deliveryPolicy = options.deliveryPolicy !== undefined ? options.deliveryPolicy : serverOption.deliveryPolicy;
+    this.deliveryPolicy = deliveryPolicy === null ? null
+      : Object.freeze(normalizeDeliveryPolicy(typeof deliveryPolicy === 'string' ? { mode: deliveryPolicy } : deliveryPolicy));
     this.heartbeatInterval = integer('heartbeatInterval',
       options.heartbeatInterval ?? serverOption.heartbeatInterval, 1, MAX_TIMER_MS);
     this.heartbeatGrace = integer('heartbeatGrace', options.heartbeatGrace ?? serverOption.heartbeatGrace, 0, MAX_TIMER_MS);

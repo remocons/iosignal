@@ -27,15 +27,15 @@ export const serverOption = {
   // Over a rate limit the address's new connections are closed at once until the window ends; open
   // ones are never touched. 0 turns a limit off. Loopback, private and exempt addresses are not
   // counted. A Server's connectionLimits option is merged over this (false: all off).
-  // msgPerAddressPerSec, bytesPerAddressPerSec: what all the anonymous-quota connections of one address may
-  // send together (token bucket, 1 s burst); over: dropped and told once (quota_exceeded). Without it the
-  // per-connection quota multiplies by maxPerAddress (2026-11-28).
+  // msgPerAddressPerSec, bytesPerAddressPerSec: what all the anonymous connections of one address may
+  // send together (token bucket, 1 s burst); over: dropped and told once (quota_exceeded).
+  // All off by default (2026-11-29): an operator turns on what the deployment needs.
   connectionLimits: {
-    newPerAddressPerMin: 300,
-    failedPerAddressPerMin: 30,
-    maxPerAddress: 1000,
-    msgPerAddressPerSec: 1000,
-    bytesPerAddressPerSec: 8 * 1024 * 1024,
+    newPerAddressPerMin: 0,
+    failedPerAddressPerMin: 0,
+    maxPerAddress: 0,
+    msgPerAddressPerSec: 0,
+    bytesPerAddressPerSec: 0,
     windowMs: 60000,
     exempt: []
   },
@@ -55,10 +55,11 @@ export const serverOption = {
     // Off by default: a client with encMode NO would be closed.
     requireEncryption: false
   },
-  // Named quota profiles. A connection uses one: an anonymous connection the Server's
-  // anonymousQuota, an authenticated one the profile its account resolves to (see BohoAuth
-  // resolveQuota). null is unlimited. A Server merges its quotas option over these per profile
-  // and may add profiles; a running server's profiles can be adjusted (server.quotas.basic.fanout = 50).
+  // Quota profiles: none by default, so every connection is unlimited (2026-11-29). An operator who
+  // wants limits names its own profiles in the Server's quotas option and picks one with
+  // anonymousQuota (connections that have not authenticated) and BohoAuth resolveQuota or a key
+  // entry's quota (logins). null is unlimited; a running server's profiles can be adjusted
+  // (server.quotas.<name>.fanout = 50).
   //   maxMessageBytes: largest message the connection may send (larger: OVER_SIZE, dropped)
   //   fanout:          most subscribers one channel publish is delivered to
   //   msgPerSec, bytesPerSec: sustained receive rate (token bucket, 1 s burst); over: dropped
@@ -66,29 +67,30 @@ export const serverOption = {
   //   maxSubscriptions: tags one connection may be subscribed to at a time; over: the tag is left out
   //   deliveriesPerSec: subscribers the connection's publishes reach per second in all (token bucket,
   //                    1 s burst; msgPerSec × fanout without it); over: a publish reaches fewer, like fanout
-  quotas: {
-    anonymous: { maxMessageBytes: 256 * 1024, fanout: 1000, msgPerSec: 100, bytesPerSec: 2 * 1024 * 1024, maxConnections: null, maxSubscriptions: 1000, deliveriesPerSec: 2000 },
-    basic: { maxMessageBytes: 1024 * 1024, fanout: 1000, msgPerSec: 200, bytesPerSec: 4 * 1024 * 1024, maxConnections: 20, maxSubscriptions: 2000, deliveriesPerSec: 10000 },
-    pro: { maxMessageBytes: 4 * 1024 * 1024, fanout: 10000, msgPerSec: 1000, bytesPerSec: 16 * 1024 * 1024, maxConnections: 200, maxSubscriptions: 10000, deliveriesPerSec: 50000 },
-    unlimited: { maxMessageBytes: null, fanout: null, msgPerSec: null, bytesPerSec: null, maxConnections: null, maxSubscriptions: null, deliveriesPerSec: null }
-  },
-  anonymousQuota: 'anonymous', // profile of a connection that has not authenticated
+  quotas: {},
+  anonymousQuota: null, // profile of a connection that has not authenticated (null: unlimited)
+
+  // Delivery policy of an owned device (its login has a uid) that has none stored: null lets everyone
+  // reach it ('open'). An operator may give a mode ('home', 'allowlist', 'denylist') or a whole
+  // policy, see deliveryPolicy.js. Devices without an owner are never filtered.
+  deliveryPolicy: null,
 
   retain: {
     enabled: true,
-    limitSize: 100000,      // a retained message must be smaller than this many bytes
-    limitCounter: 1000,     // channel retain tags per server, and CID retain tags per connection
+    // Budgets, null (unlimited) by default (2026-11-29); an operator sets what memory allows.
+    limitSize: null,        // a retained message must be smaller than this many bytes
+    limitCounter: null,     // channel retain tags per server, and CID retain tags per connection
     // A channel retain belongs to its last writer: an authenticated account (CID, shared by its
     // connections) or a live anonymous connection. Each owner holds at most tagsPerOwner tags and
     // bytesPerOwner bytes. An account's values stay until restart; a closed anonymous connection's
     // move to its network's grace pool (same budget) and are removed after anonymousGraceMs.
-    tagsPerOwner: 32,
-    bytesPerOwner: 1024 * 1024,
+    tagsPerOwner: null,
+    bytesPerOwner: null,
     anonymousGraceMs: 60 * 60 * 1000,
     // CID retains of one connection (removed with it), and all retained messages of the server.
     // A value over budget is not stored, and removes the value it would have replaced.
-    bytesPerConnection: 1024 * 1024,
-    bytesTotal: 256 * 1024 * 1024
+    bytesPerConnection: null,
+    bytesTotal: null
   },
 
   // --- Process-wide: read directly where used, not per Server ---

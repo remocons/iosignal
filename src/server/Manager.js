@@ -16,6 +16,9 @@ export const ANONYMOUS_CID_ALPHABET = '0123456789abcdefghjkmnpqrstvwxyz'
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
 
+// count < limit, where a null limit is unlimited.
+const below = (count, limit) => limit === null || count < limit
+
 export class Manager {
 
   constructor(server, authManager) {
@@ -132,7 +135,7 @@ export class Manager {
     const remote = this.cid2remote.get(cid)
     if (!remote?.boho.isAuthorized || !remote.ownerUid) return false
     normalizeDeliveryPolicy(policy)
-    remote.rxPolicy = compileDeliveryPolicy(policy, remote.ownerUid)
+    remote.rxPolicy = compileDeliveryPolicy(policy, remote.ownerUid, this.server?.deliveryPolicy ?? null)
     return true
   }
 
@@ -516,10 +519,12 @@ export class Manager {
   // or 8 KiB Buffer pool slab alive), within an owner's budget and bytesTotal server-wide. A value
   // that cannot be stored (size, count or budget) also removes the value it would replace, so a
   // later subscriber never gets a stale one.
+  // A null limit is unlimited (the default for every budget, see serverOption.retain).
   retainFits(message, freed, ownerBytes, budget) {
-    return this.retainOptions.limitSize > message.byteLength &&
-      ownerBytes + message.byteLength <= budget &&
-      this.retainBytes + message.byteLength - freed <= this.retainOptions.bytesTotal
+    const { limitSize, bytesTotal } = this.retainOptions
+    return (limitSize === null || limitSize > message.byteLength) &&
+      (budget === null || ownerBytes + message.byteLength <= budget) &&
+      (bytesTotal === null || this.retainBytes + message.byteLength - freed <= bytesTotal)
   }
 
   retainCopy(message) {
@@ -534,7 +539,7 @@ export class Manager {
     const map = remote.writableRetainSignal()
     const old = map.get(key)
     const freed = old?.byteLength ?? 0
-    if ((old || map.size < this.retainOptions.limitCounter) &&
+    if ((old || below(map.size, this.retainOptions.limitCounter)) &&
         this.retainFits(message, freed, remote.retainBytes - freed, this.retainOptions.bytesPerConnection)) {
       map.set(key, this.retainCopy(message))
       this.retainBytes -= freed
@@ -563,8 +568,8 @@ export class Manager {
     const bytesPerOwner = host?.retainBytes ?? this.retainOptions.bytesPerOwner
     const old = this.retain_messages.get(tag)
     const freed = old?.byteLength ?? 0
-    const room = old || (this.retain_messages.size < this.retainOptions.limitCounter &&
-      owner.tags.size < tagsPerOwner)
+    const room = old || (below(this.retain_messages.size, this.retainOptions.limitCounter) &&
+      below(owner.tags.size, tagsPerOwner))
     const ownerBytes = owner.bytes - (this.retain_owner.get(tag) === owner ? freed : 0)
     if (room && this.retainFits(message, freed, ownerBytes, bytesPerOwner)) {
       if (old) this.releaseChannelRetain(tag, freed)
@@ -600,7 +605,7 @@ export class Manager {
       this.retain_owner.set(tag, pool)
       this.retainExpiry.set(tag, expires)
     }
-    while (pool.bytes > this.retainOptions.bytesPerOwner || pool.tags.size > this.retainOptions.tagsPerOwner) {
+    while (!below(pool.bytes - 1, this.retainOptions.bytesPerOwner) || !below(pool.tags.size - 1, this.retainOptions.tagsPerOwner)) {
       let first
       for (const tag of pool.tags) {
         if (first === undefined || this.retainExpiry.get(tag) < this.retainExpiry.get(first)) first = tag

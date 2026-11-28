@@ -1582,13 +1582,15 @@ for (const [format, api] of variants) {
     const [custom, plain] = servers;
     assert.deepEqual([custom.manager.pingPeriod, custom.manager.pingGrace, custom.wss.options.maxPayload], [2000, 0, 1024]);
     assert.deepEqual([plain.manager.pingPeriod, plain.manager.pingGrace, plain.wss.options.maxPayload], [50000, 5000, 32 * 1024 * 1024]);
-    assert.deepEqual([custom.retain.limitSize, custom.retain.limitCounter, plain.retain.limitSize], [50, 1000, 100000]);
-    assert.deepEqual([custom.quotas.basic.fanout, custom.quotas.basic.maxMessageBytes, plain.quotas.basic.fanout], [5, 1024 * 1024, 1000]);
+    // Nothing is limited by default: no quota profiles, retain budgets null (2026-11-29).
+    assert.deepEqual([custom.retain.limitSize, custom.retain.limitCounter, plain.retain.limitSize], [50, null, null]);
+    assert.deepEqual([custom.quotas.basic.fanout, custom.quotas.basic.maxMessageBytes, plain.quotas], [5, null, {}]);
+    assert.deepEqual([plain.anonymousQuota, plain.deliveryPolicy, plain.connectionLimits.maxPerAddress], [null, null, 0]);
     assert.equal(custom.manager.retainOptions, custom.retain);
     // A running server's retain/quotas can be adjusted without touching others or the defaults.
     plain.retain.bytesTotal = 1;
-    plain.quotas.basic.fanout = 1;
-    assert.deepEqual([custom.retain.bytesTotal, custom.quotas.basic.fanout], [256 * 1024 * 1024, 5]);
+    plain.quotas.basic = { fanout: 1 };
+    assert.deepEqual([custom.retain.bytesTotal, custom.quotas.basic.fanout], [null, 5]);
     assert.equal(Object.isFrozen(custom.security), true);
     assert.equal(JSON.stringify(api.serverOption), defaults);
   });
@@ -1888,7 +1890,7 @@ for (const [format, api] of variants) {
       assert.equal(io.cid, 'dev1');
       assert.equal(io.boho.isAuthorized, true);
       const remote = server.manager.cid2remote.get('dev1');
-      assert.deepEqual([remote.did, remote.role, remote.quotaName], ['dev1', 'device', 'basic']);
+      assert.deepEqual([remote.did, remote.role, remote.quotaName], ['dev1', 'device', null]); // no quota: unlimited
       // Anonymous clients are still served unless membersOnly is set.
       assert.match((await connect()).cid, /^\?/);
     });
@@ -1896,7 +1898,7 @@ for (const [format, api] of variants) {
     test(`${format}: ${tcp ? 'TCP' : 'WS'} localAuth sharedKey logs in any ID with the shared key`, { timeout: 10000 }, async t => {
       // 44 characters: the length of a stored base64 hash, which must still be read as a plain key.
       const key = 'k'.repeat(44);
-      const { server, connect } = await fixture(t, api, false, tcp, {}, { localAuth: { mode: 'sharedKey', key, quota: 'pro' } });
+      const { server, connect } = await fixture(t, api, false, tcp, {}, { localAuth: { mode: 'sharedKey', key, quota: 'pro' }, quotas: { pro: {} } });
       const [a, b] = [await connect(['devA', key]), await connect(['devB', key])];
       assert.deepEqual([a.cid, b.cid], ['devA', 'devB']);
       assert.equal(a.boho.isAuthorized && b.boho.isAuthorized, true);
@@ -1977,17 +1979,19 @@ for (const [format, api] of variants) {
   }
 
   for (const [label, fields, options, expected] of [
-    ['a device defaults to basic', {}, undefined, ['device', 'basic', 1024 * 1024]],
-    ['an admin defaults to unlimited', { role: 'admin' }, undefined, ['admin', 'unlimited', null]],
+    ['a device has no quota by default (unlimited)', {}, undefined, ['device', null, null]],
+    ['an admin has none either', { role: 'admin' }, undefined, ['admin', null, null]],
     ["the account's quota", { quota: 'pro' }, undefined, ['device', 'pro', 4 * 1024 * 1024]],
     ['an async resolveQuota', {}, { resolveQuota: async (authInfo, role) => role === 'device' ? 'pro' : 'basic' }, ['device', 'pro', 4 * 1024 * 1024]],
   ]) {
     test(`${format}: login quota: ${label}`, { timeout: 10000 }, async t => {
-      const { server, connect } = await fixture(t, api, false, false, {}, { authManager: quotaAuth(fields, options) });
+      // Profiles exist only when the operator names them.
+      const quotas = { basic: { maxMessageBytes: 1024 * 1024 }, pro: { maxMessageBytes: 4 * 1024 * 1024 } };
+      const { server, connect } = await fixture(t, api, false, false, {}, { authManager: quotaAuth(fields, options), quotas });
       const io = await connect(['q1', 'quota-key']);
       const remote = server.manager.cid2remote.get('q1-client');
       const [role, quotaName, maxMessageBytes] = expected;
-      assert.deepEqual([remote.role, remote.quotaName, remote.quota], [role, quotaName, server.quotas[quotaName]]);
+      assert.deepEqual([remote.role, remote.quotaName, remote.quota], [role, quotaName, quotaName === null ? { maxMessageBytes: null, fanout: null, msgPerSec: null, bytesPerSec: null, maxConnections: null, maxSubscriptions: null, deliveriesPerSec: null } : server.quotas[quotaName]]);
       assert.deepEqual(io.quota, { maxMessageBytes });
     });
   }
@@ -1996,7 +2000,7 @@ for (const [format, api] of variants) {
     quickAuthFail(t, api);
     let quota = 'basic';
     const authManager = new api.BohoAuth({ async getAuth(id) { return id === 'q1' ? { key: quotaKey, cid: 'q1-client', quota } : undefined } });
-    const { server, connect, client, url } = await fixture(t, api, false, false, {}, { authManager });
+    const { server, connect, client, url } = await fixture(t, api, false, false, {}, { authManager, quotas: { basic: {} } });
     const online = await connect(['q1', 'quota-key']);
     const onlineRemote = server.manager.cid2remote.get('q1-client');
     quota = 'gold';
@@ -2010,7 +2014,7 @@ for (const [format, api] of variants) {
   });
 
   test(`${format}: fanout limits the subscribers a publish reaches`, { timeout: 10000 }, async t => {
-    const { server, connect } = await fixture(t, api, false, false, {}, { quotas: { anonymous: { fanout: 2 } } });
+    const { server, connect } = await fixture(t, api, false, false, {}, { quotas: { anonymous: { fanout: 2 } }, anonymousQuota: 'anonymous' });
     const subscribers = [await connect(), await connect(), await connect()];
     for (const io of subscribers) {
       io.subscribe('room');
@@ -2029,7 +2033,7 @@ for (const [format, api] of variants) {
   });
 
   test(`${format}: msgPerSec drops messages over the rate`, { timeout: 10000 }, async t => {
-    const { server, connect } = await fixture(t, api, false, false, {}, { quotas: { anonymous: { msgPerSec: 5 } } });
+    const { server, connect } = await fixture(t, api, false, false, {}, { quotas: { anonymous: { msgPerSec: 5 } }, anonymousQuota: 'anonymous' });
     const subscriber = await connect();
     subscriber.subscribe('room');
     await subscriber.call('reply', 'echo', 'subscribed');
@@ -2048,7 +2052,7 @@ for (const [format, api] of variants) {
   });
 
   test(`${format}: a WebSocket connection over msgPerSec is told once (quota_exceeded); nothing is held back`, { timeout: 10000 }, async t => {
-    const { server, connect } = await fixture(t, api, false, false, {}, { quotas: { anonymous: { msgPerSec: 5 } } });
+    const { server, connect } = await fixture(t, api, false, false, {}, { quotas: { anonymous: { msgPerSec: 5 } }, anonymousQuota: 'anonymous' });
     const io = await connect();
     const notices = [];
     io.on('quota_exceeded', data => notices.push(data));
@@ -2064,7 +2068,7 @@ for (const [format, api] of variants) {
   });
 
   test(`${format}: maxSubscriptions and fanout are told once each to the connection that went over`, { timeout: 10000 }, async t => {
-    const { connect } = await fixture(t, api, false, false, {}, { quotas: { anonymous: { maxSubscriptions: 2, fanout: 1 } } });
+    const { connect } = await fixture(t, api, false, false, {}, { quotas: { anonymous: { maxSubscriptions: 2, fanout: 1 } }, anonymousQuota: 'anonymous' });
     const io = await connect();
     const notices = [];
     io.on('quota_exceeded', data => notices.push(data));
@@ -2098,17 +2102,17 @@ for (const [format, api] of variants) {
     const notices = [];
     b.on('quota_exceeded', data => notices.push(data));
     const before = server.stats().counters;
-    for (let i = 0; i < 8; i++) a.signal('nobody', i); // under the connection's 100/s,
+    for (let i = 0; i < 8; i++) a.signal('nobody', i); // no per-connection quota,
     for (let i = 0; i < 8; i++) b.signal('nobody', i); // over the address's 10/s together
     await new Promise(resolve => setTimeout(resolve, 1200));
     await b.call('reply', 'echo', 'after');
     const limited = server.stats().counters.addressRateLimited - before.addressRateLimited;
     assert.ok(limited >= 5 && limited <= 7, `dropped ${limited}`);
-    assert.deepEqual(notices, [{ kind: 'msgPerAddressPerSec', limit: 10, quota: 'anonymous' }]);
+    assert.deepEqual(notices, [{ kind: 'msgPerAddressPerSec', limit: 10, quota: null }]);
   });
 
   test(`${format}: deliveriesPerSec caps the subscribers a connection's publishes reach per second`, { timeout: 10000 }, async t => {
-    const { server, connect } = await fixture(t, api, false, false, {}, { quotas: { anonymous: { deliveriesPerSec: 5 } } });
+    const { server, connect } = await fixture(t, api, false, false, {}, { quotas: { anonymous: { deliveriesPerSec: 5 } }, anonymousQuota: 'anonymous' });
     const subscribers = [await connect(), await connect(), await connect()];
     let received = 0;
     for (const io of subscribers) {
@@ -2133,7 +2137,7 @@ for (const [format, api] of variants) {
   });
 
   test(`${format}: a TCP connection (a device) over a quota gets no notice`, { timeout: 10000 }, async t => {
-    const { server, connect } = await fixture(t, api, false, true, {}, { quotas: { anonymous: { msgPerSec: 5 } } });
+    const { server, connect } = await fixture(t, api, false, true, {}, { quotas: { anonymous: { msgPerSec: 5 } }, anonymousQuota: 'anonymous' });
     const io = await connect();
     const notices = [];
     io.on('quota_exceeded', data => notices.push(data));
@@ -2149,7 +2153,7 @@ for (const [format, api] of variants) {
   test(`${format}: maxConnections limits an account's connections and frees them on close`, { timeout: 10000 }, async t => {
     quickAuthFail(t, api);
     const { server, connect, client, url } = await fixture(t, api, false, false, {},
-      { authManager: quotaAuth(), quotas: { basic: { maxConnections: 2 } } });
+      { authManager: quotaAuth({ quota: 'basic' }), quotas: { basic: { maxConnections: 2 } } });
     const first = await connect(['q1', 'quota-key']);
     await connect(['q2', 'quota-key']);
     assert.equal(server.manager.accountConnections('u1'), 2);
@@ -2167,13 +2171,52 @@ for (const [format, api] of variants) {
     assert.equal(server.manager.accountConnections('u1'), 2);
   });
 
+  test(`${format}: a server without options limits nothing (quotas, retain, per-address, delivery policy)`, { timeout: 10000 }, async t => {
+    const { server, connect } = await fixture(t, api, false, false);
+    const subscriber = await connect(), publisher = await connect();
+    assert.deepEqual([publisher.quota, server.manager.cid2remote.get(publisher.cid).quotaName], [{ maxMessageBytes: null }, null]);
+    subscriber.subscribe('room');
+    await subscriber.call('reply', 'echo', 'subscribed');
+    let received = 0;
+    subscriber.on('message', () => received++);
+    const before = server.stats().counters;
+    for (let i = 0; i < 500; i++) publisher.signal('room', i);   // over what the old anonymous profile allowed (100/s)
+    publisher.signal('room', 'x'.repeat(300 * 1024));            // and its 256 KiB message size
+    await publisher.call('reply', 'echo', 'sent');
+    await new Promise(resolve => setTimeout(resolve, 200));
+    const after = server.stats().counters;
+    assert.equal(received, 501);
+    assert.deepEqual([after.rateLimited - before.rateLimited, after.oversizeRejected - before.oversizeRejected, after.addressRateLimited - before.addressRateLimited], [0, 0, 0]);
+  });
+
+  test(`${format}: the delivery policy of an owned device is open unless the server sets deliveryPolicy`, { timeout: 10000 }, async t => {
+    const ownedKey = 'owned-key';
+    const owned = { async getAuth(id) { return id === 'lamp' ? { key: Buffer.from(api.Boho.deriveKey(ownedKey)).toString("base64"), cid: 'lamp', uid: 'alice' } : undefined } };
+    for (const [deliveryPolicy, expected] of [[undefined, true], ['home', false]]) {
+      const { server, connect } = await fixture(t, api, false, false, {}, { authManager: new api.BohoAuth(owned), ...(deliveryPolicy && { deliveryPolicy }) });
+      const device = await connect(['lamp', ownedKey]);
+      const sender = await connect();
+      // As if the anonymous sender were on another public network than the device.
+      server.manager.cid2remote.get('lamp').HOME_CHANNEL = 'IP:0a000001';
+      server.manager.cid2remote.get(sender.cid).HOME_CHANNEL = 'IP:0b000002';
+      let got = false;
+      device.on('@', () => { got = true; });
+      sender.signal('lamp@', 'toggle');
+      await sender.call('reply', 'echo', 'sent');
+      await new Promise(resolve => setTimeout(resolve, 100));
+      assert.equal(got, expected, `deliveryPolicy ${deliveryPolicy}`);
+    }
+    assert.throws(() => new api.Server({ port: 0, deliveryPolicy: 'nearby' }), /delivery policy mode must be one of/);
+  });
+
   test(`${format}: quota options are validated`, () => {
     for (const quotas of [{ basic: { fanout: 0 } }, { basic: { maxMessageBytes: 1.5 } }, { basic: { msgPerSec: '5' } }]) {
       assert.throws(() => new api.Server({ port: 0, quotas }), RangeError, JSON.stringify(quotas));
     }
-    assert.throws(() => new api.Server({ port: 0, anonymousQuota: 'gold' }), /anonymousQuota must be one of the quotas/);
+    assert.throws(() => new api.Server({ port: 0, anonymousQuota: 'gold' }), /anonymousQuota must be null or one of the quotas/);
     assert.throws(() => new api.Server({ port: 0, quotas: 5 }), /quotas must be an object/);
-    assert.deepEqual(Object.keys(api.serverOption.quotas), ['anonymous', 'basic', 'pro', 'unlimited']);
+    // No profiles and no limits unless the operator gives them.
+    assert.deepEqual([Object.keys(api.serverOption.quotas), api.serverOption.anonymousQuota], [[], null]);
   });
 }
 
@@ -2229,10 +2272,10 @@ for (const [format, api] of variants) {
     ['service', { role: 'service' }, 'service'],
     ['device', { role: 'device' }, 'device'],
     ['no role is a device', {}, 'device'],
-    ['an unlimited quota does not make an admin', { quota: 'unlimited' }, 'device'],
+    ['a quota does not make an admin', { quota: 'unlimited' }, 'device'],
   ]) {
     test(`${format}: login role: ${label}`, { timeout: 10000 }, async t => {
-      const { server, connect } = await fixture(t, api, false, false, {}, { authManager: new api.BohoAuth(providerWith(info)) });
+      const { server, connect } = await fixture(t, api, false, false, {}, { authManager: new api.BohoAuth(providerWith(info)), quotas: { unlimited: {} } });
       server.attach('sudo', api.sudoService);
       const io = await connect(['rl', 'role-key']);
       const remote = server.manager.cid2remote.get('rl-client');

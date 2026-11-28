@@ -136,13 +136,13 @@ becomes the CID.
 const server = new Server({
   port: 7777,
   congPort: 8888,
-  localAuth: { mode: 'sharedKey', key: 'lab2026', quota: 'basic' },
+  localAuth: { mode: 'sharedKey', key: 'lab2026' },
   membersOnly: true
 });
 ```
 
-- `role` (default `'device'`) and `quota` (a `quotas` profile name; by default
-  `basic` for a device) apply to every login. Since 9.0 they replace `level`.
+- `role` (default `'device'`) and `quota` (the name of a profile you define in
+  `quotas`; none by default, so no limits) apply to every login. Since 9.0 they replace `level`.
 - Anonymous connections are still served; `membersOnly: true` drops their signals.
 - `duplicateLogin` and `onAuthEvent` work as with any `BohoAuth`. Passing an
   `authManager` together with `localAuth` throws a `TypeError`.
