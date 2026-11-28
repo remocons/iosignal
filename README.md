@@ -7,7 +7,7 @@ client–server communication, tag-based publish/subscribe and RPC services.
 Node.js also supports TCP through `IOCongSocket`.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/remocons/iosignal/main/docs/assets/iosignal-ecosystem.png" alt="Server, CLI, Node.js, Arduino and remote web apps connected through IOSignal" width="720" />
+  <img src="https://raw.githubusercontent.com/remocons/iosignal/main/docs/assets/iosignal-ecosystem.png" alt="Server, CLI, Node.js, Arduino, Python and a remote web app connected through IOSignal" width="720" />
 </p>
 
 ## Documentation and supported environments

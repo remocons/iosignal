@@ -7,7 +7,7 @@ Node.js와 브라우저를 위한 실시간 메시징 라이브러리입니다. 
 Node.js에서는 TCP 기반 `IOCongSocket`도 사용할 수 있습니다.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/remocons/iosignal/main/docs/assets/iosignal-ecosystem.png" alt="IOSignal로 연결되는 서버, CLI, Node.js, Arduino와 원격 제어 웹앱" width="720" />
+  <img src="https://raw.githubusercontent.com/remocons/iosignal/main/docs/assets/iosignal-ecosystem.png" alt="IOSignal로 연결되는 서버, CLI, Node.js, Arduino, Python과 원격 제어 웹앱" width="720" />
 </p>
 
 ## 문서와 지원 환경
