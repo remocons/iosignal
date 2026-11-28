@@ -2,12 +2,15 @@
 //   on | off | toggle       → on=1/0
 //   all=1 | all=0           → 0/1 값의 모든 채널 키(r1, s2, led1: 소문자+숫자)
 //   key=value               → key 설정
+//   ?                       → 바꾸지 않음(상태 묻기, 답은 $state)
 const KEY = /^[A-Za-z_][\w-]{0,31}$/;
 
 export function applyCommand(state, command) {
 	const next = { ...state };
 	delete next._;
 	const cmd = String(command ?? '').trim();
+	// '?' asks for the state only (the scanner's check): nothing changes, the device answers with its $state.
+	if (cmd === '?') return { state, changed: false };
 	if (cmd === 'on' || cmd === 'off') next.on = cmd === 'on' ? '1' : '0';
 	else if (cmd === 'toggle') next.on = next.on === '1' ? '0' : '1';
 	else if (cmd.includes('=')) {

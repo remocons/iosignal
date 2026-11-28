@@ -27,10 +27,15 @@ export const serverOption = {
   // Over a rate limit the address's new connections are closed at once until the window ends; open
   // ones are never touched. 0 turns a limit off. Loopback, private and exempt addresses are not
   // counted. A Server's connectionLimits option is merged over this (false: all off).
+  // msgPerAddressPerSec, bytesPerAddressPerSec: what all the anonymous-quota connections of one address may
+  // send together (token bucket, 1 s burst); over: dropped and told once (quota_exceeded). Without it the
+  // per-connection quota multiplies by maxPerAddress (2026-11-28).
   connectionLimits: {
     newPerAddressPerMin: 300,
     failedPerAddressPerMin: 30,
     maxPerAddress: 1000,
+    msgPerAddressPerSec: 1000,
+    bytesPerAddressPerSec: 8 * 1024 * 1024,
     windowMs: 60000,
     exempt: []
   },
@@ -59,11 +64,13 @@ export const serverOption = {
   //   msgPerSec, bytesPerSec: sustained receive rate (token bucket, 1 s burst); over: dropped
   //   maxConnections:  connections of one account (uid) at a time; over: the login fails
   //   maxSubscriptions: tags one connection may be subscribed to at a time; over: the tag is left out
+  //   deliveriesPerSec: subscribers the connection's publishes reach per second in all (token bucket,
+  //                    1 s burst; msgPerSec × fanout without it); over: a publish reaches fewer, like fanout
   quotas: {
-    anonymous: { maxMessageBytes: 256 * 1024, fanout: 1000, msgPerSec: 100, bytesPerSec: 2 * 1024 * 1024, maxConnections: null, maxSubscriptions: 1000 },
-    basic: { maxMessageBytes: 1024 * 1024, fanout: 1000, msgPerSec: 200, bytesPerSec: 4 * 1024 * 1024, maxConnections: 20, maxSubscriptions: 2000 },
-    pro: { maxMessageBytes: 4 * 1024 * 1024, fanout: 10000, msgPerSec: 1000, bytesPerSec: 16 * 1024 * 1024, maxConnections: 200, maxSubscriptions: 10000 },
-    unlimited: { maxMessageBytes: null, fanout: null, msgPerSec: null, bytesPerSec: null, maxConnections: null, maxSubscriptions: null }
+    anonymous: { maxMessageBytes: 256 * 1024, fanout: 1000, msgPerSec: 100, bytesPerSec: 2 * 1024 * 1024, maxConnections: null, maxSubscriptions: 1000, deliveriesPerSec: 2000 },
+    basic: { maxMessageBytes: 1024 * 1024, fanout: 1000, msgPerSec: 200, bytesPerSec: 4 * 1024 * 1024, maxConnections: 20, maxSubscriptions: 2000, deliveriesPerSec: 10000 },
+    pro: { maxMessageBytes: 4 * 1024 * 1024, fanout: 10000, msgPerSec: 1000, bytesPerSec: 16 * 1024 * 1024, maxConnections: 200, maxSubscriptions: 10000, deliveriesPerSec: 50000 },
+    unlimited: { maxMessageBytes: null, fanout: null, msgPerSec: null, bytesPerSec: null, maxConnections: null, maxSubscriptions: null, deliveriesPerSec: null }
   },
   anonymousQuota: 'anonymous', // profile of a connection that has not authenticated
 

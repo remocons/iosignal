@@ -1,5 +1,5 @@
 import { performance } from 'node:perf_hooks';
-import { isIP, isIPv4, isIPv6 } from 'node:net';
+import { isIP, isIPv4 } from 'node:net';
 import { pack, CongParser } from '../client/CongFrame.js'
 import { RemoteCore } from './RemoteCore.js';
 import { serverOption } from './serverOption.js';
@@ -22,6 +22,12 @@ export function normalizeIP(ip) {
   if (ip.startsWith('::ffff:') && isIPv4(ip.slice(7))) ip = ip.slice(7)
   if (ip === '::1') ip = '127.0.0.1'
   return isIP(ip) ? ip : undefined
+}
+
+// IOSignal does not support IPv6. A client address (after normalizeIP) must be IPv4; servers refuse
+// any other connection before it gets a CID. Loopback '::1' and IPv4-mapped addresses are IPv4 here.
+export function isSupportedIP(ip) {
+  return isIPv4(ip)
 }
 
 // Number of reverse proxies whose forwarding headers are trusted (see serverOption.trustProxy).
@@ -77,13 +83,11 @@ export class Remote extends RemoteCore {
     }
 
 
+    // Only IPv4 reaches here: the servers refuse other addresses (isSupportedIP).
     if (util.isPrivateIP(this.ip)) {
       // connection from local or private network has default private channel.
       this.HOME_CHANNEL = 'PRIVATE:'
       this.privateNode = true
-    } else if (isIPv6(this.ip)) {
-      // An IPv6 network is its /64 prefix; each host there has its own address.
-      this.HOME_CHANNEL = 'IP6:' + util.getIPv6PrefixHexString(this.ip)
     } else {
       // The HOME_CHANNEL is defined by the global IP address value.
       this.HOME_CHANNEL = 'IP:' + util.getIPv4HexString(this.ip)

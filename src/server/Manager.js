@@ -32,6 +32,9 @@ export class Manager {
       publishes: 0, deliveryAttempts: 0, quotaExcluded: 0, oversizeRejected: 0, rateLimited: 0,
       peerRxLimitSkipped: 0, // messages not sent: larger than the peer's advertised RX buffer
       subscriptionsRejected: 0, // subscriptions over a connection's quota maxSubscriptions, left out
+      quotaNotices: 0, // 'quota_exceeded' notices sent (RemoteCore.noticeQuota: once per kind per connection)
+      addressRateLimited: 0, // messages over connectionLimits msg/bytesPerAddressPerSec (anonymous connections), dropped
+      deliveriesLimited: 0, // subscribers left out by quota deliveriesPerSec
       policyDenied: 0,       // unicasts and CID publications a device's delivery policy kept back
       hostInbound: 0,        // client signals handed to a host (server.host)
       hostRejected: 0,       // signals to a host tag that were not handed over (E2E, malformed payload)
@@ -461,8 +464,19 @@ export class Manager {
     }
 
     this.counters.publishes++;
-    const sent = this.deliver(tag, message, remote.quota.fanout, publisher)
+    const fanout = remote.quota.fanout
+    const subscribers = this.channel_map.get(tag)?.size ?? 0
+    // deliveriesPerSec: the subscribers this publish may still reach this second (at most fanout).
+    const wanted = fanout === null ? subscribers : Math.min(fanout, subscribers)
+    const allowed = remote.takeDeliveries ? remote.takeDeliveries(wanted) : wanted
+    if (allowed < wanted) {
+      this.counters.deliveriesLimited += wanted - allowed
+      remote.noticeQuota?.('deliveriesPerSec', remote.quota.deliveriesPerSec)
+    }
+    const sent = subscribers === 0 ? null : allowed === 0 ? 0 : this.deliver(tag, message, allowed, publisher)
     if (sent === null) return ['err', 'No subscriber.']
+    // The publisher's fanout left subscribers out: tell it once.
+    if (fanout !== null && subscribers > fanout) remote.noticeQuota?.('fanout', fanout)
     return ['ok', sent]
   }
 
@@ -641,6 +655,7 @@ export class Manager {
       if (maxSubscriptions !== null && remote.channels.size >= maxSubscriptions && !remote.channels.has(tag)) {
         this.counters.subscriptionsRejected++
         remote.subscriptionsRejected = (remote.subscriptionsRejected ?? 0) + 1
+        remote.noticeQuota?.('maxSubscriptions', maxSubscriptions)
         return
       }
 

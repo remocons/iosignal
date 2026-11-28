@@ -1,0 +1,23 @@
+{
+	"schema": 1,
+	"type": "relay1.1",
+	"rev": 1,
+	"title": "1채널 릴레이",
+	"icon": "electrical_services",
+	"traits": [],
+	"view": {
+		"kind": "relays",
+		"keys": [
+			"r1"
+		]
+	},
+	"controls": [
+		{
+			"widget": "switch",
+			"label": "릴레이",
+			"key": "r1",
+			"cmdOn": "r1=1",
+			"cmdOff": "r1=0"
+		}
+	]
+}

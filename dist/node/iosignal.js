@@ -1,5 +1,5 @@
 import require$$0$2, { Transform } from 'stream';
-import net, { isIPv4, isIPv6 } from 'net';
+import net, { isIPv4 } from 'net';
 import require$$0$3 from 'events';
 import require$$1$1 from 'https';
 import http from 'http';
@@ -10,7 +10,7 @@ import require$$0 from 'zlib';
 import require$$0$1 from 'buffer';
 import require$$2 from 'util';
 import { performance as performance$1, monitorEventLoopDelay } from 'node:perf_hooks';
-import { isIPv4 as isIPv4$1, isIP, isIPv6 as isIPv6$1 } from 'node:net';
+import { isIPv4 as isIPv4$1, isIP } from 'node:net';
 import { networkInterfaces } from 'os';
 import fs, { readFileSync as readFileSync$1 } from 'fs';
 import { memoryUsage } from 'process';
@@ -784,11 +784,61 @@ function encodeSubscriptionTags(tag) {
   return encoded
 }
 
+// Subscriptions are queued and sent together (queueSubscription): a page that links many tags at once
+// (a device list) would otherwise send one message per tag, and a broker drops what is over the
+// connection's msgPerSec quota (anonymous: 100), such as the #search sent right after them.
 function sendSubscription(io, tag) {
-  const encoded = encodeSubscriptionTags(tag);
-  io.send_enc_mode(Buffer$1.concat([
-    $$1.NB('8', IOMsg.SUBSCRIBE), $$1.NB('8', encoded.byteLength), encoded
-  ]));
+  encodeSubscriptionTags(tag); // throws for an invalid tag here, not later in the flush
+  queueSubscription(io, IOMsg.SUBSCRIBE, tag);
+}
+
+// Queues SUBSCRIBE / UNSUBSCRIBE of tags. Consecutive ones of the same kind become one comma-joined
+// message (split at the one-byte tag length), in order. The queue is sent at the end of this turn,
+// or first thing before any other encrypted message, so a signal sent after a link() still reaches
+// the broker after the subscription. A queue left from an earlier connection is dropped (the new
+// connection's subscriptions go out with subscribe_channels()).
+function queueSubscription(io, type, tag) {
+  const queue = io._subscriptionQueue;
+  if (queue.revision !== io._stateRevision) {
+    queue.groups.length = 0;
+    queue.revision = io._stateRevision;
+  }
+  const last = queue.groups.at(-1);
+  if (last && last.type === type) last.tags.push(...tag.split(','));
+  else queue.groups.push({ type, tags: tag.split(',') });
+  if (!queue.scheduled) {
+    queue.scheduled = true;
+    queueMicrotask(() => flushSubscriptions(io));
+  }
+}
+
+function flushSubscriptions(io) {
+  const queue = io._subscriptionQueue;
+  queue.scheduled = false;
+  if (queue.flushing || queue.groups.length === 0) return
+  const groups = queue.revision === io._stateRevision ? queue.groups.splice(0) : (queue.groups.length = 0, []);
+  queue.flushing = true;
+  try {
+    for (const { type, tags } of groups) {
+      let batch = [];
+      let bytes = 0;
+      const send = () => {
+        const encoded = encodeTag(batch.join(','));
+        io.send_enc_mode(Buffer$1.concat([$$1.NB('8', type), $$1.NB('8', encoded.byteLength), encoded]));
+        batch = [];
+        bytes = 0;
+      };
+      for (const tag of tags) {
+        const size = encodeTag(tag).byteLength;
+        if (batch.length && bytes + 1 + size > SIZE_LIMIT.TAG_LEN1) send();
+        bytes += (batch.length ? 1 : 0) + size;
+        batch.push(tag);
+      }
+      if (batch.length) send();
+    }
+  } finally {
+    queue.flushing = false;
+  }
 }
 
 // Names the client emits itself. A signal or SERVER_SIGNAL with one of these as its tag is not
@@ -849,6 +899,7 @@ class IOCore extends EventEmitter {
      */
     this.stateName = this.getStateName(); // String type
     this._stateRevision = 0;
+    this._subscriptionQueue = { groups: [], revision: 0, scheduled: false, flushing: false };
 
     /**
      * Transmitted message counter.
@@ -1616,6 +1667,8 @@ class IOCore extends EventEmitter {
    */
   send_enc_mode(data, useEncryption) {
     if (!this.boho) return; // destroyed
+    // Queued (un)subscriptions go first, so messages keep the order they were made in.
+    if (this._subscriptionQueue.groups.length && !this._subscriptionQueue.flushing) flushSubscriptions(this);
 
     // use default policy.
     if (useEncryption === undefined) {
@@ -1870,10 +1923,14 @@ class IOCore extends EventEmitter {
     }
 
 
-    this.send_enc_mode(Buffer$1.concat([
-      $$1.NB('8', IOMsg.UNSUBSCRIBE),
-      $$1.NB('8', tagEncoded.byteLength),
-      tagEncoded]));
+    if (tag == "") {
+      this.send_enc_mode(Buffer$1.concat([
+        $$1.NB('8', IOMsg.UNSUBSCRIBE),
+        $$1.NB('8', tagEncoded.byteLength),
+        tagEncoded]));
+    } else {
+      queueSubscription(this, IOMsg.UNSUBSCRIBE, tag);
+    }
   }
 
 
@@ -7543,10 +7600,15 @@ const serverOption = {
   // Over a rate limit the address's new connections are closed at once until the window ends; open
   // ones are never touched. 0 turns a limit off. Loopback, private and exempt addresses are not
   // counted. A Server's connectionLimits option is merged over this (false: all off).
+  // msgPerAddressPerSec, bytesPerAddressPerSec: what all the anonymous-quota connections of one address may
+  // send together (token bucket, 1 s burst); over: dropped and told once (quota_exceeded). Without it the
+  // per-connection quota multiplies by maxPerAddress (2026-11-28).
   connectionLimits: {
     newPerAddressPerMin: 300,
     failedPerAddressPerMin: 30,
     maxPerAddress: 1000,
+    msgPerAddressPerSec: 1000,
+    bytesPerAddressPerSec: 8 * 1024 * 1024,
     windowMs: 60000,
     exempt: []
   },
@@ -7575,11 +7637,13 @@ const serverOption = {
   //   msgPerSec, bytesPerSec: sustained receive rate (token bucket, 1 s burst); over: dropped
   //   maxConnections:  connections of one account (uid) at a time; over: the login fails
   //   maxSubscriptions: tags one connection may be subscribed to at a time; over: the tag is left out
+  //   deliveriesPerSec: subscribers the connection's publishes reach per second in all (token bucket,
+  //                    1 s burst; msgPerSec × fanout without it); over: a publish reaches fewer, like fanout
   quotas: {
-    anonymous: { maxMessageBytes: 256 * 1024, fanout: 1000, msgPerSec: 100, bytesPerSec: 2 * 1024 * 1024, maxConnections: null, maxSubscriptions: 1000 },
-    basic: { maxMessageBytes: 1024 * 1024, fanout: 1000, msgPerSec: 200, bytesPerSec: 4 * 1024 * 1024, maxConnections: 20, maxSubscriptions: 2000 },
-    pro: { maxMessageBytes: 4 * 1024 * 1024, fanout: 10000, msgPerSec: 1000, bytesPerSec: 16 * 1024 * 1024, maxConnections: 200, maxSubscriptions: 10000 },
-    unlimited: { maxMessageBytes: null, fanout: null, msgPerSec: null, bytesPerSec: null, maxConnections: null, maxSubscriptions: null }
+    anonymous: { maxMessageBytes: 256 * 1024, fanout: 1000, msgPerSec: 100, bytesPerSec: 2 * 1024 * 1024, maxConnections: null, maxSubscriptions: 1000, deliveriesPerSec: 2000 },
+    basic: { maxMessageBytes: 1024 * 1024, fanout: 1000, msgPerSec: 200, bytesPerSec: 4 * 1024 * 1024, maxConnections: 20, maxSubscriptions: 2000, deliveriesPerSec: 10000 },
+    pro: { maxMessageBytes: 4 * 1024 * 1024, fanout: 10000, msgPerSec: 1000, bytesPerSec: 16 * 1024 * 1024, maxConnections: 200, maxSubscriptions: 10000, deliveriesPerSec: 50000 },
+    unlimited: { maxMessageBytes: null, fanout: null, msgPerSec: null, bytesPerSec: null, maxConnections: null, maxSubscriptions: null, deliveriesPerSec: null }
   },
   anonymousQuota: 'anonymous', // profile of a connection that has not authenticated
 
@@ -7826,6 +7890,7 @@ class RemoteCore {
   setQuota(name, tell) {
     this.quotaName = name;
     this.quota = this.manager.quotas[name];
+    this._quotaNoticed = null; // a new profile: its limits may be told once again (noticeQuota)
     // The CongSocket frame ceiling follows maxMessageBytes.
     this.refreshRxFrameLimit?.();
     if (tell) {
@@ -7851,8 +7916,8 @@ class RemoteCore {
       if (bytesPerSec !== null) this._byteTokens = Math.min(bytesPerSec, this._byteTokens + seconds * bytesPerSec);
     }
     this._rateAt = now;
-    if (msgPerSec !== null && this._msgTokens < 1) return false;
-    if (bytesPerSec !== null && this._byteTokens < Math.min(bytes, bytesPerSec)) return false;
+    if (msgPerSec !== null && this._msgTokens < 1) { this.rateLimitedBy = 'msgPerSec'; return false; }
+    if (bytesPerSec !== null && this._byteTokens < Math.min(bytes, bytesPerSec)) { this.rateLimitedBy = 'bytesPerSec'; return false; }
     if (msgPerSec !== null) this._msgTokens -= 1;
     if (bytesPerSec !== null) this._byteTokens -= bytes;
     return true;
@@ -7871,9 +7936,56 @@ class RemoteCore {
     }
     if (!this.takeRateTokens(rxBytes)) {
       this.manager.counters.rateLimited++;
+      this.noticeQuota(this.rateLimitedBy, this.quota[this.rateLimitedBy]);
       return false;
     }
+    // All the anonymous connections of one address together (connectionLimits msg/bytesPerAddressPerSec).
+    const limitIp = this.socket?._limitIp;
+    if (limitIp !== undefined && this.quotaName === this.manager.anonymousQuota) {
+      const over = this.manager.addressLimiter?.takeRate(limitIp, rxBytes);
+      if (over) {
+        this.manager.counters.addressRateLimited++;
+        this.noticeQuota(over, this.manager.server?.connectionLimits?.[over] ?? null);
+        return false;
+      }
+    }
     return true;
+  }
+
+  /**
+   * Subscribers this connection's publish may reach now (quota deliveriesPerSec: a token bucket holding
+   * one second), at most wanted; the tokens are taken. Unlimited: wanted.
+   */
+  takeDeliveries(wanted) {
+    const perSec = this.quota?.deliveriesPerSec ?? null;
+    if (perSec === null || wanted <= 0) return wanted;
+    const now = performance$1.now();
+    if (this._deliveryAt === undefined) this._deliveryTokens = perSec;
+    else this._deliveryTokens = Math.min(perSec, this._deliveryTokens + (now - this._deliveryAt) / 1000 * perSec);
+    this._deliveryAt = now;
+    const allowed = Math.max(0, Math.min(wanted, Math.floor(this._deliveryTokens)));
+    this._deliveryTokens -= allowed;
+    return allowed;
+  }
+
+  /**
+   * Tells this connection, once per kind, that a quota left something out: a SERVER_SIGNAL
+   * { event: 'quota_exceeded', data: { kind, limit, quota } } (the JS client emits 'quota_exceeded').
+   * Nothing is held back or retried: what went over is still dropped, as before. Only to WebSocket
+   * connections (web apps); TCP devices (Arduino) do not read it and have small receive buffers.
+   * kind: 'msgPerSec' | 'bytesPerSec' | 'maxSubscriptions' | 'fanout' | 'deliveriesPerSec' |
+   * 'msgPerAddressPerSec' | 'bytesPerAddressPerSec' (all anonymous connections of the address together).
+   */
+  noticeQuota(kind, limit) {
+    if (this.socketType !== 'websocket' || !kind) return;
+    this._quotaNoticed ??= new Set();
+    if (this._quotaNoticed.has(kind)) return;
+    this._quotaNoticed.add(kind);
+    this.manager.counters.quotaNotices++;
+    this.send_enc_mode($$1.pack(
+      $$1.MB('#MsgType', '8', IOMsg.SERVER_SIGNAL),
+      $$1.MB('#signalObject', { event: 'quota_exceeded', data: { kind, limit: limit ?? null, quota: this.quotaName ?? null } })
+    ));
   }
 
   issueAuthChallenge() {
@@ -8302,45 +8414,19 @@ class RemoteCore {
 
 }
 
-// 16 address bytes of an IPv6 string (with '::', an embedded IPv4 tail or a %zone), else null.
-function ipv6Bytes(ip) {
-  if (!isIPv6(ip)) return null
-  ip = ip.split('%')[0];
-  const tailStart = ip.lastIndexOf(':') + 1;
-  const tail = ip.slice(tailStart);
-  if (isIPv4(tail)) {
-    const [a, b, c, d] = tail.split('.').map(Number);
-    ip = ip.slice(0, tailStart) + ((a << 8) | b).toString(16) + ':' + ((c << 8) | d).toString(16);
-  }
-  const words = s => s ? s.split(':').map(h => parseInt(h, 16)) : [];
-  const [head, rest] = ip.split('::');
-  const left = words(head), right = words(rest);
-  const all = [...left, ...new Array(8 - left.length - right.length).fill(0), ...right];
-  const bytes = Buffer.alloc(16);
-  all.forEach((word, i) => bytes.writeUInt16BE(word, i * 2));
-  return bytes
-}
-
 function isPrivateIPv4(ip) {
   const [a, b] = ip.split('.').map(Number);
   return a === 0 || a === 127 || a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168)
 }
 
-// Unspecified, loopback, RFC 1918, IPv6 unique-local (fc00::/7) and link-local (fe80::/10).
+// IPv6 is not supported (connections from IPv6 addresses are refused, see Remote.isSupportedIP):
+// only IPv4 addresses are private. '::1' and IPv4-mapped '::ffff:a.b.c.d' are read as IPv4.
+// Unspecified, loopback and RFC 1918.
 function isPrivateIP(ip) {
-  if (isIPv4(ip)) return isPrivateIPv4(ip)
-  const bytes = ipv6Bytes(ip);
-  if (!bytes) return false
-  if (bytes.subarray(0, 15).every(v => v === 0) && bytes[15] <= 1) return true // :: and ::1
-  if (bytes.subarray(0, 10).every(v => v === 0) && bytes[10] === 0xff && bytes[11] === 0xff) {
-    return isPrivateIPv4(bytes.subarray(12).join('.')) // IPv4-mapped
-  }
-  return (bytes[0] & 0xfe) === 0xfc || (bytes[0] === 0xfe && (bytes[1] & 0xc0) === 0x80)
-}
-
-// Hosts on one IPv6 network share the /64 prefix, not the address: hex of those 8 bytes.
-function getIPv6PrefixHexString(ip) {
-  return ipv6Bytes(ip)?.subarray(0, 8).toString('hex') ?? null
+  if (typeof ip !== 'string') return false
+  if (ip === '::1') return true
+  if (ip.startsWith('::ffff:')) ip = ip.slice(7);
+  return isIPv4(ip) && isPrivateIPv4(ip)
 }
 
 function numberWithCommas(x) {
@@ -8406,6 +8492,12 @@ function normalizeIP(ip) {
   return isIP(ip) ? ip : undefined
 }
 
+// IOSignal does not support IPv6. A client address (after normalizeIP) must be IPv4; servers refuse
+// any other connection before it gets a CID. Loopback '::1' and IPv4-mapped addresses are IPv4 here.
+function isSupportedIP(ip) {
+  return isIPv4$1(ip)
+}
+
 // Number of reverse proxies whose forwarding headers are trusted (see serverOption.trustProxy).
 function trustedProxyHops(peerIP, trust = serverOption.trustProxy) {
   if (trust === 'private') return peerIP && isPrivateIP(peerIP) ? 1 : 0
@@ -8459,13 +8551,11 @@ class Remote extends RemoteCore {
     }
 
 
+    // Only IPv4 reaches here: the servers refuse other addresses (isSupportedIP).
     if (isPrivateIP(this.ip)) {
       // connection from local or private network has default private channel.
       this.HOME_CHANNEL = 'PRIVATE:';
       this.privateNode = true;
-    } else if (isIPv6$1(this.ip)) {
-      // An IPv6 network is its /64 prefix; each host there has its own address.
-      this.HOME_CHANNEL = 'IP6:' + getIPv6PrefixHexString(this.ip);
     } else {
       // The HOME_CHANNEL is defined by the global IP address value.
       this.HOME_CHANNEL = 'IP:' + getIPv4HexString(this.ip);
@@ -8859,7 +8949,8 @@ class Metrics {
     }
   }
 
-  // One logStats line; rates are per second since the previous line.
+  // One logStats line; rates are per second since the previous line. Quota counters since the previous
+  // line are added at the end only when something was limited (quota_exceeded notices included).
   summaryLine(now = performance$1.now()) {
     const s = this.snapshot(), previous = this.previous;
     const rate = key => previous ? (s.counters[key] - previous.counters[key]) * 1000 / Math.max(1, now - previous.time) : 0;
@@ -8869,7 +8960,7 @@ class Metrics {
       ` ch ${s.channels} retained ${s.retained.channel}/${bytes(s.retained.bytes)}` +
       ` | rx ${rate('rxMessages').toFixed(1)}/s ${bytes(rate('rxBytes'))}/s` +
       ` tx ${rate('txMessages').toFixed(1)}/s ${bytes(rate('txBytes'))}/s pub ${rate('publishes').toFixed(1)}/s` +
-      ` | rss ${bytes(s.memory.rss)} heap ${bytes(s.memory.heapUsed)}`
+      ` | rss ${bytes(s.memory.rss)} heap ${bytes(s.memory.heapUsed)}` + limitedText(s.counters, previous?.counters)
   }
 
   // Compact summary for metrics reports ('@$metrics'); byte counters are cumulative.
@@ -8976,17 +9067,31 @@ class Metrics {
 
 }
 
+// ' | limited rate 3 addr 0 deliv 12 subs 0 fanout 0 oversize 0 notices 2' when any of them grew since the
+// previous logStats line, else ''. The first line counts from the start.
+const LIMITED = [['rate', 'rateLimited'], ['addr', 'addressRateLimited'], ['deliv', 'deliveriesLimited'],
+  ['subs', 'subscriptionsRejected'], ['fanout', 'quotaExcluded'], ['oversize', 'oversizeRejected'], ['notices', 'quotaNotices']];
+function limitedText(counters, previous) {
+  const grown = LIMITED.map(([label, key]) => [label, (counters[key] ?? 0) - (previous?.[key] ?? 0)]);
+  return grown.some(([, n]) => n > 0) ? ' | limited ' + grown.map(([label, n]) => `${label} ${n}`).join(' ') : ''
+}
+
 /**
  * Delivery policy: which senders a device accepts CID unicast ('<cid>@topic') from.
  *
  * The policy belongs to an owned device (one whose login has a uid) and comes with its login
  * (authInfo.rxPolicy from the key provider, JSON text or an object) or later from
  * Manager.setDeliveryPolicy(). A device without an owner uid is never filtered.
+ * An owned device without a stored policy uses mode 'home' (2026-11-27; before that, no policy was open).
  *
  * {
  *   v: 1,
- *   mode: 'open' | 'allowlist' | 'denylist',   // open: everyone (the default)
- *   anonymous: 'allow' | 'deny',                // default: deny for allowlist, allow for denylist
+ *   mode: 'home' | 'open' | 'allowlist' | 'denylist',
+ *                                               // home: its own network (same public IP, HOME_CHANNEL) and the
+ *                                               //   listed senders (the default for an owned device);
+ *                                               // open: everyone, anywhere (only when chosen)
+ *   anonymous: 'allow' | 'deny',                // default: allow for denylist, deny otherwise (home: anonymous
+ *                                               //   senders on its own network are let in by rule 5 anyway)
  *   publish: 'all' | 'policy',                  // who gets its CID publications ('@topic', '@$topic'):
  *                                               // 'all' subscribers (default), or only those the policy allows
  *   allow: { cids: [], uids: [] },
@@ -8998,8 +9103,9 @@ class Metrics {
  *  2. the device itself, its owner's uid, or a connection with role 'admin' -> allow
  *  3. sender CID in deny.cids / allow.cids     -> deny / allow
  *  4. sender uid in deny.uids / allow.uids     -> deny / allow
- *  5. anonymous sender (not authenticated, no uid) -> anonymous setting
- *  6. mode default: allowlist denies, denylist allows
+ *  5. mode home: sender on the device's own network (same HOME_CHANNEL) -> allow
+ *  6. anonymous sender (not authenticated, no uid) -> anonymous setting
+ *  7. mode default: allowlist and home deny, denylist allows
  *
  * With publish 'policy', the same decision (subscriber in the sender's place) filters the device's CID
  * publications and the retained ones a new subscriber would get. Its '@state' close notice included.
@@ -9008,7 +9114,9 @@ class Metrics {
  * Only the server's own view of the sender is used, never anything in the message.
  */
 
-const DELIVERY_POLICY_MODES = Object.freeze(['open', 'allowlist', 'denylist']);
+const DELIVERY_POLICY_MODES = Object.freeze(['home', 'open', 'allowlist', 'denylist']);
+// What an owned device without a stored policy uses.
+const DEFAULT_DELIVERY_POLICY = Object.freeze({ v: 1, mode: 'home', anonymous: 'deny', publish: 'all', allow: Object.freeze({ cids: [], uids: [] }), deny: Object.freeze({ cids: [], uids: [] }) });
 const DELIVERY_POLICY_MAX_ENTRIES = 200;
 const ENTRY_MAX_LENGTH = 64;
 const LISTS = ['cids', 'uids'];
@@ -9053,7 +9161,7 @@ function normalizeDeliveryPolicy(raw) {
   if (policy.v !== undefined && policy.v !== 1) throw new TypeError('delivery policy version must be 1')
   const mode = policy.mode ?? 'open';
   if (!DELIVERY_POLICY_MODES.includes(mode)) throw new TypeError(`delivery policy mode must be one of: ${DELIVERY_POLICY_MODES.join(', ')}`)
-  const anonymous = policy.anonymous ?? (mode === 'allowlist' ? 'deny' : 'allow');
+  const anonymous = policy.anonymous ?? (mode === 'denylist' || mode === 'open' ? 'allow' : 'deny');
   if (anonymous !== 'allow' && anonymous !== 'deny') throw new TypeError("delivery policy anonymous must be 'allow' or 'deny'")
   const publish = policy.publish ?? 'all';
   if (publish !== 'all' && publish !== 'policy') throw new TypeError("delivery policy publish must be 'all' or 'policy'")
@@ -9066,7 +9174,8 @@ function normalizeDeliveryPolicy(raw) {
 }
 
 /**
- * The form Manager checks per message, or null when nothing is filtered (no owner, no policy, open).
+ * The form Manager checks per message, or null when nothing is filtered (no owner, or mode open).
+ * No stored policy is DEFAULT_DELIVERY_POLICY (home).
  * Never throws: a stored policy that cannot be read only lets the owner's own senders through
  * (fail closed), since ignoring it would deliver what the owner asked to block.
  */
@@ -9074,7 +9183,7 @@ function compileDeliveryPolicy(raw, ownerUid) {
   if (typeof ownerUid !== 'string' || !ownerUid) return null
   let policy;
   try {
-    policy = normalizeDeliveryPolicy(raw);
+    policy = normalizeDeliveryPolicy(raw) ?? DEFAULT_DELIVERY_POLICY;
   } catch (error) {
     console.warn(`[iosignal] unreadable delivery policy of uid ${ownerUid}, owner only:`, error.message);
     policy = { mode: 'allowlist', anonymous: 'deny', publish: 'policy', allow: { cids: [], uids: [] }, deny: { cids: [], uids: [] } };
@@ -9084,6 +9193,7 @@ function compileDeliveryPolicy(raw, ownerUid) {
     owner: ownerUid,
     mode: policy.mode,
     defaultAllow: policy.mode === 'denylist',
+    home: policy.mode === 'home',
     anonymousAllow: policy.anonymous === 'allow',
     filterPublish: policy.publish === 'policy',
     allowCids: new Set(policy.allow.cids),
@@ -9111,6 +9221,8 @@ function deliveryAllowed(target, sender) {
     if (policy.denyUids.has(uid)) return false
     if (policy.allowUids.has(uid)) return true
   }
+  // Its own network: the same public IPv4 (or both private), as the home channel tags use.
+  if (policy.home && sender.HOME_CHANNEL && sender.HOME_CHANNEL === target.HOME_CHANNEL) return true
   if (!authorized && !uid) return policy.anonymousAllow
   return policy.defaultAllow
 }
@@ -9496,14 +9608,14 @@ class Host extends require$$0$3 {
 
 const MAX_ADDRESSES = 10000; // tracked public addresses; past windows are forgotten first
 
-const LIMIT_KEYS = ['newPerAddressPerMin', 'failedPerAddressPerMin', 'maxPerAddress', 'windowMs'];
+const LIMIT_KEYS = ['newPerAddressPerMin', 'failedPerAddressPerMin', 'maxPerAddress', 'windowMs', 'msgPerAddressPerSec', 'bytesPerAddressPerSec'];
 
 /**
  * Checks a limits object ({ newPerAddressPerMin, failedPerAddressPerMin, maxPerAddress, windowMs,
  * exempt }) and returns a copy. A count of 0 turns that limit off; windowMs is at least 1000.
  */
 function connectionLimits(given, defaults) {
-  if (given === false) return { ...defaults, newPerAddressPerMin: 0, failedPerAddressPerMin: 0, maxPerAddress: 0, exempt: [] }
+  if (given === false) return { ...defaults, newPerAddressPerMin: 0, failedPerAddressPerMin: 0, maxPerAddress: 0, msgPerAddressPerSec: 0, bytesPerAddressPerSec: 0, exempt: [] }
   if (given !== undefined && (given === null || typeof given !== 'object')) {
     throw new TypeError('connectionLimits must be an object or false')
   }
@@ -9547,6 +9659,7 @@ class AddressLimiter {
     this.onLimit = onLimit ?? null;
     this.addresses = new Map(); // ip -> { since, created, failed, open, until, reason }
     this.refused = { new: 0, failed: 0, open: 0 }; // cumulative
+    this.rateLimited = 0; // messages dropped by msgPerAddressPerSec / bytesPerAddressPerSec (takeRate)
   }
 
   #exempt(ip, limits) {
@@ -9640,6 +9753,34 @@ class AddressLimiter {
     return list.sort((a, b) => b.count - a.count).slice(0, limit)
   }
 
+  /**
+   * A message of bytes from an address (anonymous-quota connections only; the caller decides): null when
+   * it may pass, else the limit it went over ('msgPerAddressPerSec' | 'bytesPerAddressPerSec'). Token
+   * buckets holding one second, kept on the address's entry while it has open connections.
+   */
+  takeRate(ip, bytes, now = performance$1.now()) {
+    const limits = this.getLimits();
+    const msgLimit = limits.msgPerAddressPerSec || 0;
+    const byteLimit = limits.bytesPerAddressPerSec || 0;
+    if ((!msgLimit && !byteLimit) || this.#exempt(ip, limits)) return null
+    const entry = this.addresses.get(ip);
+    if (!entry) return null
+    if (entry.rateAt === undefined) {
+      entry.msgTokens = msgLimit;
+      entry.byteTokens = byteLimit;
+    } else {
+      const seconds = Math.max(0, now - entry.rateAt) / 1000;
+      if (msgLimit) entry.msgTokens = Math.min(msgLimit, entry.msgTokens + seconds * msgLimit);
+      if (byteLimit) entry.byteTokens = Math.min(byteLimit, entry.byteTokens + seconds * byteLimit);
+    }
+    entry.rateAt = now;
+    if (msgLimit && entry.msgTokens < 1) { this.rateLimited++; return 'msgPerAddressPerSec' }
+    if (byteLimit && entry.byteTokens < Math.min(bytes, byteLimit)) { this.rateLimited++; return 'bytesPerAddressPerSec' }
+    if (msgLimit) entry.msgTokens -= 1;
+    if (byteLimit) entry.byteTokens -= bytes;
+    return null
+  }
+
   /** Open connections counted for an address (0 for an exempt one). */
   openCount(ip) {
     return this.addresses.get(ip)?.open ?? 0
@@ -9668,6 +9809,9 @@ class Manager {
       publishes: 0, deliveryAttempts: 0, quotaExcluded: 0, oversizeRejected: 0, rateLimited: 0,
       peerRxLimitSkipped: 0, // messages not sent: larger than the peer's advertised RX buffer
       subscriptionsRejected: 0, // subscriptions over a connection's quota maxSubscriptions, left out
+      quotaNotices: 0, // 'quota_exceeded' notices sent (RemoteCore.noticeQuota: once per kind per connection)
+      addressRateLimited: 0, // messages over connectionLimits msg/bytesPerAddressPerSec (anonymous connections), dropped
+      deliveriesLimited: 0, // subscribers left out by quota deliveriesPerSec
       policyDenied: 0,       // unicasts and CID publications a device's delivery policy kept back
       hostInbound: 0,        // client signals handed to a host (server.host)
       hostRejected: 0,       // signals to a host tag that were not handed over (E2E, malformed payload)
@@ -10088,8 +10232,19 @@ class Manager {
     }
 
     this.counters.publishes++;
-    const sent = this.deliver(tag, message, remote.quota.fanout, publisher);
+    const fanout = remote.quota.fanout;
+    const subscribers = this.channel_map.get(tag)?.size ?? 0;
+    // deliveriesPerSec: the subscribers this publish may still reach this second (at most fanout).
+    const wanted = fanout === null ? subscribers : Math.min(fanout, subscribers);
+    const allowed = remote.takeDeliveries ? remote.takeDeliveries(wanted) : wanted;
+    if (allowed < wanted) {
+      this.counters.deliveriesLimited += wanted - allowed;
+      remote.noticeQuota?.('deliveriesPerSec', remote.quota.deliveriesPerSec);
+    }
+    const sent = subscribers === 0 ? null : allowed === 0 ? 0 : this.deliver(tag, message, allowed, publisher);
     if (sent === null) return ['err', 'No subscriber.']
+    // The publisher's fanout left subscribers out: tell it once.
+    if (fanout !== null && subscribers > fanout) remote.noticeQuota?.('fanout', fanout);
     return ['ok', sent]
   }
 
@@ -10268,6 +10423,7 @@ class Manager {
       if (maxSubscriptions !== null && remote.channels.size >= maxSubscriptions && !remote.channels.has(tag)) {
         this.counters.subscriptionsRejected++;
         remote.subscriptionsRejected = (remote.subscriptionsRejected ?? 0) + 1;
+        remote.noticeQuota?.('maxSubscriptions', maxSubscriptions);
         return
       }
 
@@ -12051,7 +12207,7 @@ function integer(name, value, min, max = Number.MAX_SAFE_INTEGER) {
 }
 const positive = (name, value) => integer(name, value, 1);
 const nonNegative = (name, value) => integer(name, value, 0);
-const QUOTA_LIMITS = ['maxMessageBytes', 'fanout', 'msgPerSec', 'bytesPerSec', 'maxConnections', 'maxSubscriptions'];
+const QUOTA_LIMITS = ['maxMessageBytes', 'fanout', 'msgPerSec', 'bytesPerSec', 'maxConnections', 'maxSubscriptions', 'deliveriesPerSec'];
 
 // This Server's quota profiles: the defaults with each given profile merged over its default
 // (a new name starts from no limits). Every limit is a positive integer or null (unlimited).
@@ -12289,6 +12445,8 @@ class Server extends require$$0$3 {
     this.wss.on('connection', (ws, req) => {
       // Too many connections from this address: closed before anything is sent (try again later).
       const ip = getClientAddress(req, this.trustProxy).ip;
+      // IPv6 is not supported: closed before anything is sent.
+      if (!isSupportedIP(ip)) return ws.close(1008, 'IPv6 not supported')
       if (!this.manager.admitConnection(ip)) return ws.close(1013, 'too many connections')
       ws.socketType = 'websocket';
       ws._limitIp = ip;
@@ -12303,6 +12461,7 @@ class Server extends require$$0$3 {
       // Signals are small frames; send each immediately instead of waiting on Nagle.
       socket.setNoDelay(true);
       const ip = normalizeIP(socket.remoteAddress) ?? '0.0.0.0';
+      if (!isSupportedIP(ip)) return socket.destroy() // IPv6 is not supported
       if (!this.manager.admitConnection(ip)) return socket.destroy()
       socket._limitIp = ip;
       this.manager.addRemote(socket);
@@ -12872,4 +13031,4 @@ class RedisService {
 
 const version = pkg.version;
 
-export { mt as Boho, BohoAuth, CongRx, ENC_MODE, FileKeyProvider, FileLogger, IOWS as IO, IOCongSocket, IOMsg, LocalKeyProvider, $$1 as MBP, PAYLOAD_TYPE, ROLES, RedisKeyProvider, RedisService, SIZE_LIMIT, STATE, STATUS$1 as STATUS, Server, StringKeyProvider, checkLoginId, defaultQuota, delay, getIPv4HexString, getIPv6PrefixHexString, getLocalAddress, getPayloadFromSignalPack, getSignalPack, hasRole, isPrivateIP, numberWithCommas, pack, parsePayload, replyService, serverOption, sudoService, version };
+export { mt as Boho, BohoAuth, CongRx, ENC_MODE, FileKeyProvider, FileLogger, IOWS as IO, IOCongSocket, IOMsg, LocalKeyProvider, $$1 as MBP, PAYLOAD_TYPE, ROLES, RedisKeyProvider, RedisService, SIZE_LIMIT, STATE, STATUS$1 as STATUS, Server, StringKeyProvider, checkLoginId, defaultQuota, delay, getIPv4HexString, getLocalAddress, getPayloadFromSignalPack, getSignalPack, hasRole, isPrivateIP, numberWithCommas, pack, parsePayload, replyService, serverOption, sudoService, version };

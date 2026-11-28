@@ -214,6 +214,12 @@ declare class IOCore extends EventEmitter<string | symbol, any> {
      */
     stateName: string;
     _stateRevision: number;
+    _subscriptionQueue: {
+        groups: never[];
+        revision: number;
+        scheduled: boolean;
+        flushing: boolean;
+    };
     /**
      * Transmitted message counter.
      * @type {number}
@@ -710,6 +716,7 @@ declare class AddressLimiter {
         failed: number;
         open: number;
     };
+    rateLimited: number;
     /**
      * A new connection from ip: true to accept it (it is then counted as open; call closed() when it
      * ends), false to close it at once. Its reason is in lastRefusal.
@@ -728,6 +735,12 @@ declare class AddressLimiter {
         count: any;
         until: any;
     }[];
+    /**
+     * A message of bytes from an address (anonymous-quota connections only; the caller decides): null when
+     * it may pass, else the limit it went over ('msgPerAddressPerSec' | 'bytesPerAddressPerSec'). Token
+     * buckets holding one second, kept on the address's entry while it has open connections.
+     */
+    takeRate(ip: any, bytes: any, now?: number): "msgPerAddressPerSec" | "bytesPerAddressPerSec" | null;
     /** Open connections counted for an address (0 for an exempt one). */
     openCount(ip: any): any;
     #private;
@@ -1039,6 +1052,9 @@ declare class Manager {
         rateLimited: number;
         peerRxLimitSkipped: number;
         subscriptionsRejected: number;
+        quotaNotices: number;
+        addressRateLimited: number;
+        deliveriesLimited: number;
         policyDenied: number;
         hostInbound: number;
         hostRejected: number;
@@ -1442,6 +1458,8 @@ declare namespace serverOption {
         let newPerAddressPerMin: number;
         let failedPerAddressPerMin: number;
         let maxPerAddress: number;
+        let msgPerAddressPerSec: number;
+        let bytesPerAddressPerSec: number;
         let windowMs: number;
         let exempt: never[];
     }
@@ -1461,6 +1479,7 @@ declare namespace serverOption {
             let bytesPerSec: number;
             let maxConnections: null;
             let maxSubscriptions: number;
+            let deliveriesPerSec: number;
         }
         namespace basic {
             let maxMessageBytes_1: number;
@@ -1475,6 +1494,8 @@ declare namespace serverOption {
             export { maxConnections_1 as maxConnections };
             let maxSubscriptions_1: number;
             export { maxSubscriptions_1 as maxSubscriptions };
+            let deliveriesPerSec_1: number;
+            export { deliveriesPerSec_1 as deliveriesPerSec };
         }
         namespace pro {
             let maxMessageBytes_2: number;
@@ -1489,6 +1510,8 @@ declare namespace serverOption {
             export { maxConnections_2 as maxConnections };
             let maxSubscriptions_2: number;
             export { maxSubscriptions_2 as maxSubscriptions };
+            let deliveriesPerSec_2: number;
+            export { deliveriesPerSec_2 as deliveriesPerSec };
         }
         namespace unlimited {
             let maxMessageBytes_3: null;
@@ -1503,6 +1526,8 @@ declare namespace serverOption {
             export { maxConnections_3 as maxConnections };
             let maxSubscriptions_3: null;
             export { maxSubscriptions_3 as maxSubscriptions };
+            let deliveriesPerSec_3: null;
+            export { deliveriesPerSec_3 as deliveriesPerSec };
         }
     }
     export let anonymousQuota: string;
@@ -1563,7 +1588,6 @@ declare namespace serverOption {
 }
 
 declare function isPrivateIP(ip: any): boolean;
-declare function getIPv6PrefixHexString(ip: any): string | null;
 declare function numberWithCommas(x: any): any;
 declare function getIPv4HexString(ipStr: any): string;
 declare function getLocalAddress(): string;
@@ -1684,7 +1708,7 @@ declare class RedisService {
 declare function getSignalPack(tag: any, ...args: any[]): Buffer<ArrayBufferLike>;
 declare function parsePayload(args: any): {
     type: number;
-    buffer: Uint8Array<ArrayBuffer> | Buffer<ArrayBufferLike> | null | undefined;
+    buffer: Buffer<ArrayBufferLike> | Uint8Array<ArrayBuffer> | null | undefined;
 };
 declare function getPayloadFromSignalPack(signalPack: any): any;
 
@@ -1854,4 +1878,4 @@ declare class BohoAuth {
 
 declare const version: string;
 
-export { BohoAuth, CongRx, ENC_MODE, FileKeyProvider, FileLogger, IOWS as IO, IOCongSocket, IOMsg, LocalKeyProvider, PAYLOAD_TYPE, ROLES, RedisKeyProvider, RedisService, SIZE_LIMIT, STATE, STATUS, Server, StringKeyProvider, checkLoginId, defaultQuota, delay, getIPv4HexString, getIPv6PrefixHexString, getLocalAddress, getPayloadFromSignalPack, getSignalPack, hasRole, isPrivateIP, numberWithCommas, pack, parsePayload, replyService, serverOption, sudoService, version };
+export { BohoAuth, CongRx, ENC_MODE, FileKeyProvider, FileLogger, IOWS as IO, IOCongSocket, IOMsg, LocalKeyProvider, PAYLOAD_TYPE, ROLES, RedisKeyProvider, RedisService, SIZE_LIMIT, STATE, STATUS, Server, StringKeyProvider, checkLoginId, defaultQuota, delay, getIPv4HexString, getLocalAddress, getPayloadFromSignalPack, getSignalPack, hasRole, isPrivateIP, numberWithCommas, pack, parsePayload, replyService, serverOption, sudoService, version };

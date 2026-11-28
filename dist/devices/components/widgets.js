@@ -4,6 +4,7 @@ import { renderCommand, createThrottle } from '../shared/command.js'
 import { isTruthy } from '../shared/state.js'
 import { textCommand } from '../shared/schema.js'
 import { base } from './tokens.css.js'
+import { SESSION_NOTES } from '../shared/e2eSession.js'
 
 const PENDING_MS = 2500
 // Sliders and the color picker send one command at a time: the next value goes after the device's
@@ -292,16 +293,6 @@ const IMAGE_NOTES = {
   e2e: 'E2E 키로 해독한 사진입니다.',
   'need-key': '암호화된 사진입니다. 장치에 넣은 E2E 키를 입력하세요.',
   'wrong-key': '키가 맞지 않아 사진을 풀 수 없습니다.',
-}
-// e2e 'session' (camera-session.1): the key proves this card, the pictures open with a session key.
-const SESSION_NOTES = {
-  waiting: '장치와 세션을 맺는 중입니다.',
-  session: '이 브라우저만 열 수 있는 세션 키로 받은 사진입니다.',
-  'need-key': '장치에 넣은 E2E 키를 입력하세요. 장치와 세션을 맺는 데 씁니다.',
-  'wrong-key': 'E2E 키가 장치에 넣은 키와 다릅니다.',
-  other: '다른 브라우저가 이 카메라의 사진을 받고 있습니다.',
-  'no-reply': '장치가 세션 요청에 답하지 않습니다. 잠시 뒤 다시 요청합니다.',
-  unsupported: '이 브라우저는 X25519(WebCrypto)를 지원하지 않아 사진을 열 수 없습니다.',
 }
 define('io-w-image', class extends Widget {
   #media = {}

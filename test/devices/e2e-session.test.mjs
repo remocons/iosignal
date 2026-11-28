@@ -48,9 +48,21 @@ function fakeCamera(key) {
 	};
 	const challenge = (reason) => cam.out.push(['challenge', Uint8Array.from(Buffer.concat([Buffer.from([1, reason]), cam.nonce, cam.holder]))]);
 	cam.challenge = challenge;
+	cam.notices = [];
 	cam.hello = (bytes) => {
 		const b = Buffer.from(bytes);
 		if (b.length === 1) return challenge(REASON.request);
+		if (b.length === 46) { // keep or release of the holder, signed with the session key, seq rising
+			const kind = b[1], to = b.subarray(2, 10), seq = b.readUInt32LE(10);
+			const label = kind === 0x52 ? 'e2e-release' : 'e2e-keep';
+			const h = crypto.createHmac('sha256', cam.key ?? ''); h.update(label); h.update(Buffer.from([1])); h.update(to); h.update(b.subarray(10, 14));
+			const ok = cam.key && to.equals(cam.holder) && seq > (cam.seq ?? 0) && h.digest().equals(b.subarray(14));
+			cam.notices.push({ kind: String.fromCharCode(kind), seq, ok });
+			if (!ok) return;
+			cam.seq = seq;
+			if (kind === 0x52) { cam.key = null; cam.holder = Buffer.alloc(8); cam.prev = null; cam.nonce = crypto.randomBytes(16); challenge(REASON.start); }
+			return;
+		}
 		const a = b.subarray(1, 33), mac = b.subarray(33);
 		if (!hmac('e2e-hello', cam.nonce, a).equals(mac)) {
 			const to = crypto.createHash('sha256').update(a).digest().subarray(0, 8);
@@ -63,6 +75,7 @@ function fakeCamera(key) {
 		const shared = crypto.diffieHellman({ privateKey, publicKey: peer });
 		cam.key = Buffer.from(crypto.hkdfSync('sha256', shared, Buffer.from(key), Buffer.concat([Buffer.from('iosignal-e2e-session/1'), cam.nonce, a, B]), 32)).toString('hex');
 		cam.holder = crypto.createHash('sha256').update(a).digest().subarray(0, 8);
+		cam.seq = 0;
 		cam.out.push(['ready', Uint8Array.from(Buffer.concat([Buffer.from([1]), B, hmac('e2e-ready', cam.nonce, a, B)]))]);
 		cam.prev = cam.nonce;
 		cam.nonce = crypto.randomBytes(16);
@@ -174,4 +187,122 @@ test('no ready within 5 s is no-reply, and the card asks again later', async () 
 	assert.equal(r.status, 'no-reply');
 	t = 11000; r.tick();
 	assert.equal(sent.length, 3); // asked again
+});
+
+function timedCard(key, clock) {
+	const c = { sent: [] };
+	c.r = createReceiver({ key, send: (b) => c.sent.push(b), subtle, now: () => clock.t });
+	return c;
+}
+
+test('a session taken while this card was away: pictures that do not open make it ask again and show other', async () => {
+	const clock = { t: 0 };
+	const cam = fakeCamera('k1');
+	const one = timedCard('k1', clock), two = timedCard('k1', clock);
+	await one.r.start();
+	await run(cam, [one, two]);
+	assert.equal(one.r.status, 'session');
+	two.r.takeOver();
+	await run(cam, [two]); // one misses the ready
+	assert.equal(two.r.status, 'session');
+	assert.equal(one.r.status, 'session');
+	for (let i = 0; i < 3; i++) one.r.picture(false);
+	one.r.tick();
+	assert.equal(one.r.status, 'waiting');
+	await run(cam, [one, two]);
+	assert.equal(one.r.status, 'other');
+	assert.equal(two.r.status, 'session');
+});
+
+test('a camera restart this card missed: no picture while the camera sends makes it ask again and get a new session', async () => {
+	const clock = { t: 0 };
+	let cam = fakeCamera('k1');
+	const one = timedCard('k1', clock);
+	await one.r.start();
+	await run(cam, [one]);
+	one.r.expect({ sending: true, intervalMs: 1000 });
+	one.r.picture(true);
+	const old = one.r.sessionKey;
+	cam = fakeCamera('k1'); // restarted: nobody holds it, the start challenge was missed
+	clock.t = 4000; one.r.tick();
+	assert.equal(one.r.status, 'session', 'not before max(5 s, 3 intervals)');
+	clock.t = 5100; one.r.tick();
+	assert.equal(one.r.status, 'waiting');
+	await run(cam, [one]);
+	assert.equal(one.r.status, 'session');
+	assert.notEqual(one.r.sessionKey, old);
+	assert.equal(one.r.sessionKey, cam.key);
+});
+
+test('a held session is not asked again while the camera does not send, and waits longer after each fruitless resync', async () => {
+	const clock = { t: 0 };
+	const cam = fakeCamera('k1');
+	const one = timedCard('k1', clock);
+	await one.r.start();
+	await run(cam, [one]);
+	one.r.expect({ sending: false, intervalMs: 1000 });
+	clock.t = 60000; one.r.tick();
+	assert.equal(one.r.status, 'session');
+	assert.equal(one.r.pictureAt, 0);
+
+	one.r.expect({ sending: true, intervalMs: 1000 }); // expectAt = 60000
+	clock.t = 65100; one.r.tick();
+	assert.equal(one.r.status, 'waiting');
+	await run(cam, [one]); // renewed (sessionAt = 65100), still no picture
+	assert.equal(one.r.status, 'session');
+	clock.t = 65100 + 6000; one.r.tick();
+	assert.equal(one.r.status, 'session', 'the second wait is 10 s');
+	clock.t = 65100 + 10100; one.r.tick();
+	assert.equal(one.r.status, 'waiting');
+	await run(cam, [one]);
+	one.r.picture(true);
+	assert.equal(one.r.resyncs, 0);
+});
+
+test('the holder sends a signed keep every 15 s; a replayed one is refused', async () => {
+	const clock = { t: 0 };
+	const cam = fakeCamera('k1');
+	const one = timedCard('k1', clock);
+	await one.r.start();
+	await run(cam, [one]);
+	clock.t = 14000; one.r.tick();
+	await run(cam, [one]);
+	assert.deepEqual(cam.notices, []);
+	clock.t = 15000; one.r.tick();
+	await new Promise((r) => setTimeout(r, 20));
+	const keep = one.sent.at(-1);
+	await run(cam, [one]);
+	assert.deepEqual(cam.notices, [{ kind: 'K', seq: 1, ok: true }]);
+	cam.hello(keep); // the same keep again
+	assert.deepEqual(cam.notices.at(-1), { kind: 'K', seq: 1, ok: false });
+});
+
+test('release when the page closes: the camera starts again and another card gets the session at once', async () => {
+	const cam = fakeCamera('k1');
+	const one = card('k1'), two = card('k1');
+	await one.r.start();
+	await run(cam, [one, two]);
+	await two.r.start();
+	await run(cam, [one, two]);
+	assert.equal(two.r.status, 'other');
+	one.r.release();
+	one.r.close();
+	await run(cam, [one, two]);
+	assert.deepEqual(cam.notices, [{ kind: 'R', seq: 0xffffffff, ok: true }]);
+	assert.equal(two.r.status, 'session');
+	assert.equal(two.r.sessionKey, cam.key);
+});
+
+test('a release from a card that does not hold the session is refused', async () => {
+	const cam = fakeCamera('k1');
+	const one = card('k1'), two = card('k1');
+	await one.r.start();
+	await run(cam, [one, two]);
+	two.r.takeOver();
+	await run(cam, [two]); // one missed it and still thinks it holds the session
+	one.r.release();
+	await run(cam, [two]);
+	cam.hello(one.sent.at(-1));
+	assert.equal(cam.notices.at(-1).ok, false);
+	assert.equal(two.r.sessionKey, cam.key);
 });

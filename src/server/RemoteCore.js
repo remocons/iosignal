@@ -168,6 +168,7 @@ export class RemoteCore {
   setQuota(name, tell) {
     this.quotaName = name;
     this.quota = this.manager.quotas[name];
+    this._quotaNoticed = null; // a new profile: its limits may be told once again (noticeQuota)
     // The CongSocket frame ceiling follows maxMessageBytes.
     this.refreshRxFrameLimit?.();
     if (tell) {
@@ -193,8 +194,8 @@ export class RemoteCore {
       if (bytesPerSec !== null) this._byteTokens = Math.min(bytesPerSec, this._byteTokens + seconds * bytesPerSec);
     }
     this._rateAt = now;
-    if (msgPerSec !== null && this._msgTokens < 1) return false;
-    if (bytesPerSec !== null && this._byteTokens < Math.min(bytes, bytesPerSec)) return false;
+    if (msgPerSec !== null && this._msgTokens < 1) { this.rateLimitedBy = 'msgPerSec'; return false; }
+    if (bytesPerSec !== null && this._byteTokens < Math.min(bytes, bytesPerSec)) { this.rateLimitedBy = 'bytesPerSec'; return false; }
     if (msgPerSec !== null) this._msgTokens -= 1;
     if (bytesPerSec !== null) this._byteTokens -= bytes;
     return true;
@@ -213,9 +214,56 @@ export class RemoteCore {
     }
     if (!this.takeRateTokens(rxBytes)) {
       this.manager.counters.rateLimited++;
+      this.noticeQuota(this.rateLimitedBy, this.quota[this.rateLimitedBy]);
       return false;
     }
+    // All the anonymous connections of one address together (connectionLimits msg/bytesPerAddressPerSec).
+    const limitIp = this.socket?._limitIp;
+    if (limitIp !== undefined && this.quotaName === this.manager.anonymousQuota) {
+      const over = this.manager.addressLimiter?.takeRate(limitIp, rxBytes);
+      if (over) {
+        this.manager.counters.addressRateLimited++;
+        this.noticeQuota(over, this.manager.server?.connectionLimits?.[over] ?? null);
+        return false;
+      }
+    }
     return true;
+  }
+
+  /**
+   * Subscribers this connection's publish may reach now (quota deliveriesPerSec: a token bucket holding
+   * one second), at most wanted; the tokens are taken. Unlimited: wanted.
+   */
+  takeDeliveries(wanted) {
+    const perSec = this.quota?.deliveriesPerSec ?? null;
+    if (perSec === null || wanted <= 0) return wanted;
+    const now = performance.now();
+    if (this._deliveryAt === undefined) this._deliveryTokens = perSec;
+    else this._deliveryTokens = Math.min(perSec, this._deliveryTokens + (now - this._deliveryAt) / 1000 * perSec);
+    this._deliveryAt = now;
+    const allowed = Math.max(0, Math.min(wanted, Math.floor(this._deliveryTokens)));
+    this._deliveryTokens -= allowed;
+    return allowed;
+  }
+
+  /**
+   * Tells this connection, once per kind, that a quota left something out: a SERVER_SIGNAL
+   * { event: 'quota_exceeded', data: { kind, limit, quota } } (the JS client emits 'quota_exceeded').
+   * Nothing is held back or retried: what went over is still dropped, as before. Only to WebSocket
+   * connections (web apps); TCP devices (Arduino) do not read it and have small receive buffers.
+   * kind: 'msgPerSec' | 'bytesPerSec' | 'maxSubscriptions' | 'fanout' | 'deliveriesPerSec' |
+   * 'msgPerAddressPerSec' | 'bytesPerAddressPerSec' (all anonymous connections of the address together).
+   */
+  noticeQuota(kind, limit) {
+    if (this.socketType !== 'websocket' || !kind) return;
+    this._quotaNoticed ??= new Set();
+    if (this._quotaNoticed.has(kind)) return;
+    this._quotaNoticed.add(kind);
+    this.manager.counters.quotaNotices++;
+    this.send_enc_mode(MBP.pack(
+      MBP.MB('#MsgType', '8', IOMsg.SERVER_SIGNAL),
+      MBP.MB('#signalObject', { event: 'quota_exceeded', data: { kind, limit: limit ?? null, quota: this.quotaName ?? null } })
+    ));
   }
 
   issueAuthChallenge() {

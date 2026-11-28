@@ -42,7 +42,8 @@ export class Metrics {
     }
   }
 
-  // One logStats line; rates are per second since the previous line.
+  // One logStats line; rates are per second since the previous line. Quota counters since the previous
+  // line are added at the end only when something was limited (quota_exceeded notices included).
   summaryLine(now = performance.now()) {
     const s = this.snapshot(), previous = this.previous
     const rate = key => previous ? (s.counters[key] - previous.counters[key]) * 1000 / Math.max(1, now - previous.time) : 0
@@ -52,7 +53,7 @@ export class Metrics {
       ` ch ${s.channels} retained ${s.retained.channel}/${bytes(s.retained.bytes)}` +
       ` | rx ${rate('rxMessages').toFixed(1)}/s ${bytes(rate('rxBytes'))}/s` +
       ` tx ${rate('txMessages').toFixed(1)}/s ${bytes(rate('txBytes'))}/s pub ${rate('publishes').toFixed(1)}/s` +
-      ` | rss ${bytes(s.memory.rss)} heap ${bytes(s.memory.heapUsed)}`
+      ` | rss ${bytes(s.memory.rss)} heap ${bytes(s.memory.heapUsed)}` + limitedText(s.counters, previous?.counters)
   }
 
   // Compact summary for metrics reports ('@$metrics'); byte counters are cumulative.
@@ -157,4 +158,13 @@ export class Metrics {
   }
 
 
+}
+
+// ' | limited rate 3 addr 0 deliv 12 subs 0 fanout 0 oversize 0 notices 2' when any of them grew since the
+// previous logStats line, else ''. The first line counts from the start.
+const LIMITED = [['rate', 'rateLimited'], ['addr', 'addressRateLimited'], ['deliv', 'deliveriesLimited'],
+  ['subs', 'subscriptionsRejected'], ['fanout', 'quotaExcluded'], ['oversize', 'oversizeRejected'], ['notices', 'quotaNotices']]
+export function limitedText(counters, previous) {
+  const grown = LIMITED.map(([label, key]) => [label, (counters[key] ?? 0) - (previous?.[key] ?? 0)])
+  return grown.some(([, n]) => n > 0) ? ' | limited ' + grown.map(([label, n]) => `${label} ${n}`).join(' ') : ''
 }

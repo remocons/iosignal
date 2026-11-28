@@ -4,11 +4,16 @@
  * The policy belongs to an owned device (one whose login has a uid) and comes with its login
  * (authInfo.rxPolicy from the key provider, JSON text or an object) or later from
  * Manager.setDeliveryPolicy(). A device without an owner uid is never filtered.
+ * An owned device without a stored policy uses mode 'home' (2026-11-27; before that, no policy was open).
  *
  * {
  *   v: 1,
- *   mode: 'open' | 'allowlist' | 'denylist',   // open: everyone (the default)
- *   anonymous: 'allow' | 'deny',                // default: deny for allowlist, allow for denylist
+ *   mode: 'home' | 'open' | 'allowlist' | 'denylist',
+ *                                               // home: its own network (same public IP, HOME_CHANNEL) and the
+ *                                               //   listed senders (the default for an owned device);
+ *                                               // open: everyone, anywhere (only when chosen)
+ *   anonymous: 'allow' | 'deny',                // default: allow for denylist, deny otherwise (home: anonymous
+ *                                               //   senders on its own network are let in by rule 5 anyway)
  *   publish: 'all' | 'policy',                  // who gets its CID publications ('@topic', '@$topic'):
  *                                               // 'all' subscribers (default), or only those the policy allows
  *   allow: { cids: [], uids: [] },
@@ -20,8 +25,9 @@
  *  2. the device itself, its owner's uid, or a connection with role 'admin' -> allow
  *  3. sender CID in deny.cids / allow.cids     -> deny / allow
  *  4. sender uid in deny.uids / allow.uids     -> deny / allow
- *  5. anonymous sender (not authenticated, no uid) -> anonymous setting
- *  6. mode default: allowlist denies, denylist allows
+ *  5. mode home: sender on the device's own network (same HOME_CHANNEL) -> allow
+ *  6. anonymous sender (not authenticated, no uid) -> anonymous setting
+ *  7. mode default: allowlist and home deny, denylist allows
  *
  * With publish 'policy', the same decision (subscriber in the sender's place) filters the device's CID
  * publications and the retained ones a new subscriber would get. Its '@state' close notice included.
@@ -30,7 +36,9 @@
  * Only the server's own view of the sender is used, never anything in the message.
  */
 
-export const DELIVERY_POLICY_MODES = Object.freeze(['open', 'allowlist', 'denylist'])
+export const DELIVERY_POLICY_MODES = Object.freeze(['home', 'open', 'allowlist', 'denylist'])
+// What an owned device without a stored policy uses.
+export const DEFAULT_DELIVERY_POLICY = Object.freeze({ v: 1, mode: 'home', anonymous: 'deny', publish: 'all', allow: Object.freeze({ cids: [], uids: [] }), deny: Object.freeze({ cids: [], uids: [] }) })
 export const DELIVERY_POLICY_MAX_ENTRIES = 200
 const ENTRY_MAX_LENGTH = 64
 const LISTS = ['cids', 'uids']
@@ -75,7 +83,7 @@ export function normalizeDeliveryPolicy(raw) {
   if (policy.v !== undefined && policy.v !== 1) throw new TypeError('delivery policy version must be 1')
   const mode = policy.mode ?? 'open'
   if (!DELIVERY_POLICY_MODES.includes(mode)) throw new TypeError(`delivery policy mode must be one of: ${DELIVERY_POLICY_MODES.join(', ')}`)
-  const anonymous = policy.anonymous ?? (mode === 'allowlist' ? 'deny' : 'allow')
+  const anonymous = policy.anonymous ?? (mode === 'denylist' || mode === 'open' ? 'allow' : 'deny')
   if (anonymous !== 'allow' && anonymous !== 'deny') throw new TypeError("delivery policy anonymous must be 'allow' or 'deny'")
   const publish = policy.publish ?? 'all'
   if (publish !== 'all' && publish !== 'policy') throw new TypeError("delivery policy publish must be 'all' or 'policy'")
@@ -88,7 +96,8 @@ export function normalizeDeliveryPolicy(raw) {
 }
 
 /**
- * The form Manager checks per message, or null when nothing is filtered (no owner, no policy, open).
+ * The form Manager checks per message, or null when nothing is filtered (no owner, or mode open).
+ * No stored policy is DEFAULT_DELIVERY_POLICY (home).
  * Never throws: a stored policy that cannot be read only lets the owner's own senders through
  * (fail closed), since ignoring it would deliver what the owner asked to block.
  */
@@ -96,7 +105,7 @@ export function compileDeliveryPolicy(raw, ownerUid) {
   if (typeof ownerUid !== 'string' || !ownerUid) return null
   let policy
   try {
-    policy = normalizeDeliveryPolicy(raw)
+    policy = normalizeDeliveryPolicy(raw) ?? DEFAULT_DELIVERY_POLICY
   } catch (error) {
     console.warn(`[iosignal] unreadable delivery policy of uid ${ownerUid}, owner only:`, error.message)
     policy = { mode: 'allowlist', anonymous: 'deny', publish: 'policy', allow: { cids: [], uids: [] }, deny: { cids: [], uids: [] } }
@@ -106,6 +115,7 @@ export function compileDeliveryPolicy(raw, ownerUid) {
     owner: ownerUid,
     mode: policy.mode,
     defaultAllow: policy.mode === 'denylist',
+    home: policy.mode === 'home',
     anonymousAllow: policy.anonymous === 'allow',
     filterPublish: policy.publish === 'policy',
     allowCids: new Set(policy.allow.cids),
@@ -133,6 +143,8 @@ export function deliveryAllowed(target, sender) {
     if (policy.denyUids.has(uid)) return false
     if (policy.allowUids.has(uid)) return true
   }
+  // Its own network: the same public IPv4 (or both private), as the home channel tags use.
+  if (policy.home && sender.HOME_CHANNEL && sender.HOME_CHANNEL === target.HOME_CHANNEL) return true
   if (!authorized && !uid) return policy.anonymousAllow
   return policy.defaultAllow
 }

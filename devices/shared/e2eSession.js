@@ -10,11 +10,20 @@
 //   card   -> <cid>@e2e-hello      [1][A 32][HMAC(K, "e2e-hello" 1 nonce A)]
 //   camera -> <cid>@e2e-ready      [1][B 32][HMAC(K, "e2e-ready" 1 nonce A B)]
 //   key = HKDF-SHA256(ikm = X25519(a, B), salt = K, info = "iosignal-e2e-session/1" nonce A B, 32 bytes)
+// While it holds the session, the card sends notices on <cid>@e2e-hello (2026-11-27):
+//   card   -> <cid>@e2e-hello      [1][kind][holder 8][seq u32 LE][HMAC(S, label 1 holder seq)]   46 bytes
+//             kind 'K' keep ("e2e-keep") every KEEP_MS, 'R' release ("e2e-release", seq 0xffffffff) when its page
+//             closes. S is the session key as its 64 hex characters, so only the holder can sign; seq only rises.
+//   The camera ends a session whose holder released it, or sent no keep for 40 s, and sends a start challenge.
 
 export const VERSION = 1;
 export const TAGS = { hello: 'e2e-hello', challenge: 'e2e-challenge', ready: 'e2e-ready' };
 export const REASON = { start: 0, request: 1, rotate: 2, refused: 3, busy: 4 };
 const NONCE = 16, PUB = 32, MAC = 32, HOLDER = 8;
+export const NOTICE = { keep: 0x4b, release: 0x52 }; // 'K', 'R'
+export const NOTICE_SIZE = 2 + HOLDER + 4 + MAC; // 46
+// The holder sends a keep this often; the camera gives up on a holder after 40 s without one.
+export const KEEP_MS = 15000;
 const encoder = new TextEncoder();
 const INFO_LABEL = encoder.encode('iosignal-e2e-session/1');
 
@@ -53,6 +62,14 @@ export async function holderOf(subtle, publicKey) {
 	return new Uint8Array(await subtle.digest('SHA-256', publicKey)).slice(0, HOLDER);
 }
 
+/** A keep or release notice of the session holder (see the top of this file). */
+export async function noticeMessage(subtle, sessionKey, kind, holder, seq) {
+	const s = new Uint8Array(4);
+	new DataView(s.buffer).setUint32(0, seq >>> 0, true);
+	const label = kind === NOTICE.release ? 'e2e-release' : 'e2e-keep';
+	return concat(Uint8Array.of(VERSION, kind), holder, s, await hmac(subtle, sessionKey, label, holder, s));
+}
+
 /** The hello for a challenge nonce: [1][A][mac]. */
 export async function helloMessage(subtle, key, nonce, publicKey) {
 	return concat(Uint8Array.of(VERSION), publicKey, await hmac(subtle, key, 'e2e-hello', nonce, publicKey));
@@ -77,10 +94,20 @@ export async function sessionFromReady(subtle, key, nonce, publicKey, privateKey
 	return toHex(new Uint8Array(bits));
 }
 
+// While a session is held: pictures that do not open with it this many times in a row mean the camera has another
+// session (one this card missed: a reset, or another card took it while this one was away).
+const STRAY_LIMIT = 3;
+// While a session is held and the camera says it sends: no picture for max(this, 3 intervals) asks again.
+const PICTURE_WAIT_MS = 5000;
+
 /**
  * One card's side. status: need-key | waiting | session | other | wrong-key | no-reply | unsupported.
  * send(bytes) sends to <cid>@e2e-hello; onChange() is called after each status or key change.
  * Call challenge(bytes) and ready(bytes) for the camera's messages and tick() every second or so.
+ * For pictures: picture(true) when one opened with sessionKey, picture(false) when one did not, and
+ * expect({ sending, intervalMs }) from the camera's $state. A held session that gets no picture it can open is
+ * asked for again (resync): the camera answers with its holder, so the card keeps it, renews it, or shows 'other'.
+ * pictureAt is the time of the last picture opened in this session (0: none yet).
  */
 export function createReceiver({ key, send, onChange = () => {}, subtle = globalThis.crypto?.subtle, now = () => Date.now() }) {
 	const r = {
@@ -90,7 +117,14 @@ export function createReceiver({ key, send, onChange = () => {}, subtle = global
 		pending: null,     // { nonce, publicKey, privateKey, at } while a hello waits for its ready
 		takeover: false,   // the user asked for the session: answer the next challenge whoever has it
 		asking: false,     // a request is out and its challenge not answered yet
-		askedAt: 0
+		askedAt: 0,
+		sessionAt: 0,      // when the session was made
+		pictureAt: 0,      // the last picture opened with it (0: none yet)
+		stray: 0,          // pictures in a row that did not open with it
+		sending: false,    // the camera says it sends pictures (expect())
+		intervalMs: 1000,
+		expectAt: 0,       // when sending last turned on
+		resyncs: 0         // resyncs in a row without a picture: each one doubles the next wait (at most 16 times)
 	};
 	let closed = false;
 	const set = (status) => {
@@ -169,11 +203,68 @@ export function createReceiver({ key, send, onChange = () => {}, subtle = global
 		r.pending = null;
 		r.holder = await holderOf(subtle, p.publicKey);
 		r.sessionKey = sessionKey;
+		r.sessionAt = now();
+		r.pictureAt = 0;
+		r.stray = 0;
+		r.keepAt = now();
+		r.keepSeq = 0;
+		// Made now: a page that closes has no time to wait for WebCrypto.
+		r.releaseMessage = await noticeMessage(subtle, sessionKey, NOTICE.release, r.holder, 0xffffffff);
+		if (closed || r.sessionKey !== sessionKey) return;
 		set('session');
+	};
+
+	// The page or the card goes away: give the session back at once, so another card (or this page reloaded) gets it.
+	r.release = () => {
+		if (r.status !== 'session' || !r.releaseMessage) return;
+		send(r.releaseMessage);
+		r.releaseMessage = null;
+		r.holder = null;
+		set('waiting');
+	};
+
+	const keep = async () => {
+		const sessionKey = r.sessionKey, holder = r.holder;
+		r.keepAt = now();
+		const message = await noticeMessage(subtle, sessionKey, NOTICE.keep, holder, ++r.keepSeq);
+		if (!closed && r.status === 'session' && r.sessionKey === sessionKey) send(message);
+	};
+
+	r.picture = (opened) => {
+		if (r.status !== 'session') return;
+		if (opened) {
+			const first = !r.pictureAt;
+			r.pictureAt = now();
+			r.stray = 0;
+			r.resyncs = 0;
+			if (first) onChange();
+		} else r.stray++;
+	};
+
+	r.expect = ({ sending = false, intervalMs = 1000 } = {}) => {
+		if (sending && !r.sending) r.expectAt = now();
+		r.sending = Boolean(sending);
+		r.intervalMs = Number.isFinite(intervalMs) && intervalMs > 0 ? intervalMs : 1000;
+	};
+
+	// Asks the camera again while keeping the holder id: a request challenge that names this card renews it.
+	r.resync = () => {
+		if (closed || !key || r.status !== 'session') return;
+		r.stray = 0;
+		r.resyncs++;
+		set('waiting');
+		ask();
 	};
 
 	r.tick = () => {
 		if (closed || !key) return;
+		if (r.status === 'session') {
+			if (now() - r.keepAt >= KEEP_MS) keep();
+			const quiet = now() - Math.max(r.sessionAt, r.pictureAt, r.expectAt);
+			const wait = Math.max(PICTURE_WAIT_MS, 3 * r.intervalMs) * 2 ** Math.min(r.resyncs, 4);
+			if (r.stray >= STRAY_LIMIT || (r.sending && quiet > wait)) r.resync();
+			return;
+		}
 		if (r.pending && now() - r.pending.at > 5000) { r.pending = null; set('no-reply'); }
 		else if ((r.status === 'waiting' || r.status === 'no-reply') && !r.pending && now() - r.askedAt > 10000) ask();
 	};
@@ -185,3 +276,33 @@ export function createReceiver({ key, send, onChange = () => {}, subtle = global
 	};
 	return r;
 }
+
+// What a session card shows, from its receiver and the camera's $state (parsed: { on, interval, cam }).
+// While the session is held: no-camera (cam=0: the camera did not start), paused (on=0), session-wait (no picture
+// opened yet), session. Otherwise the receiver's status.
+export function sessionDisplay(receiver, state = {}) {
+	const status = receiver?.status ?? 'waiting';
+	if (status !== 'session') return status;
+	if (state.cam === '0') return 'no-camera';
+	if (state.on === '0') return 'paused';
+	return receiver.pictureAt ? 'session' : 'session-wait';
+}
+
+// For receiver.expect(): whether the camera says it sends pictures, and how often.
+export function expectOf(state = {}) {
+	return { sending: state.on === '1' && state.cam !== '0', intervalMs: Number(state.interval) || 1000 };
+}
+
+// The notes a session card shows for each sessionDisplay() value.
+export const SESSION_NOTES = {
+	waiting: '장치와 세션을 맺는 중입니다.',
+	'session-wait': '세션을 맺었습니다. 첫 사진을 기다리는 중입니다.',
+	session: '이 브라우저만 열 수 있는 세션 키로 받은 사진입니다.',
+	paused: '장치가 사진 전송을 멈췄습니다. 전송 스위치를 켜면 다시 받습니다.',
+	'no-camera': '장치의 카메라가 시작되지 않아 사진을 보낼 수 없습니다. 장치가 다시 시도합니다.',
+	'need-key': '장치에 넣은 E2E 키를 입력하세요. 장치와 세션을 맺는 데 씁니다.',
+	'wrong-key': 'E2E 키가 장치에 넣은 키와 다릅니다.',
+	other: '다른 브라우저가 이 카메라의 사진을 받고 있습니다.',
+	'no-reply': '장치가 세션 요청에 답하지 않습니다. 잠시 뒤 다시 요청합니다.',
+	unsupported: '이 브라우저는 X25519(WebCrypto)를 지원하지 않아 사진을 열 수 없습니다.'
+};

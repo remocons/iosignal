@@ -1,16 +1,17 @@
+import { performance } from 'node:perf_hooks'
 import { isPrivateIP } from '../common/util.js'
 import { normalizeIP } from './Remote.js'
 
 const MAX_ADDRESSES = 10000 // tracked public addresses; past windows are forgotten first
 
-const LIMIT_KEYS = ['newPerAddressPerMin', 'failedPerAddressPerMin', 'maxPerAddress', 'windowMs']
+const LIMIT_KEYS = ['newPerAddressPerMin', 'failedPerAddressPerMin', 'maxPerAddress', 'windowMs', 'msgPerAddressPerSec', 'bytesPerAddressPerSec']
 
 /**
  * Checks a limits object ({ newPerAddressPerMin, failedPerAddressPerMin, maxPerAddress, windowMs,
  * exempt }) and returns a copy. A count of 0 turns that limit off; windowMs is at least 1000.
  */
 export function connectionLimits(given, defaults) {
-  if (given === false) return { ...defaults, newPerAddressPerMin: 0, failedPerAddressPerMin: 0, maxPerAddress: 0, exempt: [] }
+  if (given === false) return { ...defaults, newPerAddressPerMin: 0, failedPerAddressPerMin: 0, maxPerAddress: 0, msgPerAddressPerSec: 0, bytesPerAddressPerSec: 0, exempt: [] }
   if (given !== undefined && (given === null || typeof given !== 'object')) {
     throw new TypeError('connectionLimits must be an object or false')
   }
@@ -54,6 +55,7 @@ export class AddressLimiter {
     this.onLimit = onLimit ?? null
     this.addresses = new Map() // ip -> { since, created, failed, open, until, reason }
     this.refused = { new: 0, failed: 0, open: 0 } // cumulative
+    this.rateLimited = 0 // messages dropped by msgPerAddressPerSec / bytesPerAddressPerSec (takeRate)
   }
 
   #exempt(ip, limits) {
@@ -145,6 +147,34 @@ export class AddressLimiter {
       else if (limits.maxPerAddress && e.open >= limits.maxPerAddress) list.push({ ip, reason: 'open', count: e.open, until: null })
     }
     return list.sort((a, b) => b.count - a.count).slice(0, limit)
+  }
+
+  /**
+   * A message of bytes from an address (anonymous-quota connections only; the caller decides): null when
+   * it may pass, else the limit it went over ('msgPerAddressPerSec' | 'bytesPerAddressPerSec'). Token
+   * buckets holding one second, kept on the address's entry while it has open connections.
+   */
+  takeRate(ip, bytes, now = performance.now()) {
+    const limits = this.getLimits()
+    const msgLimit = limits.msgPerAddressPerSec || 0
+    const byteLimit = limits.bytesPerAddressPerSec || 0
+    if ((!msgLimit && !byteLimit) || this.#exempt(ip, limits)) return null
+    const entry = this.addresses.get(ip)
+    if (!entry) return null
+    if (entry.rateAt === undefined) {
+      entry.msgTokens = msgLimit
+      entry.byteTokens = byteLimit
+    } else {
+      const seconds = Math.max(0, now - entry.rateAt) / 1000
+      if (msgLimit) entry.msgTokens = Math.min(msgLimit, entry.msgTokens + seconds * msgLimit)
+      if (byteLimit) entry.byteTokens = Math.min(byteLimit, entry.byteTokens + seconds * byteLimit)
+    }
+    entry.rateAt = now
+    if (msgLimit && entry.msgTokens < 1) { this.rateLimited++; return 'msgPerAddressPerSec' }
+    if (byteLimit && entry.byteTokens < Math.min(bytes, byteLimit)) { this.rateLimited++; return 'bytesPerAddressPerSec' }
+    if (msgLimit) entry.msgTokens -= 1
+    if (byteLimit) entry.byteTokens -= bytes
+    return null
   }
 
   /** Open connections counted for an address (0 for an exempt one). */

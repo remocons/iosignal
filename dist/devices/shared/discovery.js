@@ -23,6 +23,9 @@
 // a state or its announced panel (a subscription dropped) is subscribed again when it next answers.
 // A group has no owner, so no close comes for it: while one is shown the scanner asks again every
 // GROUP_CHECK_MS and forgets a found group that does not answer within GROUP_WAIT_MS (its members are all off).
+// A command or a check ('?', search({ check: true })) waits ANSWER_MS for any $state of that device; without one
+// the device is marked unanswered (shown as 응답 없음) until its next $state. Groups are not checked: the app writes
+// their state itself. Marking is all it does: only the broker's close forgets a device.
 // Works with any IOSignal client (browser or Node); it needs on/signal/link/unlinkAll.
 import { applyCommand } from './simulate.js'
 import { parseState, formatState } from './state.js'
@@ -34,6 +37,11 @@ const RETRY_MS = 500
 // A shown group is asked for again this often, and forgotten when it does not answer within the wait.
 const GROUP_CHECK_MS = 15000
 const GROUP_WAIT_MS = 3000
+// A device that does not send $state this long after a command or a check is marked unanswered.
+export const ANSWER_MS = 2000
+// The check command: a device answers it with its $state and changes nothing (any device answers an unknown
+// command with $state, so older ones answer it too).
+export const CHECK_COMMAND = '?'
 export const isGroup = id => id.startsWith('#')
 const prefix = id => isGroup(id) ? id + '$' : id + '@$'
 // The category of a device without one (the part after ':' in $name).
@@ -55,6 +63,7 @@ export class DeviceScanner {
     this.onChange = onChange
     this.onSignal = onSignal
     this.devices = new Map()
+    this.answerTimers = new Map()
     this.notify = (tag, deviceId) => { onSignal(tag, deviceId); this.found(deviceId) }
     // One search on connecting is enough: IOCore sends its subscriptions before 'ready', so '#notify' is
     // subscribed before the search goes out, and a device that connects at the same moment and misses the search
@@ -74,7 +83,9 @@ export class DeviceScanner {
 
   // Asks for devices without forgetting the ones followed: a closed device is forgotten by its $state close.
   // Only a device followed because it was known, and no longer is, is dropped.
-  search() {
+  // check: true also sends the check command to every device already shown, and marks the ones that do not answer.
+  search({ check = false } = {}) {
+    if (check) this.check()
     const known = new Set(this.known())
     for (const [id, device] of this.devices) if (device.known && !device.found && !known.has(id)) this.forget(id)
     for (const id of known) {
@@ -149,7 +160,7 @@ export class DeviceScanner {
   }
 
   clear() {
-    for (const id of this.devices.keys()) this.io.unlinkAll(this.scope(id))
+    for (const id of this.devices.keys()) this.answered(id), this.io.unlinkAll(this.scope(id))
     this.io.unlinkAll(this.id)
     this.devices.clear()
     this.onChange()
@@ -162,7 +173,36 @@ export class DeviceScanner {
     this.onChange()
   }
 
+  // Sends the check command to every shown device (not a group) and waits for its $state.
+  check() {
+    if (this.io.getStateName?.() !== 'ready') return
+    for (const device of this.devices.values()) {
+      if (device.isGroup || !device.state) continue
+      this.io.signal(device.id + '@', CHECK_COMMAND)
+      this.expect(device.id)
+    }
+  }
+
+  // Waits ANSWER_MS for a $state of this device; marks it unanswered without one.
+  expect(id) {
+    const device = this.devices.get(id)
+    if (!device || device.isGroup) return
+    clearTimeout(this.answerTimers.get(id))
+    this.answerTimers.set(id, setTimeout(() => {
+      this.answerTimers.delete(id)
+      if (this.devices.get(id) !== device || !device.state) return
+      device.unanswered = true
+      this.onChange(device)
+    }, ANSWER_MS))
+  }
+
+  answered(id) {
+    clearTimeout(this.answerTimers.get(id))
+    this.answerTimers.delete(id)
+  }
+
   untrack(id) {
+    this.answered(id)
     this.io.unlinkAll(this.scope(id))
     this.devices.delete(id)
   }
@@ -173,8 +213,8 @@ export class DeviceScanner {
   track(id) {
     if (typeof id !== 'string' || !id || this.devices.has(id)) return
     const device = {
-      id, isGroup: isGroup(id), network: this.network, name: '', group: '', type: '', ui: '', legacyUi: false,
-      schema: null, view: null, broker: '', hasPanel: false, hasView: false, state: '', seenAt: Date.now(), trackedAt: Date.now(),
+      id, isGroup: isGroup(id), network: this.network, name: '', group: '', type: '', ui: '', uiText: '', legacyUi: false,
+      schema: null, view: null, broker: '', hasPanel: false, hasView: false, state: '', unanswered: false, closedAt: 0, seenAt: Date.now(), trackedAt: Date.now(),
     }
     this.devices.set(id, device)
     const link = (field, handler) => this.io.link(this.scope(id), prefix(id) + field, (tag, value, extra) => {
@@ -203,8 +243,10 @@ export class DeviceScanner {
       Object.assign(device, parseName(value))
       this.described(device)
     })
+    // uiText: the $ui as sent, for keys an app may read that parseUi leaves out (r=1: a board with a remote REPL).
     link('ui', value => {
       Object.assign(device, { type: '', ui: '', legacyUi: false, schema: null, view: null, broker: '', hasPanel: false, hasView: false }, parseUi(value))
+      device.uiText = typeof value === 'string' ? value.slice(0, UI_MAX) : ''
       follow('schema', device.hasPanel ? 'panel' : '')
       follow('view', device.hasView && this.views ? 'view' : '')
       this.described(device)
@@ -212,13 +254,19 @@ export class DeviceScanner {
     // extra: an optional object after the state, such as the video on a player.
     link('state', (value, extra) => {
       if (typeof value !== 'string') return
+      this.answered(id)
+      device.unanswered = false
       if (value === 'close' && !device.isGroup) {
         device.state = ''
+        device.closedAt = Date.now() // when the broker said it closed (an app shows "last connected")
         // A known device stays followed: it counts as found (on this network) again only when it answers #notify.
         device.found = false
         // After this handler's onChange: the device is shown offline once, then forgotten.
         queueMicrotask(() => this.devices.get(id) === device && this.forget(id))
-      } else device.state = value
+      } else {
+        device.state = value
+        device.closedAt = 0
+      }
       if (extra && typeof extra === 'object') device.media = extra
     })
     this.onChange(device)
@@ -226,7 +274,11 @@ export class DeviceScanner {
 
   command(id, command) {
     const device = this.devices.get(id)
-    if (!device?.isGroup) return this.io.signal(id + '@', command)
+    if (!device?.isGroup) {
+      const sent = this.io.signal(id + '@', command)
+      this.expect(id)
+      return sent
+    }
     this.io.signal(id + '$state', formatState(applyCommand(parseState(device.state), command).state))
   }
 
@@ -237,6 +289,8 @@ export class DeviceScanner {
   dispose() {
     for (const timer of this.timers ?? []) clearTimeout(timer)
     clearTimeout(this.groupTimer)
+    for (const timer of this.answerTimers.values()) clearTimeout(timer)
+    this.answerTimers.clear()
     this.io.removeListener?.('ready', this.onReady)
     this.io.removeListener?.('close', this.onLost)
     for (const id of this.devices.keys()) this.io.unlinkAll(this.scope(id))

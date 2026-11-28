@@ -103,3 +103,8 @@ test('public device files and tests name no private repository or path', () => {
   ];
   for (const file of checked) assert.doesNotMatch(fs.readFileSync(file, 'utf8'), pattern, file);
 });
+
+test('applyCommand: ? changes nothing (state check)', async () => {
+  const { applyCommand } = await import('../../devices/shared/simulate.js')
+  assert.deepEqual(applyCommand({ on: '1' }, '?'), { state: { on: '1' }, changed: false })
+})

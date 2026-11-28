@@ -11,7 +11,7 @@ import { pickSchema, validateSchema } from '../shared/schema.js'
 import { normalizeType } from '../shared/typeName.js'
 import { parseState } from '../shared/state.js'
 import { imageWidgets, decodeImage, loadKey, saveKey } from '../shared/media.js'
-import { createReceiver, TAGS as SESSION_TAGS } from '../shared/e2eSession.js'
+import { createReceiver, TAGS as SESSION_TAGS, sessionDisplay, expectOf } from '../shared/e2eSession.js'
 import { pickView } from '../shared/view.js'
 import './widgets.js'
 import './vdevice-view.js'
@@ -168,9 +168,14 @@ class DeviceCard extends HTMLElement {
     const signature = io && online && images.length ? `${id}|${images.map(i => `${i.tag}:${i.e2e}`).join(',')}` : ''
     if (signature === this.mediaSignature && io === this.mediaIo) return
     if (this.mediaIo && this.mediaScope) this.mediaIo.unlinkAll(this.mediaScope)
+    // A card that stops following gives its session back, and so does a closed or reloaded page.
+    this.receiver?.release()
+    if (this.onPageHide) removeEventListener('pagehide', this.onPageHide)
+    this.onPageHide = null
     this.receiver?.close()
     this.receiver = null
     this.restartSession = null
+    this.showSession = null
     if (this.sessionTimer) clearInterval(this.sessionTimer)
     this.sessionTimer = null
     for (const item of Object.values(this.media)) if (item.src) URL.revokeObjectURL(item.src)
@@ -183,18 +188,23 @@ class DeviceCard extends HTMLElement {
     if (!signature) return
     const bytesOf = payload => (payload instanceof Uint8Array ? payload : null)
     const takeOver = () => this.receiver?.takeOver()
-    // While a session tag shows no picture of this session, it shows the session's status.
+    // A session tag shows what sessionDisplay() says (held, waiting for a picture, paused, no camera, other …).
     const showSession = () => {
-      const status = this.receiver?.status ?? 'waiting'
+      const state = parseState(this.device?.state)
+      this.receiver?.expect(expectOf(state))
+      const status = sessionDisplay(this.receiver, state)
+      // The last picture stays while the session is held, but not once sending is stopped (paused).
+      const keep = this.receiver?.status === 'session' && status !== 'paused'
       for (const tag of this.sessionTags) {
         const item = this.media[tag] ?? {}
-        const keep = status === 'session' && item.status === 'session'
-        this.setMedia(tag, { src: keep ? item.src : undefined, status: keep ? 'session' : (status === 'session' ? 'waiting' : status),
-          hasKey: Boolean(this.keys[tag]), takeOver })
+        if (!keep && item.src) URL.revokeObjectURL(item.src)
+        this.setMedia(tag, { src: keep ? item.src : undefined, status, hasKey: Boolean(this.keys[tag]), takeOver })
       }
     }
+    this.showSession = showSession
     if (this.sessionTags.length) {
       this.restartSession = () => {
+        this.receiver?.release()
         this.receiver?.close()
         this.receiver = createReceiver({
           key: this.keys[this.sessionTags[0]] ?? '',
@@ -207,6 +217,8 @@ class DeviceCard extends HTMLElement {
       io.link(this.mediaScope, `${id}@${SESSION_TAGS.challenge}`, (_tag, payload) => this.receiver?.challenge(bytesOf(payload)))
       io.link(this.mediaScope, `${id}@${SESSION_TAGS.ready}`, (_tag, payload) => this.receiver?.ready(bytesOf(payload)))
       this.sessionTimer = setInterval(() => this.receiver?.tick(), 1000)
+      this.onPageHide = () => this.receiver?.release()
+      addEventListener('pagehide', this.onPageHide)
     }
     for (const { tag, e2e } of images) {
       this.keys[tag] = loadKey(id, tag)
@@ -218,8 +230,12 @@ class DeviceCard extends HTMLElement {
           // or to another card, and leave the last picture as it is.
           if (this.receiver?.status !== 'session') return
           const { bytes, type, status } = decodeImage(bytesOf(payload), this.receiver.sessionKey, (data, key) => io.decrypt_e2e(data, key))
+          this.receiver.picture(status === 'e2e') // pictures that do not open make the receiver ask again
           if (status !== 'e2e') return
-          this.setMedia(tag, { src: URL.createObjectURL(new Blob([bytes], { type })), status: 'session', hasKey: true, takeOver })
+          const old = this.media[tag]?.src
+          if (old) URL.revokeObjectURL(old)
+          this.setMedia(tag, { ...this.media[tag], src: URL.createObjectURL(new Blob([bytes], { type })) })
+          showSession()
           return
         }
         const { bytes, type, status } = decodeImage(bytesOf(payload), this.keys[tag] ?? '', (data, key) => io.decrypt_e2e(data, key))
@@ -261,6 +277,7 @@ class DeviceCard extends HTMLElement {
       this.imageTags = device.isGroup ? [] : imageWidgets(schema.controls)
     }
     this.follow(io, device.id, this.imageTags ?? [], Boolean(device.state))
+    this.showSession?.() // the camera's $state (on, interval, cam) changes what a session card shows
     this.controls.state = parseState(device.state)
 
     // The device's picture ($view, else its type's default view) right above its controls.

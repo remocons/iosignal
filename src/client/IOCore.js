@@ -37,11 +37,61 @@ function encodeSubscriptionTags(tag) {
   return encoded
 }
 
+// Subscriptions are queued and sent together (queueSubscription): a page that links many tags at once
+// (a device list) would otherwise send one message per tag, and a broker drops what is over the
+// connection's msgPerSec quota (anonymous: 100), such as the #search sent right after them.
 function sendSubscription(io, tag) {
-  const encoded = encodeSubscriptionTags(tag)
-  io.send_enc_mode(Buffer.concat([
-    MBP.NB('8', IOMsg.SUBSCRIBE), MBP.NB('8', encoded.byteLength), encoded
-  ]))
+  encodeSubscriptionTags(tag) // throws for an invalid tag here, not later in the flush
+  queueSubscription(io, IOMsg.SUBSCRIBE, tag)
+}
+
+// Queues SUBSCRIBE / UNSUBSCRIBE of tags. Consecutive ones of the same kind become one comma-joined
+// message (split at the one-byte tag length), in order. The queue is sent at the end of this turn,
+// or first thing before any other encrypted message, so a signal sent after a link() still reaches
+// the broker after the subscription. A queue left from an earlier connection is dropped (the new
+// connection's subscriptions go out with subscribe_channels()).
+function queueSubscription(io, type, tag) {
+  const queue = io._subscriptionQueue
+  if (queue.revision !== io._stateRevision) {
+    queue.groups.length = 0
+    queue.revision = io._stateRevision
+  }
+  const last = queue.groups.at(-1)
+  if (last && last.type === type) last.tags.push(...tag.split(','))
+  else queue.groups.push({ type, tags: tag.split(',') })
+  if (!queue.scheduled) {
+    queue.scheduled = true
+    queueMicrotask(() => flushSubscriptions(io))
+  }
+}
+
+function flushSubscriptions(io) {
+  const queue = io._subscriptionQueue
+  queue.scheduled = false
+  if (queue.flushing || queue.groups.length === 0) return
+  const groups = queue.revision === io._stateRevision ? queue.groups.splice(0) : (queue.groups.length = 0, [])
+  queue.flushing = true
+  try {
+    for (const { type, tags } of groups) {
+      let batch = []
+      let bytes = 0
+      const send = () => {
+        const encoded = encodeTag(batch.join(','))
+        io.send_enc_mode(Buffer.concat([MBP.NB('8', type), MBP.NB('8', encoded.byteLength), encoded]))
+        batch = []
+        bytes = 0
+      }
+      for (const tag of tags) {
+        const size = encodeTag(tag).byteLength
+        if (batch.length && bytes + 1 + size > SIZE_LIMIT.TAG_LEN1) send()
+        bytes += (batch.length ? 1 : 0) + size
+        batch.push(tag)
+      }
+      if (batch.length) send()
+    }
+  } finally {
+    queue.flushing = false
+  }
 }
 
 // Names the client emits itself. A signal or SERVER_SIGNAL with one of these as its tag is not
@@ -102,6 +152,7 @@ export class IOCore extends EventEmitter {
      */
     this.stateName = this.getStateName() // String type
     this._stateRevision = 0;
+    this._subscriptionQueue = { groups: [], revision: 0, scheduled: false, flushing: false };
 
     /**
      * Transmitted message counter.
@@ -872,6 +923,8 @@ export class IOCore extends EventEmitter {
    */
   send_enc_mode(data, useEncryption) {
     if (!this.boho) return; // destroyed
+    // Queued (un)subscriptions go first, so messages keep the order they were made in.
+    if (this._subscriptionQueue.groups.length && !this._subscriptionQueue.flushing) flushSubscriptions(this)
 
     // use default policy.
     if (useEncryption === undefined) {
@@ -1126,10 +1179,14 @@ export class IOCore extends EventEmitter {
     }
 
 
-    this.send_enc_mode(Buffer.concat([
-      MBP.NB('8', IOMsg.UNSUBSCRIBE),
-      MBP.NB('8', tagEncoded.byteLength),
-      tagEncoded]))
+    if (tag == "") {
+      this.send_enc_mode(Buffer.concat([
+        MBP.NB('8', IOMsg.UNSUBSCRIBE),
+        MBP.NB('8', tagEncoded.byteLength),
+        tagEncoded]))
+    } else {
+      queueSubscription(this, IOMsg.UNSUBSCRIBE, tag)
+    }
   }
 
 

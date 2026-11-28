@@ -274,3 +274,54 @@ test('접속 뒤 모든 장치가 보이면 다시 검색하지 않고, 이름�
 	await delay(1300);
 	assert.equal(searches, 2);
 });
+
+test('명령 뒤 2초 안에 $state가 없으면 응답 없음, 다음 $state에 풀린다', async (t) => {
+	const { scanner, connect } = await setup(t);
+	const board = await connect();
+	let silent = true;
+	board.link('test', '#search', () => board.signal('#notify', board.cid));
+	board.listen('@', () => { if (!silent) board.signal('@$state', 'on=1'); });
+	board.signal('@$name', 'Lamp');
+	board.signal('@$ui', 't=light.1');
+	board.signal('@$state', 'on=0');
+	await delay(30);
+	scanner.search();
+	await until(() => scanner.devices.get(board.cid)?.state, 'state');
+	const device = scanner.devices.get(board.cid);
+
+	scanner.command(board.cid, 'on');
+	await delay(1500);
+	assert.equal(device.unanswered, false, 'not before ANSWER_MS');
+	await delay(700);
+	assert.equal(device.unanswered, true);
+
+	silent = false;
+	scanner.command(board.cid, 'on');
+	await until(() => device.state === 'on=1', 'answer');
+	assert.equal(device.unanswered, false);
+	await delay(2100);
+	assert.equal(device.unanswered, false, 'an answered command is not marked');
+});
+
+test('search({ check: true })는 보이는 장치에 ?를 보내고 답이 없는 장치를 표시한다', async (t) => {
+	const { scanner, connect } = await setup(t);
+	const live = await connect();
+	const dead = await connect();
+	const received = [];
+	for (const board of [live, dead]) {
+		board.link('test', '#search', () => board.signal('#notify', board.cid));
+		board.signal('@$name', board === live ? 'Live' : 'Dead');
+		board.signal('@$ui', 't=light.1');
+		board.signal('@$state', 'on=0');
+	}
+	live.listen('@', (tag, command) => { received.push(command); live.signal('@$state', 'on=0'); });
+	await delay(30);
+	scanner.search();
+	await until(() => scanner.devices.get(live.cid)?.state && scanner.devices.get(dead.cid)?.state, 'both shown');
+
+	scanner.search({ check: true });
+	await delay(2200);
+	assert.deepEqual(received, ['?']);
+	assert.equal(scanner.devices.get(live.cid).unanswered, false);
+	assert.equal(scanner.devices.get(dead.cid).unanswered, true);
+});

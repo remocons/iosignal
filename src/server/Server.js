@@ -4,7 +4,7 @@ import EventEmitter from 'events'
 import { WebSocketServer } from 'ws'
 import { Manager } from './Manager.js'
 import { connectionLimits } from './AddressLimiter.js'
-import { getClientAddress, normalizeIP } from './Remote.js'
+import { getClientAddress, normalizeIP, isSupportedIP } from './Remote.js'
 import { Host } from './Host.js'
 import { Dashboard } from './Dashboard.js'
 import { serverOption } from './serverOption.js'
@@ -51,7 +51,7 @@ function integer(name, value, min, max = Number.MAX_SAFE_INTEGER) {
 }
 const positive = (name, value) => integer(name, value, 1)
 const nonNegative = (name, value) => integer(name, value, 0)
-const QUOTA_LIMITS = ['maxMessageBytes', 'fanout', 'msgPerSec', 'bytesPerSec', 'maxConnections', 'maxSubscriptions']
+const QUOTA_LIMITS = ['maxMessageBytes', 'fanout', 'msgPerSec', 'bytesPerSec', 'maxConnections', 'maxSubscriptions', 'deliveriesPerSec']
 
 // This Server's quota profiles: the defaults with each given profile merged over its default
 // (a new name starts from no limits). Every limit is a positive integer or null (unlimited).
@@ -289,6 +289,8 @@ export class Server extends EventEmitter {
     this.wss.on('connection', (ws, req) => {
       // Too many connections from this address: closed before anything is sent (try again later).
       const ip = getClientAddress(req, this.trustProxy).ip
+      // IPv6 is not supported: closed before anything is sent.
+      if (!isSupportedIP(ip)) return ws.close(1008, 'IPv6 not supported')
       if (!this.manager.admitConnection(ip)) return ws.close(1013, 'too many connections')
       ws.socketType = 'websocket'
       ws._limitIp = ip
@@ -303,6 +305,7 @@ export class Server extends EventEmitter {
       // Signals are small frames; send each immediately instead of waiting on Nagle.
       socket.setNoDelay(true)
       const ip = normalizeIP(socket.remoteAddress) ?? '0.0.0.0'
+      if (!isSupportedIP(ip)) return socket.destroy() // IPv6 is not supported
       if (!this.manager.admitConnection(ip)) return socket.destroy()
       socket._limitIp = ip
       this.manager.addRemote(socket)

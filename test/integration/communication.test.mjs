@@ -20,6 +20,9 @@ const pkg = JSON.parse(readFileSync(new URL('../../package.json', import.meta.ur
 const variants = [[pkg.private ? 'source' : 'esm', await import(pkg.private ? '../../index.js' : 'iosignal')]];
 if (!pkg.private) variants.push(['cjs', createRequire(import.meta.url)('iosignal')]);
 
+// (Un)subscriptions go out at the end of the turn (or before the next message): wait for that.
+const tick = () => new Promise(resolve => queueMicrotask(resolve));
+
 function event(emitter, name, signal) {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => finish(new Error(`Timed out waiting for ${name}`)), 3000);
@@ -258,7 +261,7 @@ for (const [format, api] of variants) {
     });
   }
 
-  test(`${format}: tag limits use UTF-8 bytes and reject before mutation`, () => {
+  test(`${format}: tag limits use UTF-8 bytes and reject before mutation`, async () => {
     const io = new api.IO();
     const sent = [];
     io.send_enc_mode = packet => sent.push(packet);
@@ -269,6 +272,7 @@ for (const [format, api] of variants) {
     assert.throws(() => api.getSignalPack('😀'.repeat(64)), /255/);
     io.state = api.STATE.READY; // subscribe() sends at once only on a ready connection
     io.subscribe(boundary);
+    await tick();
     assert.equal(sent[0][1], 255);
     assert.throws(() => io.subscribe(overflow), /255/);
     assert.throws(() => io.signal(overflow), /255/);
@@ -405,11 +409,13 @@ for (const [format, api] of variants) {
     assert.equal(retained, 1, 'the retained value arrives once');
     assert.equal(io.channels.has('manual'), false);
 
-    // Ready now: both send at once.
+    // Ready now: both go out at the end of this turn, together in one message.
     packets.length = 0;
     io.link('page', 'later', () => {});
     io.subscribe('later-manual');
-    assert.deepEqual(packets.map(p => p.tags), [['later'], ['later-manual']]);
+    assert.deepEqual(packets, [], 'not yet: queued until the end of the turn');
+    await tick();
+    assert.deepEqual(packets.map(p => p.tags), [['later', 'later-manual']]);
 
     // subscribe() lasts one connection; link() is sent again after a reconnect.
     packets.length = 0;
@@ -444,7 +450,8 @@ for (const [format, api] of variants) {
     // Later, outside a ready handler (a timer, an event, another tag's handler).
     const late = [];
     io.listen('room$x', (tag, text) => late.push(text));
-    assert.deepEqual(packets, [['room$x']], 'sent at once');
+    await tick();
+    assert.deepEqual(packets, [['room$x']], 'sent at the end of the turn');
     await io.call('reply', 'echo', 'subscription processed');
     assert.deepEqual(late, ['kept'], 'the retained value arrives at once');
     const next = event(io, 'room$x', t.signal);
@@ -1149,32 +1156,63 @@ for (const [format, api] of variants) {
     assert.equal(sent.length, 0, 'validate all saved subscriptions before any send');
   });
 
-  test(`${format}: unlink preserves shared, listen and explicit subscription ownership`, t => {
+  test(`${format}: unlink preserves shared, listen and explicit subscription ownership`, async t => {
     const io = new api.IO(); t.after(() => io.destroy());
     const sent = []; io.send_enc_mode = p => sent.push(p);
     io.state = api.STATE.READY; // subscribe() needs a ready connection
-    const unsubs = () => sent.filter(p => p[0] === api.IOMsg.UNSUBSCRIBE).map(p => Buffer.from(p.subarray(2)).toString());
+    // Tags unsubscribed, in order (consecutive ones in one turn share a message).
+    const unsubs = () => sent.filter(p => p[0] === api.IOMsg.UNSUBSCRIBE).flatMap(p => Buffer.from(p.subarray(2)).toString().split(','));
     io.link('a', 'room', () => {}); io.link('b', 'room', () => {});
-    io.unlinkAll('a'); assert.deepEqual(unsubs(), []); assert.ok(io.channels.has('room'));
-    io.unlinkAll('b'); assert.deepEqual(unsubs(), ['room']); assert.ok(!io.channels.has('room'));
+    io.unlinkAll('a'); await tick(); assert.deepEqual(unsubs(), []); assert.ok(io.channels.has('room'));
+    io.unlinkAll('b'); await tick(); assert.deepEqual(unsubs(), ['room']); assert.ok(!io.channels.has('room'));
     sent.length = 0;
     io.link('a', 'shared', () => {}); io.listen('shared', () => {});
-    io.unlinkAll('a'); assert.deepEqual(unsubs(), []); assert.ok(io.channels.has('shared'));
+    io.unlinkAll('a'); await tick(); assert.deepEqual(unsubs(), []); assert.ok(io.channels.has('shared'));
     io.subscribe('manual'); io.link('a', 'manual', () => {});
-    io.unlinkAll('a'); assert.deepEqual(unsubs(), []); assert.ok(!io.channels.has('manual'));
+    io.unlinkAll('a'); await tick(); assert.deepEqual(unsubs(), []); assert.ok(!io.channels.has('manual'));
     io.link('a', 'late-manual', () => {}); io.subscribe('late-manual');
-    io.unlinkAll('a'); assert.deepEqual(unsubs(), []);
+    io.unlinkAll('a'); await tick(); assert.deepEqual(unsubs(), []);
     io.link('a', 'one,two', () => {}); io.link('b', 'one', () => {});
-    io.unlinkAll('a'); assert.deepEqual(unsubs(), ['two']);
-    io.unlinkAll('b'); assert.deepEqual(unsubs(), ['two', 'one']);
+    io.unlinkAll('a'); await tick(); assert.deepEqual(unsubs(), ['two']);
+    io.unlinkAll('b'); await tick(); assert.deepEqual(unsubs(), ['two', 'one']);
     sent.length = 0;
     io.subscribe('released'); io.unsubscribe('released');
     io.link('a', 'released', () => {}); io.unlinkAll('a');
+    await tick();
     assert.deepEqual(unsubs(), ['released', 'released'], 'explicit unsubscribe releases ownership');
     sent.length = 0;
     io.listen('released-listen', () => {}); io.unsubscribe('released-listen');
     io.link('a', 'released-listen', () => {}); io.unlinkAll('a');
+    await tick();
     assert.deepEqual(unsubs(), ['released-listen', 'released-listen']);
+  });
+
+  test(`${format}: many (un)subscriptions in one turn go out as few messages, in order, before a later signal`, async t => {
+    const io = new api.IO(); t.after(() => io.destroy());
+    // Recorded below send_enc_mode (an unauthenticated client sends plain), so its flush runs as in use.
+    const sent = [];
+    io.send = p => { sent.push(p); };
+    io.state = api.STATE.READY; io.cid = 'me';
+    io._channelsSentRevision = io._stateRevision; // stored subscriptions already sent
+    const kinds = { [api.IOMsg.SUBSCRIBE]: 'SUB', [api.IOMsg.UNSUBSCRIBE]: 'UNSUB', [api.IOMsg.SIGNAL]: 'SIGNAL' };
+    const log = () => sent.map(p => kinds[p[0]] + ' ' + Buffer.from(p.subarray(2, 2 + p[1])).toString());
+    // A page with 40 devices leaving, and another following them: 120 + 120 tags.
+    const ids = Array.from({ length: 40 }, (_, i) => 'device-' + String(i).padStart(3, '0'));
+    for (const id of ids) for (const f of ['$name', '$ui', '$state']) io.link('old/' + id, id + '@' + f, () => {});
+    await tick(); sent.length = 0;
+    for (const id of ids) io.unlinkAll('old/' + id);
+    for (const id of ids) for (const f of ['$name', '$ui', '$state']) io.link('new/' + id, id + '@' + f, () => {});
+    io.link('new:scan', '#notify', () => {});
+    io.signal('#search'); // sent at once: the queue is flushed before it
+    const lines = log();
+    assert.ok(lines.length <= 20, `${lines.length} messages for 241 (un)subscriptions`);
+    assert.equal(lines.at(-1), 'SIGNAL #search', 'the signal goes after every queued subscription');
+    const firstSub = lines.findIndex(l => l.startsWith('SUB'));
+    assert.ok(lines.slice(0, firstSub).every(l => l.startsWith('UNSUB')) && firstSub > 0, 'unsubscriptions first, as made');
+    const subs = lines.filter(l => l.startsWith('SUB')).flatMap(l => l.slice(4).split(','));
+    assert.equal(subs.length, 121);
+    assert.equal(subs.at(-1), '#notify');
+    assert.ok(sent.every(p => p[1] <= 255), 'each message within the one-byte tag length');
   });
 
   for (const tcp of [false, true]) {
@@ -1404,18 +1442,24 @@ for (const [format, api] of variants) {
     assert.equal(second.ip, '203.0.113.7');
   });
 
-  test(`${format}: IPv6 clients get a home channel per /64 network`, { timeout: 10000 }, async t => {
-    assert.equal(api.isPrivateIP('fd00::1'), true);
-    assert.equal(api.isPrivateIP('fe80::1%en0'), true);
+  test(`${format}: IPv6 clients are refused (IPv6 is not supported)`, { timeout: 10000 }, async t => {
+    assert.equal(api.isPrivateIP('::1'), true);
     assert.equal(api.isPrivateIP('::ffff:192.168.1.2'), true);
+    assert.equal(api.isPrivateIP('fd00::1'), false);
     assert.equal(api.isPrivateIP('2001:db8::1'), false);
-    assert.equal(api.getIPv6PrefixHexString('2001:db8:1:2::5'), '20010db800010002');
+    assert.equal(api.getIPv6PrefixHexString, undefined);
     const { server, url } = await fixture(t, api);
-    const homes = [];
-    for (const ip of ['2001:db8:1:2::5', '2001:db8:1:2:aaaa:bbbb:cccc:dddd', '2001:db8:1:3::5']) {
-      homes.push((await remoteWithHeaders(t, server, url, { 'x-forwarded-for': ip })).HOME_CHANNEL);
+    for (const ip of ['2001:db8:1:2::5', 'fd00::1', 'fe80::1']) {
+      const ws = new WebSocket(url, { headers: { 'x-forwarded-for': ip } });
+      ws.on('error', () => {});
+      t.after(() => ws.terminate());
+      const [code, reason] = await event(ws, 'close', t.signal);
+      assert.deepEqual([code, String(reason)], [1008, 'IPv6 not supported'], ip);
     }
-    assert.deepEqual(homes, ['IP6:20010db800010002', 'IP6:20010db800010002', 'IP6:20010db800010003']);
+    assert.equal(server.manager.remotes.size, 0);
+    // IPv4-mapped and loopback addresses are IPv4.
+    const mapped = await remoteWithHeaders(t, server, url, { 'x-forwarded-for': '::ffff:203.0.113.7' });
+    assert.deepEqual([mapped.ip, mapped.HOME_CHANNEL], ['203.0.113.7', 'IP:cb007107']);
   });
 
   for (const tcp of [false, true]) {
@@ -1500,6 +1544,11 @@ for (const [format, api] of variants) {
     metrics.summaryLine(0);
     const line = metrics.summaryLine(1000);
     assert.match(line, /^\[iosignal\] conn 2 \(auth 1, anon 1, ws 2, tcp 0\) ch \d+ retained 0\/0B \| rx [\d.]+\/s \S+\/s tx [\d.]+\/s \S+\/s pub [\d.]+\/s \| rss \S+ heap \S+$/);
+    // Quota counters are added only when something was limited since the previous line.
+    server.manager.counters.rateLimited += 3;
+    server.manager.counters.quotaNotices += 1;
+    assert.match(metrics.summaryLine(2000), / \| limited rate 3 addr 0 deliv 0 subs 0 fanout 0 oversize 0 notices 1$/);
+    assert.doesNotMatch(metrics.summaryLine(3000), /limited/);
     // The sudo views still work: state names, and mode 4 no longer throws.
     assert.match(metrics.getRemotes()[0], /^#\d+:\S+\([a-z_]+\)$/);
     assert.deepEqual(metrics.getRemoteByCId(anonymous.cid, 4).channels, ['CH:room']);
@@ -1903,7 +1952,7 @@ for (const [format, api] of variants) {
       const subscriber = await connect(), publisher = await connect();
       const remote = server.manager.cid2remote.get(publisher.cid);
       assert.deepEqual([remote.role, remote.quotaName, remote.quota], ['anonymous', 'tiny', server.quotas.tiny]);
-      assert.deepEqual(server.quotas.tiny, { maxMessageBytes: 2000, fanout: null, msgPerSec: null, bytesPerSec: null, maxConnections: null, maxSubscriptions: null });
+      assert.deepEqual(server.quotas.tiny, { maxMessageBytes: 2000, fanout: null, msgPerSec: null, bytesPerSec: null, maxConnections: null, maxSubscriptions: null, deliveriesPerSec: null });
       // QUOTA is sent before CID_RES, so the client knows its limit once ready.
       assert.deepEqual(publisher.quota, { maxMessageBytes: 2000 });
       if (tcp) assert.equal(remote.congRx.maxFrameSize, 2000);
@@ -1996,6 +2045,105 @@ for (const [format, api] of variants) {
     await last;
     const limited = server.stats().counters.rateLimited - before;
     assert.ok(limited >= 15 && received - 1 + limited === 30, `received ${received}, limited ${limited}`);
+  });
+
+  test(`${format}: a WebSocket connection over msgPerSec is told once (quota_exceeded); nothing is held back`, { timeout: 10000 }, async t => {
+    const { server, connect } = await fixture(t, api, false, false, {}, { quotas: { anonymous: { msgPerSec: 5 } } });
+    const io = await connect();
+    const notices = [];
+    io.on('quota_exceeded', data => notices.push(data));
+    const before = server.stats().counters;
+    for (let i = 0; i < 30; i++) io.signal('nobody', i);
+    await new Promise(resolve => setTimeout(resolve, 300));
+    for (let i = 0; i < 30; i++) io.signal('nobody', i); // a second burst: no second notice
+    await new Promise(resolve => setTimeout(resolve, 1200)); // tokens back for the call
+    await io.call('reply', 'echo', 'after');
+    assert.deepEqual(notices, [{ kind: 'msgPerSec', limit: 5, quota: 'anonymous' }]);
+    assert.ok(server.stats().counters.rateLimited - before.rateLimited >= 40, 'still dropped');
+    assert.equal(server.stats().counters.quotaNotices - before.quotaNotices, 1);
+  });
+
+  test(`${format}: maxSubscriptions and fanout are told once each to the connection that went over`, { timeout: 10000 }, async t => {
+    const { connect } = await fixture(t, api, false, false, {}, { quotas: { anonymous: { maxSubscriptions: 2, fanout: 1 } } });
+    const io = await connect();
+    const notices = [];
+    io.on('quota_exceeded', data => notices.push(data));
+    io.subscribe('a,b,c');
+    await io.call('reply', 'echo', 'subscribed');
+    io.subscribe('d');
+    await io.call('reply', 'echo', 'again');
+    assert.deepEqual(notices, [{ kind: 'maxSubscriptions', limit: 2, quota: 'anonymous' }]);
+
+    const [x, y] = [await connect(), await connect()];
+    for (const sub of [x, y]) { sub.subscribe('room'); await sub.call('reply', 'echo', 'subscribed'); }
+    const xNotices = [];
+    x.on('quota_exceeded', data => xNotices.push(data));
+    io.signal('room', 'one');
+    io.signal('room', 'two');
+    await io.call('reply', 'echo', 'published');
+    assert.deepEqual(notices.map(n => n.kind), ['maxSubscriptions', 'fanout']);
+    assert.deepEqual(notices[1], { kind: 'fanout', limit: 1, quota: 'anonymous' });
+    assert.deepEqual(xNotices, [], 'only the connection that went over');
+  });
+
+  test(`${format}: the anonymous connections of one address share msgPerAddressPerSec`, { timeout: 10000 }, async t => {
+    const { server, connect } = await fixture(t, api, false, false, {}, { connectionLimits: { msgPerAddressPerSec: 10, bytesPerAddressPerSec: 0 } });
+    const [a, b] = [await connect(), await connect()];
+    // As if both came from one public address (test connections are loopback, which is never counted).
+    const IP = '203.0.113.77';
+    for (const io of [a, b]) {
+      server.manager.cid2remote.get(io.cid).socket._limitIp = IP;
+      server.manager.addressLimiter.admit(IP);
+    }
+    const notices = [];
+    b.on('quota_exceeded', data => notices.push(data));
+    const before = server.stats().counters;
+    for (let i = 0; i < 8; i++) a.signal('nobody', i); // under the connection's 100/s,
+    for (let i = 0; i < 8; i++) b.signal('nobody', i); // over the address's 10/s together
+    await new Promise(resolve => setTimeout(resolve, 1200));
+    await b.call('reply', 'echo', 'after');
+    const limited = server.stats().counters.addressRateLimited - before.addressRateLimited;
+    assert.ok(limited >= 5 && limited <= 7, `dropped ${limited}`);
+    assert.deepEqual(notices, [{ kind: 'msgPerAddressPerSec', limit: 10, quota: 'anonymous' }]);
+  });
+
+  test(`${format}: deliveriesPerSec caps the subscribers a connection's publishes reach per second`, { timeout: 10000 }, async t => {
+    const { server, connect } = await fixture(t, api, false, false, {}, { quotas: { anonymous: { deliveriesPerSec: 5 } } });
+    const subscribers = [await connect(), await connect(), await connect()];
+    let received = 0;
+    for (const io of subscribers) {
+      io.subscribe('room');
+      await io.call('reply', 'echo', 'subscribed');
+      io.on('message', () => received++);
+    }
+    const publisher = await connect();
+    const notices = [];
+    publisher.on('quota_exceeded', data => notices.push(data));
+    const before = server.stats().counters;
+    for (let i = 0; i < 3; i++) publisher.signal('room', i); // 9 deliveries wanted, 5 a second allowed
+    await publisher.call('reply', 'echo', 'published');
+    await new Promise(resolve => setTimeout(resolve, 100));
+    assert.equal(received, 5);
+    assert.equal(server.stats().counters.deliveriesLimited - before.deliveriesLimited, 4);
+    assert.deepEqual(notices, [{ kind: 'deliveriesPerSec', limit: 5, quota: 'anonymous' }]);
+    await new Promise(resolve => setTimeout(resolve, 1100)); // a second later the tokens are back
+    const all = Promise.all(subscribers.map(io => event(io, 'message', t.signal)));
+    publisher.signal('room', 'again');
+    assert.equal((await all).length, 3);
+  });
+
+  test(`${format}: a TCP connection (a device) over a quota gets no notice`, { timeout: 10000 }, async t => {
+    const { server, connect } = await fixture(t, api, false, true, {}, { quotas: { anonymous: { msgPerSec: 5 } } });
+    const io = await connect();
+    const notices = [];
+    io.on('quota_exceeded', data => notices.push(data));
+    const before = server.stats().counters;
+    for (let i = 0; i < 30; i++) io.signal('nobody', i);
+    await new Promise(resolve => setTimeout(resolve, 1200));
+    await io.call('reply', 'echo', 'after');
+    assert.deepEqual(notices, []);
+    assert.ok(server.stats().counters.rateLimited > before.rateLimited);
+    assert.equal(server.stats().counters.quotaNotices, before.quotaNotices);
   });
 
   test(`${format}: maxConnections limits an account's connections and frees them on close`, { timeout: 10000 }, async t => {

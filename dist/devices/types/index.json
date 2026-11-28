@@ -4,6 +4,7 @@
 		"light.1",
 		"dimmer.1",
 		"rgb-light.1",
+		"relay1.1",
 		"relay4.1",
 		"fan.1",
 		"thermo-hygrometer.1",

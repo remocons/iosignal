@@ -44,6 +44,12 @@ declare class IOCore extends EventEmitter<string | symbol, any> {
      */
     stateName: string;
     _stateRevision: number;
+    _subscriptionQueue: {
+        groups: never[];
+        revision: number;
+        scheduled: boolean;
+        flushing: boolean;
+    };
     /**
      * Transmitted message counter.
      * @type {number}

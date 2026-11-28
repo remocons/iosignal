@@ -37,6 +37,20 @@ test('a scanner reads $name and $ui, and leaves out a group whose $ui is a butto
   scanner.dispose()
 })
 
+test('a scanner keeps the $ui as sent (uiText): keys parseUi leaves out, such as r=1 of a REPL board', () => {
+  const handlers = {}
+  const io = { on() {}, getStateName: () => 'idle', signal() {}, unlinkAll() {}, unlink() {}, link(scope, tag, handler) { handlers[tag] = handler } }
+  const scanner = new DeviceScanner(io, { discover: false })
+  scanner.track('?b1')
+  handlers['?b1@$ui']('?b1@$ui', 't=light.1;r=1')
+  const device = scanner.devices.get('?b1')
+  assert.equal(device.type, 'light.1')
+  assert.equal(device.uiText, 't=light.1;r=1')
+  handlers['?b1@$ui']('?b1@$ui', '')
+  assert.equal(device.uiText, '')
+  scanner.dispose()
+})
+
 test('the picture: the device $view first, then the type default; unknown kinds and bus values are not trusted', () => {
   assert.equal(pickView({ view: { kind: 'fan' }, typeView: { kind: 'bulb' } }).kind, 'fan')
   assert.equal(pickView({ view: { kind: 'rocket' }, typeView: { kind: 'bulb' } }).kind, 'bulb')
