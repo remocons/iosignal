@@ -129,6 +129,7 @@
     "dist/devices/types/iris.2.json",
     "dist/devices/types/light.1.json",
     "dist/devices/types/media-remote.1.json",
+    "dist/devices/types/relay1.1.json",
     "dist/devices/types/relay4.1.json",
     "dist/devices/types/rgb-light.1.json",
     "dist/devices/types/switch2.1.json",
