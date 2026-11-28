@@ -27,12 +27,22 @@ jobs:
         run: |
           version="$(node -p "require('./package.json').version")"
           test "v$version" = "$GITHUB_REF_NAME" || { echo "tag $GITHUB_REF_NAME does not match package.json $version"; exit 1; }
+      # Already on npm (published by hand before the tag was pushed): nothing to do. The run ends as
+      # success with a notice instead of failing, so no failure email; the tag check above still fails.
       - name: Not published yet
+        id: check
         run: |
           name="$(node -p "require('./package.json').name")"; version="$(node -p "require('./package.json').version")"
-          if npm view "$name@$version" version >/dev/null 2>&1; then echo "$name@$version is already on npm"; exit 1; fi
-      - run: npm ci
-      - run: npm run verify
+          if npm view "$name@$version" version >/dev/null 2>&1; then
+            echo "::notice::$name@$version is already on npm; skipping publish"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.check.outputs.skip != 'true'
+        run: npm ci
+      - if: steps.check.outputs.skip != 'true'
+        run: npm run verify
       - name: Committed bundles match the sources
+        if: steps.check.outputs.skip != 'true'
         run: git diff --exit-code -- dist
-      - run: npm publish --provenance --access public --ignore-scripts
+      - if: steps.check.outputs.skip != 'true'
+        run: npm publish --provenance --access public --ignore-scripts
