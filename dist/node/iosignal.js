@@ -20,7 +20,7 @@ import { readFileSync } from 'node:fs';
 import { totalmem } from 'node:os';
 import path from 'path';
 
-var version$1 = "10.1.2";
+var version$1 = "10.2.0";
 var pkg = {
 	version: version$1};
 
