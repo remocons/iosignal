@@ -22,6 +22,7 @@ and use the quick start below for examples targeting the current version.
 | Node.js | WebSocket/TCP servers and clients, publish/subscribe, RPC | This repository · [npm](https://www.npmjs.com/package/iosignal) |
 | Browsers | WebSocket clients and web app integration | `iosignal/browser/esm/io.js` · [examples](https://github.com/remocons/iosignal-examples) |
 | Arduino | Device communication with servers and web apps, authentication and encryption | [iosignal-arduino](https://github.com/remocons/iosignal-arduino) |
+| Python / MicroPython | Python 3.10+ clients and MicroPython boards (ESP32 family): login and encryption, device rules, remote REPL | [iosignal-python](https://github.com/remocons/iosignal-python) · [PyPI](https://pypi.org/project/iosignal/) |
 | CLI | Run servers and clients and test messaging in a terminal | [iosignal-cli](https://github.com/remocons/iosignal-cli) |
 
 Try messaging in the [browser communication workbench](https://lab.iosignal.net/channel/).
@@ -140,6 +141,16 @@ an example for your board. See the [official Arduino guide](https://docs.iosigna
 and [library README](https://github.com/remocons/iosignal-arduino/blob/main/README.en.md)
 for setup and connection instructions.
 
+## Python and MicroPython support
+
+[iosignal-python](https://github.com/remocons/iosignal-python) is the Python client (`pip install iosignal`,
+Python 3.10+, asyncio and a blocking API) and the same package for MicroPython boards (ESP32, ESP32-C3, ESP32-S3:
+`mip.install("github:remocons/iosignal-python")`). A board can be a device that the apps find and control, and
+`iosignal-repl` gives a remote REPL and file transfer sealed with the board's key. The web IDE at
+[python.iosignal.net](https://python.iosignal.net/) does the same in a browser and sets boards up over USB. See the
+[Python guide](https://docs.iosignal.net/docs/python) and the
+[MicroPython board guide](https://docs.iosignal.net/docs/python/micropython).
+
 ## CLI support
 
 [iosignal-cli](https://github.com/remocons/iosignal-cli) runs a server or an
@@ -188,7 +199,7 @@ for more options.
 ## Authentication and encryption
 
 [Boho](https://github.com/remocons/boho) provides shared-key authentication and
-message encryption for JavaScript and Arduino. Since 10.0.0 it is built on the
+message encryption for JavaScript, Arduino and Python. Since 10.0.0 it is built on the
 standard Ascon (NIST SP 800-232) instead of a custom SHA-256 construction;
 9.x clients cannot log in to a 10.0.0 server and device keys are registered again. End-to-end encryption (E2E) uses
 a separate data key shared only by the final endpoints. See the

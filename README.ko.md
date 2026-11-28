@@ -21,6 +21,7 @@ Node.js에서는 TCP 기반 `IOCongSocket`도 사용할 수 있습니다.
 | Node.js | WebSocket·TCP 서버와 클라이언트, 발행/구독, RPC | 이 저장소 · [npm](https://www.npmjs.com/package/iosignal) |
 | 브라우저 | WebSocket 클라이언트, 웹앱 연동 | `iosignal/browser/esm/io.js` · [예제](https://github.com/remocons/iosignal-examples) |
 | Arduino | 장치와 서버·웹앱 간 통신, 인증과 암호화 | [iosignal-arduino](https://github.com/remocons/iosignal-arduino) |
+| Python / MicroPython | Python 3.10 이상 클라이언트와 MicroPython 보드(ESP32 계열): 로그인·암호화, 장치 규칙, 원격 REPL | [iosignal-python](https://github.com/remocons/iosignal-python) · [PyPI](https://pypi.org/project/iosignal/) |
 | CLI | 터미널에서 서버·클라이언트 실행과 통신 시험 | [iosignal-cli](https://github.com/remocons/iosignal-cli) |
 
 [브라우저 통신 워크벤치](https://lab.iosignal.net/channel/)에서도 통신을 시험할 수 있습니다.
@@ -136,6 +137,15 @@ ESP32·ESP8266 등의 예제를 제공합니다. 라이브러리를 설치하고
 설치와 연결 방법은 [Arduino 공식 가이드](https://docs.iosignal.net/docs/arduino)와
 [라이브러리 README](https://github.com/remocons/iosignal-arduino#readme)를 참고하세요.
 
+## Python과 MicroPython 지원
+
+[iosignal-python](https://github.com/remocons/iosignal-python)은 Python 클라이언트(`pip install iosignal`,
+Python 3.10 이상, asyncio와 동기 API)이자 MicroPython 보드(ESP32, ESP32-C3, ESP32-S3:
+`mip.install("github:remocons/iosignal-python")`)용 패키지입니다. 보드를 앱이 찾고 제어하는 장치로 만들 수 있고,
+`iosignal-repl`로 보드 키로 봉한 원격 REPL과 파일 전송을 씁니다. [python.iosignal.net](https://python.iosignal.net/)의
+웹 IDE는 같은 일을 브라우저에서 하고, USB로 보드를 준비합니다. [Python 가이드](https://docs.iosignal.net/docs/python)와
+[MicroPython 보드 가이드](https://docs.iosignal.net/docs/python/micropython)를 참고하세요.
+
 ## CLI 지원
 
 [iosignal-cli](https://github.com/remocons/iosignal-cli)로 코드 작성 없이 서버와
@@ -182,7 +192,7 @@ io-client -c ws://localhost:8080
 
 ## 인증과 암호화
 
-[Boho](https://github.com/remocons/boho)는 JavaScript와 Arduino에서 공유 키 인증과
+[Boho](https://github.com/remocons/boho)는 JavaScript, Arduino, Python에서 공유 키 인증과
 메시지 암호화를 제공합니다. 10.0.0부터 자체 SHA-256 구성 대신 표준 Ascon(NIST SP 800-232)을
 씁니다. 9.x 클라이언트는 10.0.0 서버에 로그인할 수 없으며 장치 키는 다시 등록합니다. 종단간 암호화(E2E)는 최종 송수신자만 공유하는 별도
 데이터 키로 설정합니다. 키 관리, TLS와의 관계, 세션 검증 및 구현의 적용 조건은
